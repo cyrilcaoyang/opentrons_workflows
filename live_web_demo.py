@@ -1,25 +1,25 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
 import matplotlib.pyplot as plt
 import asyncio
 import os
-import numpy as np
 
 app = FastAPI()
 
 # MongoDB configuration
 MONGO_DETAILS = "mongodb://localhost:27017"
 client = AsyncIOMotorClient(MONGO_DETAILS)
-db = client['rgb_db']
+db = client['demo_db']
+collection = db['numbers']
 target_collection = db['target_rgb']
 
 # Create 'static' folder if it doesn't exist
 os.makedirs("static", exist_ok=True)
 
 # Define initial target RGB channel
-target_rgb = [0.4, 0.3, 0.3]  # Initial target RGB ratios
+target_rgb = [0.4, 0.3, 0.3]  # Example target RGB ratios
 plot_file = 'static/plot.png'  # Define plot file path
 
 # List to store MNE history
@@ -27,6 +27,13 @@ mne_history = []
 
 # Global variable for current RGB ratios
 current_rgb_ratio = [0.33, 0.33, 0.34]  # Initial RGB ratios
+
+async def load_data_from_mongodb():
+    """
+    Load data from MongoDB for the plot.
+    """
+    data = await collection.find().to_list(100)
+    return [item['number'] for item in data]
 
 async def load_target_from_db():
     """
@@ -49,10 +56,13 @@ def calculate_mne(current_rgb, target_rgb):
     """
     return np.abs((np.array(current_rgb) - np.array(target_rgb)) / np.array(target_rgb))
 
-def create_plots(current_rgb, iteration):
+async def create_plots(current_rgb, iteration):
     """
     Create two plots: MNE over iterations and RGB bar chart.
     """
+    # Load data from MongoDB for plotting
+    data = await load_data_from_mongodb()
+
     # Calculate MNE for R, G, B channels and average MNE for the current iteration
     mne_values = calculate_mne(current_rgb, target_rgb)
     avg_mne = mne_values.mean()
@@ -192,7 +202,7 @@ async def get_plot():
     Serve the plot file, ensuring it exists.
     """
     if not os.path.exists(plot_file):
-        create_plots([0, 0, 0], 0)  # Create initial plot if it doesn't exist
+        await create_plots([0, 0, 0], 0)  # Create initial plot if it doesn't exist
     return FileResponse(plot_file)
 
 async def update_plots_periodically():
@@ -204,7 +214,7 @@ async def update_plots_periodically():
         iteration += 1
         
         # Create the updated plots using the current RGB ratios
-        create_plots(current_rgb_ratio, iteration)
+        await create_plots(current_rgb_ratio, iteration)
         
         # Wait for 1 second before updating again
         await asyncio.sleep(1)
@@ -216,9 +226,4 @@ async def start_background_tasks():
     await load_target_from_db()
 
     # Ensure the initial plot exists
-    create_plots([0.33, 0.33, 0.34], 0)  # Initial plot with starting ratios
-    asyncio.create_task(update_plots_periodically())
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("live_web_demo:app", host="127.0.0.1", port=8080, reload=True)
+    await create_plots([0.33, 0.33, 0.34], 0)
