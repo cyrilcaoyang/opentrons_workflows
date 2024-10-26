@@ -226,4 +226,9 @@ async def start_background_tasks():
     await load_target_from_db()
 
     # Ensure the initial plot exists
-    await create_plots([0.33, 0.33, 0.34], 0)
+    await create_plots([0.33, 0.33, 0.34], 0)  # Initial plot with starting ratios
+    asyncio.create_task(update_plots_periodically())
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("live_web_demo:app", host="127.0.0.1", port=8080, reload=True)
