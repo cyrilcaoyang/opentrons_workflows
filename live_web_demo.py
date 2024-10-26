@@ -27,6 +27,7 @@ mne_history = []
 
 # Global variable for current RGB ratios
 current_rgb_ratio = [0.33, 0.33, 0.34]  # Initial RGB ratios
+num_iterations_to_run = 0  # Number of additional iterations specified by the user
 
 async def load_data_from_mongodb():
     """
@@ -148,6 +149,19 @@ async def get():
                 });
             }
 
+            function setIterations() {
+                const iterations = parseInt(document.getElementById('numIterations').value);
+                if (iterations > 0) {
+                    fetch('/set_iterations', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ iterations: iterations })
+                    });
+                }
+            }
+
             setInterval(function() {
                 document.getElementById("plot").src = '/static/plot.png?' + new Date().getTime();
             }, 1000);
@@ -171,6 +185,11 @@ async def get():
             <input type="range" id="sliderB" class="slider" min="0" max="1" step="0.01" value="0.34" disabled>
         </div>
         <button class="button" onclick="setTarget()">Set Target</button>
+        <div class="slider-container">
+            <label>Iterations to run:</label>
+            <input type="number" id="numIterations" min="1" value="1">
+            <button class="button" onclick="setIterations()">Run Iterations</button>
+        </div>
     </body>
     </html>
     """
@@ -196,6 +215,16 @@ async def set_target(request: Request):
     await save_target_to_db({"R": data['R'], "G": data['G'], "B": data['B']})
     return JSONResponse({"status": "target set successfully"})
 
+@app.post("/set_iterations")
+async def set_iterations(request: Request):
+    """
+    Set the number of additional iterations to run.
+    """
+    global num_iterations_to_run
+    data = await request.json()
+    num_iterations_to_run = data.get('iterations', 0)
+    return JSONResponse({"status": f"Running {num_iterations_to_run} iterations"})
+
 @app.get("/static/plot.png")
 async def get_plot():
     """
@@ -207,16 +236,17 @@ async def get_plot():
 
 async def update_plots_periodically():
     """
-    Asynchronous task to update plots every second with the current RGB ratios.
+    Asynchronous task to update plots with the current RGB ratios.
     """
+    global num_iterations_to_run
     iteration = 0
     while True:
-        iteration += 1
+        if num_iterations_to_run > 0:
+            iteration += 1
+            await create_plots(current_rgb_ratio, iteration)
+            num_iterations_to_run -= 1
         
-        # Create the updated plots using the current RGB ratios
-        await create_plots(current_rgb_ratio, iteration)
-        
-        # Wait for 1 second before updating again
+        # Wait for 1 second before checking again
         await asyncio.sleep(1)
 
 # Start the background task to update plots
