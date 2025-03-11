@@ -1,17 +1,36 @@
 import paramiko
 import time
+import os
+from pathlib import Path
+import paramiko.config
 
-import paramiko
-import time
-import re
 
 class SSHClient:
-    def __init__(self, hostname, username, key_file_path):
+    def __init__(self, hostname=None, username=None, key_file_path=None, host_alias=None, password=None):
         self.hostname = hostname
         self.username = username
         self.key_file_path = key_file_path
+        self.host_alias = host_alias
+        self.password = password
         self.ssh_client = None
         self.python_session = None
+        self._config_host()
+
+    def _config_host(self):
+        if (self.hostname is None) and (self.host_alias is None):
+            raise ValueError("Both hostname and hostalias is None, invalid")
+        if self.host_alias:
+            ssh_config = self._load_ssh_config()
+            self.hostname=ssh_config["hostname"]
+            self.username=ssh_config["user"]
+            self.key_file_path=ssh_config["identityfile"][0]
+
+    def _load_ssh_config(self):
+        ssh_config_file = Path.home()/".ssh"/"config"
+        config = paramiko.config.SSHConfig()
+        with open(ssh_config_file) as f:
+            config.parse(f)
+        return config.lookup(self.host_alias)
 
     def connect(self):
         """Establish SSH connection and start Python terminal"""
@@ -19,7 +38,7 @@ class SSHClient:
         self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         
         # Use the private key for authentication
-        private_key = paramiko.RSAKey.from_private_key_file(self.key_file_path)
+        private_key = paramiko.RSAKey.from_private_key_file(self.key_file_path, password=self.password)
         self.ssh_client.connect(hostname=self.hostname, username=self.username, pkey=private_key)
         
         # Start a persistent Python interactive session

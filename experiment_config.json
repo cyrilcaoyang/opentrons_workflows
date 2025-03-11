@@ -1,0 +1,28 @@
+{
+    "labware": [
+        {
+            "default": false,
+            "load_name": "matter_24_vialplate_3700ul",
+            "location": "1",
+            "contents": {
+                "A1": {
+                    "reagent": "buffer",
+                    "initial_volume": 3700,
+                    "max_volume": 3700,
+                    "inner_diameter": 13.0
+                }
+            }
+        },
+        {
+            "default": true,
+            "load_name": "opentrons_96_tiprack_1000ul",
+            "location": "8"
+        }
+    ],
+    "pipette": [
+        {
+            "load_name": "p1000_single_gen2",
+            "location": "right"
+        }
+    ]
+}

@@ -1,4 +1,4 @@
-from OT2wrapper import OT2
+from OT2wrapper import OpenTrons
 from prefect import flow,task,serve
 from LabMind import KnowledgeObject,nosql_service
 from LabMind.Utils import upload
@@ -52,7 +52,7 @@ def setup_target(R,G,B,mix_well="H11"):
     total = R+G+B
     if total != 1:
         raise ValueError("The sum of the proportions must be 1")
-    ot2 = OT2()
+    ot2 = OpenTrons()
     ot2.home()
 
     position = ["B1", "B2", "B3"]
