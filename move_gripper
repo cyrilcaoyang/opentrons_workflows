@@ -1,0 +1,10 @@
+protocol.home()
+hardware = protocol._core_get_hardware()
+hardware.cache_instruments()
+hardware.has_gripper()
+hardware.grip()
+hardware.ungrip()
+gripper = hardware._gripper_handler.get_gripper()
+gripper.jaw_width
+gripper.min_jaw_width
+gripper.max_jaw_width
