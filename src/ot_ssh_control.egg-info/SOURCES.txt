@@ -1,0 +1,9 @@
+pyproject.toml
+src/ot_ssh_control/OpenTronsControl.py
+src/ot_ssh_control/__init__.py
+src/ot_ssh_control/sshclient.py
+src/ot_ssh_control/well_plate.py
+src/ot_ssh_control.egg-info/PKG-INFO
+src/ot_ssh_control.egg-info/SOURCES.txt
+src/ot_ssh_control.egg-info/dependency_links.txt
+src/ot_ssh_control.egg-info/top_level.txt
