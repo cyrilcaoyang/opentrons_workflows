@@ -1,0 +1,40 @@
+# pyproject.toml
+
+[build-system]
+requires = ["setuptools>=61.0"]  # Specify setuptools as the build backend
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matterlab_opentrons"              # The distribution name on PyPI
+version = "0.1.0"                         # Initial version - increment as you release updates
+authors = [
+    { name="Han Hao", email="clascclon@gmail.com" }, # Change placeholder
+]
+description = "A package to control Opentrons OT-2 robots via SSH, with Prefect integration."
+readme = "README.md"                      # Assumes you have a README.md file
+requires-python = ">=3.8"                 # Minimum Python version compatibility (adjust if needed)
+license = { text = "MIT" }                # Specify your license (e.g., MIT, Apache-2.0). Add a LICENSE file.
+classifiers = [                           # Standard classifiers for PyPI
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License", # Adjust if you use a different license
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [                          # List runtime dependencies
+    "prefect>=2.0",                     # For the @flow decorator and Prefect integration
+    "paramiko",                         # Assuming sshclient.py uses paramiko for SSH. Add if needed.
+    # Add any other dependencies your code requires
+]
+
+[project.urls] # Optional but recommended links
+"Homepage" = "https://github.com/yourusername/ot2" # Change placeholder
+"Repository" = "https://github.com/yourusername/ot2" # Change placeholder
+
+# --- Configuration for setuptools ---
+[tool.setuptools.packages.find]
+where = ["src"]  # Look for packages in the 'src' directory
+
+# If you want to include non-code files (e.g., data files) within your package:
+# [tool.setuptools.package-data]
+# "matterlab_opentrons" = ["*.yaml", "data/*"] # Example: include yaml files or files in a data/ subdir

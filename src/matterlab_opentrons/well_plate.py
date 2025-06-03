@@ -46,6 +46,19 @@ tip_rack_10 = {
     ]
 }
 
+tip_rack_20 = {
+    "display_name": "MatterLab 96 Tips 20uL",
+    "load_name":    "matterlab_96_tips_20ul",
+    "display_category": "tipRack",
+    "tags": [],
+    "plates": [
+        {"xDimension": 127.0, "yDimension": 85.0, "zDimension": 51.5,
+         "rows": 8, "cols": 12, "x_spacing": 9.0, "y_spacing": 9.0, "x_offset": 14.2, "y_offset": 11.0,
+         "well_depth": 31.9, "well_diameter": 3.3, "volume": 20.0, "well_shape": "circular", "bottom_shape": None
+         }
+    ]
+}
+
 square_well = {
     "display_name": "Test 96 Well Plate 200 µL",
     "load_name":    "test_96_wellplate_200u",
@@ -233,12 +246,12 @@ class WellPlateGenerator(object):
         return self.template
     
 if __name__ == "__main__":
-    test = WellPlateGenerator(vial_20ml)
+    test = WellPlateGenerator(tip_rack_20)
     test.create_plate()
     test.metadata()
     test.parameters()
     rtn = test.multiple_plates()
-    with open(Path(r"c:\users\han\Downloads")/"matterlab_12_vialplate_20000ul.json", "w") as f:
+    with open(Path(r"c:\users\aag\Downloads")/"matterlab_96_tiprack_20ul.json", "w") as f:
         json.dump(rtn, f, indent=2)
         
                 

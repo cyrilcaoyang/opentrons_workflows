@@ -6,4 +6,5 @@ src/matterlab_opentrons/well_plate.py
 src/matterlab_opentrons.egg-info/PKG-INFO
 src/matterlab_opentrons.egg-info/SOURCES.txt
 src/matterlab_opentrons.egg-info/dependency_links.txt
+src/matterlab_opentrons.egg-info/requires.txt
 src/matterlab_opentrons.egg-info/top_level.txt

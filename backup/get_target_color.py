@@ -1,4 +1,4 @@
-from OT2wrapper import OpenTrons
+from OT2Demo.src.OT2wrapper import OpenTrons
 from prefect import flow,task,serve
 from LabMind import KnowledgeObject,nosql_service
 from LabMind.Utils import upload

@@ -30,6 +30,7 @@ class SSHClient:
         config = paramiko.config.SSHConfig()
         with open(ssh_config_file) as f:
             config.parse(f)
+        print(config.lookup(self.host_alias))
         return config.lookup(self.host_alias)
 
     def connect(self):
