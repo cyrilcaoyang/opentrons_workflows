@@ -3,6 +3,7 @@ from pathlib import Path
 import logging
 from typing import Union, Dict, List, Optional
 
+
 filter_plate = {
     "display_name": "MatterLab_Filtration",
     "load_name":    "matterlab_filtration",
@@ -111,9 +112,16 @@ beaker_30ml = {
     ]
 }
 
+
 class WellPlateGenerator(object):
-    MAX_DIMENSIONS = {"x": 127, "y": 85.5, "z": 200}
-    def __init__(self, well_plate_design: Dict):
+    MAX_DIMENSIONS = {
+        "x": 127, "y": 85.5, "z": 200
+    }
+
+    def __init__(
+            self,
+            well_plate_design: Dict
+    ):
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel("INFO")
         self._load_template()

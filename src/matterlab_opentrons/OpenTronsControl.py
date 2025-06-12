@@ -1,5 +1,5 @@
 from prefect import flow,task,serve
-from .sshclient import SSHClient
+from sshclient import SSHClient
 import os
 import time
 from pathlib import Path
@@ -219,7 +219,7 @@ class OpenTrons:
         self._disconnect()
 
 
-@flow(log_prints=True)
+#@flow(log_prints=True)
 def demo_ot2(simulation:bool = True):
     ot = OpenTrons(host_alias="ot2", password = "accelerate", simulation=simulation)
     ot.home()
@@ -336,7 +336,7 @@ def demo_ot2(simulation:bool = True):
 
     ot.close_session()
 
-@flow(log_prints=True)
+#@flow(log_prints=True)
 def demo_flex(simulation: bool = True):
     ot=OpenTrons(host_alias="otflex", password="accelerate", simulation=simulation)
     ot.home()
