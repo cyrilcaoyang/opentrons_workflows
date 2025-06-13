@@ -23,7 +23,7 @@ class SSHClient:
             ssh_config = self._load_ssh_config()
             self.hostname=ssh_config["hostname"]
             self.username=ssh_config["user"]
-            self.key_file_path=ssh_config["IdentityFile"][0]
+            self.key_file_path=os.path.expanduser(ssh_config["identifyfile"])
 
     def _load_ssh_config(self):
         ssh_config_file = Path.home()/".ssh"/"config"
@@ -88,7 +88,6 @@ class SSHClient:
             self.ssh_client.close()
 
 if __name__ == "__main__":
-
     # Instantiate and connect with the private key
     ssh_client = SSHClient(
         hostname="192.168.254.50",
