@@ -133,7 +133,7 @@ This project uses `pytest` for testing. The tests are located in the `tests/` di
 
 1.  **Install Dependencies**: Make sure you have installed the development dependencies:
     ```bash
-    pip install -e ."[dev]"
+    pip install -e ".[dev]"
     ```
 
 2.  **Run Tests**: Run the test suite from the project's **root directory**. It is important to use the `python -m pytest` pattern to ensure you are using the `pytest` executable from your activated virtual environment.

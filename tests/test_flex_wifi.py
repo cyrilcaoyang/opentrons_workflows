@@ -65,15 +65,15 @@ def test_load_labware_and_gripper(robot):
     logger.info("Test 2: Loading labware and gripper...")
 
     # Load labware
-    plate = robot.deck.load_labware("corning_96_wellplate_360ul_flat", location="D1")
-    assert plate is not None, "Failed to load labware 'corning_96_wellplate_360ul_flat'."
-    assert plate.load_name == "corning_96_wellplate_360ul_flat"
+    plate = robot.deck.load_labware("matterlab_24_vialplate_3700ul", location="D1")
+    assert plate is not None, "Failed to load labware 'matterlab_24_vialplate_3700ul'."
+    assert plate.load_name == "matterlab_24_vialplate_3700ul"
     logger.info("✅ Labware loaded successfully.")
 
-    # Load gripper
-    gripper = robot.load_instrument("flex_gripper", mount="left")
-    assert gripper is not None, "Failed to load gripper 'flex_gripper'."
-    assert "left" in robot.instruments
+    # Load gripper - use the correct method for Flex robots
+    gripper = robot.load_gripper()
+    assert gripper is not None, "Failed to load gripper."
+    assert "gripper" in robot.instruments
     logger.info("✅ Gripper loaded successfully.")
 
 
@@ -82,7 +82,7 @@ def test_gripper_movement(robot):
     logger.info("Test 3: Moving gripper...")
 
     # Get the gripper and labware from the robot's state
-    gripper = robot.instruments.get("left")
+    gripper = robot.instruments.get("gripper")  # Use 'gripper' key, not 'left'
     plate = robot.deck.labware.get("D1")
 
     assert gripper is not None, "Gripper not found for movement test."
@@ -98,7 +98,7 @@ def test_gripper_actions(robot):
     logger.info("Test 4: Performing grip and ungrip actions...")
 
     # Get the gripper from the robot's state
-    gripper = robot.instruments.get("left")
+    gripper = robot.instruments.get("gripper")  # Use 'gripper' key, not 'left'
     assert gripper is not None, "Gripper not found for actions test."
 
     # Perform grip and ungrip

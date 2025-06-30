@@ -13,7 +13,7 @@ from .sshclient import SSHClient
 FLEX_PROTOCOL_TEMPLATE = """
 from opentrons import protocol_api
 
-metadata = {'apiLevel': '2.15'}
+metadata = {'apiLevel': '2.23'}
 
 def run(ctx: protocol_api.ProtocolContext):
     # COMMANDS_PLACEHOLDER
@@ -54,6 +54,19 @@ class OpenTronsBase(ABC):
         self.simulation = simulation
         self.ssh_client = self._connect_to_robot(host_alias, robot_type, **kwargs)
 
+        # Set API level and model based on the known robot_type from settings.
+        if robot_type == 'Flex':
+            self.robot_api_level = '2.23'
+            self.robot_model = 'OT-3 Standard'
+        elif robot_type == 'OT-2':
+            self.robot_api_level = '2.15'
+            self.robot_model = 'OT-2 Standard'
+        else:
+            # This will cause a fatal error if robot_type is not what we expect.
+            raise ValueError(f"FATAL: Unexpected robot_type '{robot_type}' received in OpenTronsBase constructor.")
+        
+        logging.info(f"Configuring for {self.robot_model}. API Level: {self.robot_api_level}")
+
         # --- Path Definitions ---
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         session_id = self.ssh_client.session_id
@@ -63,6 +76,7 @@ class OpenTronsBase(ABC):
         self.remote_results_path = f"/tmp/{timestamp}_{session_id}_results.json"
 
         # Local paths for logging and archiving
+        log_dir = os.path.abspath(log_dir)
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
         self.local_protocol_log_path = os.path.join(log_dir, f"{timestamp}_{session_id}_protocol.py")
@@ -70,7 +84,7 @@ class OpenTronsBase(ABC):
 
         self.deck = Deck(self)
         self.instruments = {}  # Holds instrument objects, keyed by mount
-        self._initialize_protocol(robot_type)
+        self.commands = [] # Stateless command list
 
     def _connect_to_robot(self, host_alias, robot_type, **kwargs):
         """Establishes the SSH connection."""
@@ -95,41 +109,33 @@ class OpenTronsBase(ABC):
             return None
         return None
 
-    def _initialize_protocol(self, robot_type):
-        """Initializes the protocol file on the robot with a template."""
-        if robot_type is None:
-            raise ValueError("robot_type must be specified ('OT-2' or 'Flex')")
-
-        template = self._get_protocol_template(robot_type)
-        # Always write the initial protocol to the remote path, for both live and sim modes.
-        self.ssh_client.write_file(self.remote_protocol_path, template)
-        self.protocol_lines = template.splitlines()  # Store lines for local manipulation
-
-    def _get_protocol_template(self, robot_type):
-        """Gets the appropriate protocol template based on the robot type."""
-        if robot_type == 'Flex':
-            return FLEX_PROTOCOL_TEMPLATE
-        elif robot_type == 'OT-2':
-            return OT2_PROTOCOL_TEMPLATE
-        else:
-            raise ValueError(f"Unknown robot type: {robot_type}")
-
     def _add_command(self, command, json_response=False):
         """
-        Adds a command to the protocol script, executes it, and returns the result.
-        If json_response is True, it wraps the command to get a JSON output.
+        Adds a command to the list, generates the entire protocol from scratch,
+        and executes it.
         """
-        # Create a copy of protocol_lines to modify
-        updated_lines = self.protocol_lines[:]
+        self.commands.append(command)
 
-        # Find the line with "COMMANDS_PLACEHOLDER" and insert the command
-        try:
-            insert_index = updated_lines.index("    # COMMANDS_PLACEHOLDER")
-            if json_response:
-                # Wrap the command to capture its output and any errors in JSON format
-                command_to_insert = f"""
+        # Generate the script from scratch each time to ensure statelessness
+        command_str = '\n    '.join(self.commands)
+
+        # Base template
+        template = f"""
+from opentrons import protocol_api
+
+metadata = {{'apiLevel': '{self.robot_api_level}'}}
+
+def run(ctx: protocol_api.ProtocolContext):
+    {command_str}
+"""
+        
+        # Add result-capturing logic if needed
+        if json_response:
+            final_command = self.commands[-1] # Get the most recent command
+            script_to_run = f"""
     try:
-        {command}  # Execute the command, ignore the complex return object
+        # We only care about the result of the LAST command.
+        {final_command}
         output = {{'status': 'success', 'data': 'Command executed successfully', 'error': None, 'traceback': None}}
     except Exception as e:
         import traceback
@@ -140,23 +146,13 @@ class OpenTronsBase(ABC):
     with open('{self.remote_results_path}', 'w') as f:
         json.dump(output, f)
 """
-            else:
-                command_to_insert = f"    {command}"
-
-            updated_lines.insert(insert_index, command_to_insert)
-
-        except ValueError:
-            logging.error("Could not find the '# COMMANDS_PLACEHOLDER' in the protocol template.")
-            return None
-
-        # After inserting, update the main protocol_lines for the next command
-        self.protocol_lines = updated_lines
+            # Replace the last command with the try/except block
+            template = template.replace(final_command, script_to_run)
 
         # Write the updated protocol to the robot and to a local log file
-        final_protocol_script = "\n".join(updated_lines)
-        self.ssh_client.write_file(self.remote_protocol_path, final_protocol_script)
+        self.ssh_client.write_file(self.remote_protocol_path, template)
         with open(self.local_protocol_log_path, "w") as f:
-            f.write(final_protocol_script)
+            f.write(template)
 
         # Execute the script on the robot
         result = self.ssh_client.execute_protocol(

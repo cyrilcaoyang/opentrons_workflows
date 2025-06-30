@@ -179,6 +179,8 @@ class SSHClient:
         :param remote_path: The absolute path to the destination file on the robot.
         :param content: The string content to be written to the file.
         """
+        logging.info(f"DEBUG: Writing to remote file {remote_path}")
+        logging.debug(f"DEBUG: Content for remote file:\n---\n{content}\n---")
         # Use echo and tee to write the file to avoid issues with SFTP permissions
         escaped_content = content.replace("'", "'\\''")
         command = f"echo '{escaped_content}' | tee {remote_path} > /dev/null"
