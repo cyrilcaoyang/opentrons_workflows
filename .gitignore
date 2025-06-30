@@ -1,4 +1,91 @@
-/__pycache__/
+# Byte-compiled / optimized / DLL files
+**/__pycache__/
+*.pyc
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environments
 .env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# User-specific
+backup/
 credentials.json
 token_drive_v3.pickle
+# settings/
+
+# User-specific scripts
+# --------------------
+# Logs
+logs/*
+# Ignore all files in the user_scripts directory...
+user_scripts/*
+# ...except for the .placeholder file and the example notebook.
+!user_scripts/interactive_protocol_development.ipynb
+
+# Generated labware definitions
+# -----------------------------
+generated_labware/
+
+# Log files
+logs/
+/user_scripts/logs/
+/tests/user_scripts_logs/
+
+# VS Code settings
+.vscode/
