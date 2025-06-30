@@ -1,5 +1,5 @@
 """
-matterlab_opentrons
+opentrons_workflows
 
 A Python package to control Opentrons robots, with integration for
 Prefect workflow orchestration.

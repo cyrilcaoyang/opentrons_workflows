@@ -5,9 +5,12 @@ A robust demonstration of the gripper functionality on the Opentrons Flex.
 This script shows how to connect to a Flex robot, move the gripper,
 and control its jaws, all within a Prefect flow.
 """
-from prefect import flow
-from src.matterlab_opentrons.prefect_tasks import robust_task
-from src.matterlab_opentrons.OpenTronsControl import connect, RobotCommandError
+from logging import getLogger
+from prefect import flow, task
+from src.opentrons_workflows.prefect_tasks import robust_task
+from src.opentrons_workflows.opentrons_control import connect, RobotCommandError
+from opentrons.types import DeckSlotName, Mount
+import asyncio
 
 @robust_task(retries=2, retry_delay_seconds=5)
 def move_gripper_jaw_task(ot, action: str):
@@ -15,7 +18,7 @@ def move_gripper_jaw_task(ot, action: str):
     A robust task to control the gripper jaws.
 
     NOTE: This task is defined locally for debugging. Once fully tested,
-    it will be moved to the shared `src/matterlab_opentrons/prefect_tasks.py`.
+    it will be moved to the shared `src/opentrons_workflows/prefect_tasks.py`.
     """
     print(f"Attempting to perform gripper action: '{action}'")
     ot.move_gripper(action)
@@ -27,13 +30,22 @@ def move_gripper_to_location_task(ot, gripper_name: str, labware_name: str, well
     A robust task to move the gripper to a specific location.
 
     NOTE: This task is defined locally for debugging. Once fully tested,
-    it will be moved to the shared `src/matterlab_opentrons/prefect_tasks.py`.
+    it will be moved to the shared `src/opentrons_workflows/prefect_tasks.py`.
     """
     location = f"{labware_name}['{well}'].top()"
     print(f"Attempting to move gripper '{gripper_name}' to {location}")
     ot.move_gripper_to(gripper_name, location)
     print(f"✅ Gripper '{gripper_name}' moved successfully to {location}.")
 
+@robust_task
+def transfer_plate(ot, source_slot=DeckSlotName.C3, dest_slot=DeckSlotName.C4):
+    # Implementation of the transfer_plate task
+    pass
+
+@robust_task
+def return_plate_to_source(ot, source_slot=DeckSlotName.C3, dest_slot=DeckSlotName.C4):
+    # Implementation of the return_plate_to_source task
+    pass
 
 @flow
 def robust_gripper_flow():

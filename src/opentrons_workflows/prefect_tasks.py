@@ -15,8 +15,7 @@ In your protocol file, import the decorator and create your own tasks.
 Example:
 ```python
 from prefect import flow
-from matterlab_opentrons import connect
-from matterlab_opentrons.prefect_tasks import robust_task
+from opentrons_workflows import connect, robust_task
 
 @robust_task(retries=2)
 def pick_up_tip(pipette):

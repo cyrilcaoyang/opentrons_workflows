@@ -51,7 +51,7 @@ class SSHClient:
     def _load_settings(self):
         """Loads SSH settings from the JSON file."""
         # Always look for the settings file relative to the project root
-        # sshclient.py is in src/matterlab_opentrons/, so go up two levels to reach project root
+        # sshclient.py is in src/opentrons_workflows/, so go up two levels to reach project root
         settings_path = os.path.join(os.path.dirname(__file__), '..', '..', 'user_scripts', 'sshclient_settings.json')
         if not os.path.exists(settings_path):
             raise FileNotFoundError(f"Settings file not found at {settings_path}")

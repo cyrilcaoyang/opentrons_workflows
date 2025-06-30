@@ -53,7 +53,7 @@ class Deck:
         This is called once on initialization.
         """
         definitions = {}
-        # Path relative to this file's location (src/matterlab_opentrons/deck.py)
+        # Path relative to this file's location (src/opentrons_workflows/deck.py)
         # Go up two directories to the project root, then into user_scripts/generated_labware
         labware_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'user_scripts', 'generated_labware'))
         

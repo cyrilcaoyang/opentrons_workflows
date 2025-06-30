@@ -1,49 +1,50 @@
 from prefect import flow, get_run_logger
 from pathlib import Path
 import json
-from src.matterlab_opentrons import OpenTrons, RobotCommandError, robust_task
+from src.opentrons_workflows.opentrons_control import connect, RobotCommandError
+from src.opentrons_workflows.prefect_tasks import robust_task
 
 # ======================================================================================================================
 # Define protocol-specific tasks using the @robust_task decorator
 # ======================================================================================================================
 
 @robust_task(retries=2, retry_delay_seconds=5)
-def home_robot(ot: OpenTrons):
+def home_robot(ot):
     """Homes the robot."""
     ot.home()
 
 @robust_task()
-def load_labware(ot: OpenTrons, *args, **kwargs):
+def load_labware(ot, *args, **kwargs):
     """Loads a piece of labware."""
     ot.load_labware(*args, **kwargs)
 
 @robust_task()
-def load_instrument(ot: OpenTrons, *args, **kwargs):
+def load_instrument(ot, *args, **kwargs):
     """Loads an instrument."""
     ot.load_instrument(*args, **kwargs)
     
 @robust_task()
-def load_module(ot: OpenTrons, *args, **kwargs):
+def load_module(ot, *args, **kwargs):
     """Loads a hardware module."""
     ot.load_module(*args, **kwargs)
 
 @robust_task(retries=2, retry_delay_seconds=5)
-def move_labware(ot: OpenTrons, *args, **kwargs):
+def move_labware(ot, *args, **kwargs):
     """Moves labware with the gripper."""
     ot.move_labware_with_gripper(*args, **kwargs)
 
 @robust_task()
-def hs_latch_close(ot: OpenTrons, *args, **kwargs):
+def hs_latch_close(ot, *args, **kwargs):
     """Closes the Heater-Shaker latch."""
     ot.hs_latch_close(*args, **kwargs)
 
 @robust_task()
-def hs_latch_open(ot: OpenTrons, *args, **kwargs):
+def hs_latch_open(ot, *args, **kwargs):
     """Opens the Heater-Shaker latch."""
     ot.hs_latch_open(*args, **kwargs)
     
 @robust_task()
-def set_shake_speed(ot: OpenTrons, hs_nickname: str, rpm: int):
+def set_shake_speed(ot, hs_nickname: str, rpm: int):
     """Safely sets the shaker speed."""
     logger = get_run_logger()
     if not (200 <= rpm <= 3000):
@@ -52,27 +53,27 @@ def set_shake_speed(ot: OpenTrons, hs_nickname: str, rpm: int):
     ot.set_hs_shake_speed(nickname=hs_nickname, rpm=rpm)
 
 @robust_task()
-def delay(ot: OpenTrons, *args, **kwargs):
+def delay(ot, *args, **kwargs):
     """Pauses the protocol for a set duration."""
     ot.delay(*args, **kwargs)
 
 @robust_task(retries=2, retry_delay_seconds=5)
-def pick_up_tip(ot: OpenTrons, *args, **kwargs):
+def pick_up_tip(ot, *args, **kwargs):
     """Picks up a tip."""
     ot.pick_up_tip(*args, **kwargs)
 
 @robust_task()
-def aspirate(ot: OpenTrons, *args, **kwargs):
+def aspirate(ot, *args, **kwargs):
     """Aspirates liquid."""
     ot.aspirate(*args, **kwargs)
 
 @robust_task()
-def dispense(ot: OpenTrons, *args, **kwargs):
+def dispense(ot, *args, **kwargs):
     """Dispenses liquid."""
     ot.dispense(*args, **kwargs)
 
 @robust_task()
-def return_tip(ot: OpenTrons, *args, **kwargs):
+def return_tip(ot, *args, **kwargs):
     """Returns the tip to the rack."""
     ot.return_tip(*args, **kwargs)
 
@@ -97,7 +98,7 @@ def demo_flex_robust(simulation: bool = True):
     try:
         # --- 0. Connect to Robot ---
         logger.info("Connecting to the robot...")
-        ot = OpenTrons(host_alias="otflex_local", simulation=simulation)
+        ot = connect(host_alias="otflex_local", simulation=simulation)
         home_robot(ot)
 
         # --- 1. Load Labware, Modules, and Instruments (Setup - no tasks needed) ---

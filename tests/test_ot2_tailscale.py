@@ -22,11 +22,11 @@ import os
 import logging
 import pytest
 
-# Add the src directory to the path to allow importing matterlab_opentrons
+# Add the src directory to the path to allow importing opentrons_workflows
 # This is necessary for running tests directly without installing the package.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
-from matterlab_opentrons import connect
+from opentrons_workflows import connect
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')

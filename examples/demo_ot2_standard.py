@@ -6,7 +6,7 @@ This script shows how to use the library with the standard `@task` decorator
 from Prefect, for users who prefer not to use the custom `@robust_task`.
 """
 from prefect import flow, task, get_run_logger
-from src.matterlab_opentrons.OpenTronsControl import connect, RobotCommandError
+from src.opentrons_workflows.opentrons_control import connect, RobotCommandError
 
 # --- Task Definitions ---
 # For a standard workflow, we define tasks that wrap the robot methods.

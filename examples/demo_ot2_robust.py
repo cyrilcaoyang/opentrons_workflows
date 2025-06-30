@@ -1,59 +1,60 @@
 from prefect import flow, get_run_logger
 from pathlib import Path
 import json
-from src.matterlab_opentrons import OpenTrons, RobotCommandError, robust_task
+from src.opentrons_workflows.opentrons_control import connect, RobotCommandError
+from src.opentrons_workflows.prefect_tasks import robust_task
 
 # ======================================================================================================================
 # Define protocol-specific tasks using the @robust_task decorator
 # ======================================================================================================================
 
 @robust_task(retries=2, retry_delay_seconds=5)
-def home_robot(ot: OpenTrons):
+def home_robot(ot):
     """Homes the robot."""
     ot.home()
 
 @robust_task()
-def load_labware(ot: OpenTrons, *args, **kwargs):
+def load_labware(ot, *args, **kwargs):
     """Loads a piece of labware."""
     ot.load_labware(*args, **kwargs)
 
 @robust_task()
-def load_instrument(ot: OpenTrons, *args, **kwargs):
+def load_instrument(ot, *args, **kwargs):
     """Loads an instrument."""
     ot.load_instrument(*args, **kwargs)
 
 @robust_task(retries=2, retry_delay_seconds=5)
-def pick_up_tip(ot: OpenTrons, *args, **kwargs):
+def pick_up_tip(ot, *args, **kwargs):
     """Picks up a tip."""
     ot.pick_up_tip(*args, **kwargs)
 
 @robust_task()
-def aspirate(ot: OpenTrons, *args, **kwargs):
+def aspirate(ot, *args, **kwargs):
     """Aspirates liquid."""
     ot.aspirate(*args, **kwargs)
 
 @robust_task()
-def dispense(ot: OpenTrons, *args, **kwargs):
+def dispense(ot, *args, **kwargs):
     """Dispenses liquid."""
     ot.dispense(*args, **kwargs)
 
 @robust_task()
-def blow_out(ot: OpenTrons, *args, **kwargs):
+def blow_out(ot, *args, **kwargs):
     """Blows out liquid."""
     ot.blow_out(*args, **kwargs)
 
 @robust_task()
-def return_tip(ot: OpenTrons, *args, **kwargs):
+def return_tip(ot, *args, **kwargs):
     """Returns the tip to the rack."""
     ot.return_tip(*args, **kwargs)
 
 @robust_task(retries=2, retry_delay_seconds=5)
-def drop_tip(ot: OpenTrons, *args, **kwargs):
+def drop_tip(ot, *args, **kwargs):
     """Drops the tip in the trash."""
     ot.drop_tip(*args, **kwargs)
 
 @robust_task()
-def remove_labware(ot: OpenTrons, *args, **kwargs):
+def remove_labware(ot, *args, **kwargs):
     """Removes a labware from the deck."""
     ot.remove_labware(*args, **kwargs)
 
@@ -71,7 +72,7 @@ def demo_ot2_robust(simulation: bool = True):
     try:
         # --- 0. Connect to Robot ---
         logger.info("Connecting to the robot...")
-        ot = OpenTrons(host_alias="ot2_local", simulation=simulation)
+        ot = connect(host_alias="ot2_local", simulation=simulation)
         home_robot(ot)
 
         # --- 1. Load Labware Definitions ---

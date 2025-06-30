@@ -1,9 +1,9 @@
 from prefect import flow
-from src.matterlab_opentrons import OpenTrons
+from src.opentrons_workflows.opentrons_control import connect
 import time
 
 def demo_flex(simulation: bool = True):
-    ot=OpenTrons(host_alias="otflex", simulation=simulation)
+    ot=connect(host_alias="otflex", simulation=simulation)
     ot.home()
     plates=[
        {"nickname": "plate_96_1", "loadname": "corning_96_wellplate_360ul_flat", "location": "B3", "ot_default": True, "config": {}}, 

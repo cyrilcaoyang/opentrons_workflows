@@ -71,16 +71,15 @@ token_drive_v3.pickle
 
 # User-specific scripts
 # --------------------
-# Logs
+# Logs, except for the .placeholder file and the example notebook.
 logs/*
-# Ignore all files in the user_scripts directory...
-user_scripts/*
-# ...except for the .placeholder file and the example notebook.
 !user_scripts/interactive_protocol_development.ipynb
 
 # Generated labware definitions
 # -----------------------------
-generated_labware/
+# Ignore generated labware files, but not the directory itself
+user_scripts/generated_labware/*
+!user_scripts/generated_labware/.placeholder
 
 # Log files
 logs/

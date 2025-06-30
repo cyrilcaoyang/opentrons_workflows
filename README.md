@@ -13,7 +13,7 @@ The recommended way to build protocols is with the custom `@robust_task` decorat
 
 ## Key Library Components
 
-This library is organized into a few key modules within the `src/matterlab_opentrons` directory:
+This library is organized into a few key modules within the `src/opentrons_workflows` directory:
 
 -   **`opentrons_control.py`**: The main "engine" of the library. It contains the `OpenTronsBase`, `OT2`, and `Flex` classes that manage the robot state, and the `connect()` function which is the primary entry point for establishing a connection.
 -   **`sshclient.py`**: Handles the low-level details of the SSH connection, including command execution, file management, and automatic uploading of custom labware.
@@ -41,7 +41,7 @@ pip install -e .[dev]
 ```
 
 This single command installs everything you need:
-- The `matterlab_opentrons` library itself.
+- The `opentrons_workflows` library itself.
 - Core robot control libraries (`paramiko`, etc.).
 - The Prefect workflow engine.
 - Jupyter for interactive notebooks.
@@ -52,7 +52,7 @@ This single command installs everything you need:
 The primary entry point for the library is the `connect` function. It reads your configuration from `user_scripts/sshclient_settings.json` and returns a robot object that is ready to use.
 
 ```python
-from matterlab_opentrons import connect
+from opentrons_workflows import connect
 
 # The 'host_alias' must match a key in your settings file.
 # The connection is automatically closed when the 'with' block is exited.
@@ -114,7 +114,7 @@ LABWARE_DEFINITIONS = [
 ### 2. Generate the JSON File
 Run the generator script from the project's root directory:
 ```bash
-python src/matterlab_opentrons/labware_generator.py
+python src/opentrons_workflows/labware_generator.py
 ```
 This will create a new `.json` file in the `user_scripts/generated_labware/` directory.
 
@@ -133,7 +133,7 @@ This project uses `pytest` for testing. The tests are located in the `tests/` di
 
 1.  **Install Dependencies**: Make sure you have installed the development dependencies:
     ```bash
-    pip install -e .[dev]
+    pip install -e ."[dev]"
     ```
 
 2.  **Run Tests**: Run the test suite from the project's **root directory**. It is important to use the `python -m pytest` pattern to ensure you are using the `pytest` executable from your activated virtual environment.
