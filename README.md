@@ -37,15 +37,8 @@ This project uses `pyproject.toml` for dependency management. To install the pac
 ```bash
 # The '-e' flag installs in "editable" mode
 # The '[dev]' part installs the testing dependencies (like pytest)
-pip install -e .[dev]
+pip install -e ".[dev]"
 ```
-
-This single command installs everything you need:
-- The `opentrons_workflows` library itself.
-- Core robot control libraries (`paramiko`, etc.).
-- The Prefect workflow engine.
-- Jupyter for interactive notebooks.
-- Pytest for running tests.
 
 ## Connecting to a Robot
 
