@@ -1,29 +1,27 @@
 """
-opentrons_workflows
+Opentrons Workflows Package
 
-A Python package to control Opentrons robots, with integration for
-Prefect workflow orchestration.
+This package provides high-level interfaces for controlling Opentrons robots.
 """
 
-import logging
-
+from .opentrons_control import connect, OT2, Flex
 from .deck import Deck
-from .pipette import Instrument, Pipette
+from .pipette import Pipette
 from .gripper import Gripper
 from .labware_generator import LabwareGenerator
-from .opentrons_control import connect, OT2, Flex
-from .prefect_tasks import robust_task
+from .logging_config import get_logger, setup_default_logging, create_custom_logger
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+__version__ = "0.1.0"
 
 __all__ = [
     "connect",
     "OT2", 
     "Flex",
     "Deck",
-    "Instrument",
-    "Pipette",
+    "Pipette", 
     "Gripper",
     "LabwareGenerator",
-    "robust_task",
+    "get_logger",
+    "setup_default_logging", 
+    "create_custom_logger"
 ]

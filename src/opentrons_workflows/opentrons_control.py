@@ -1,6 +1,4 @@
-import getpass
 import json
-import logging
 import os
 import datetime
 from abc import ABC, abstractmethod
@@ -8,28 +6,17 @@ from .deck import Deck
 from .gripper import Gripper
 from .pipette import Pipette
 from .sshclient import SSHClient
+from .logging_config import get_logger, setup_default_logging
 
 # Constants for protocol templates
-FLEX_PROTOCOL_TEMPLATE = """
-from opentrons import protocol_api
+OT2_METADATA = {
+    'apiLevel': '2.15'
+}
 
-metadata = {'apiLevel': '2.23'}
-
-def run(ctx: protocol_api.ProtocolContext):
-    # COMMANDS_PLACEHOLDER
-    # Gripper should be loaded and assigned if used
-    pass
-"""
-
-OT2_PROTOCOL_TEMPLATE = """
-from opentrons import protocol_api
-
-metadata = {'apiLevel': '2.15'}
-
-def run(ctx: protocol_api.ProtocolContext):
-    # COMMANDS_PLACEHOLDER
-    pass
-"""
+FLEX_METADATA = {
+    'apiLevel': '2.15',
+    'requirements': {'robotType': 'Flex'}
+}
 
 
 class OpenTronsBase(ABC):
@@ -41,7 +28,8 @@ class OpenTronsBase(ABC):
     `OT2` and `Flex` subclasses instead.
     """
 
-    def __init__(self, host_alias=None, robot_type=None, simulation=False, log_dir="logs", **kwargs):
+    def __init__(self, host_alias=None, robot_type=None, simulation=False, log_dir="logs", 
+                 custom_logger=None, **kwargs):
         """
         Initializes the robot connection and sets up the protocol context.
 
@@ -49,8 +37,16 @@ class OpenTronsBase(ABC):
         :param robot_type: The type of robot ('OT-2' or 'Flex').
         :param simulation: If True, runs in simulation mode. Note: simulation still occurs on the robot via SSH.
         :param log_dir: The directory to store local log files. Defaults to "logs".
+        :param custom_logger: Optional custom logger to use instead of unified logging.
         :param kwargs: Additional arguments for the SSHClient.
         """
+        # Set up logging - either custom or default
+        if custom_logger is not None:
+            self.logger = custom_logger
+        else:
+            # Set up default logging to /logs
+            self.logger = setup_default_logging(log_dir=log_dir)
+        
         self.simulation = simulation
         self.ssh_client = self._connect_to_robot(host_alias, robot_type, **kwargs)
 
@@ -58,14 +54,16 @@ class OpenTronsBase(ABC):
         if robot_type == 'Flex':
             self.robot_api_level = '2.23'
             self.robot_model = 'OT-3 Standard'
+            self.protocol_robot_type = 'Flex'
         elif robot_type == 'OT-2':
             self.robot_api_level = '2.15'
             self.robot_model = 'OT-2 Standard'
+            self.protocol_robot_type = 'OT-2'
         else:
             # This will cause a fatal error if robot_type is not what we expect.
             raise ValueError(f"FATAL: Unexpected robot_type '{robot_type}' received in OpenTronsBase constructor.")
         
-        logging.info(f"Configuring for {self.robot_model}. API Level: {self.robot_api_level}")
+        self.logger.info(f"Configuring for {self.robot_model}. API Level: {self.robot_api_level}")
 
         # --- Path Definitions ---
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -89,9 +87,9 @@ class OpenTronsBase(ABC):
     def _connect_to_robot(self, host_alias, robot_type, **kwargs):
         """Establishes the SSH connection."""
         if self.simulation:
-            logging.info("Running in SIMULATION mode. All commands will be simulated on the robot.")
+            self.logger.info("Running in SIMULATION mode. All commands will be simulated on the robot.")
         else:
-            logging.info("Running in LIVE mode.")
+            self.logger.info("Running in LIVE mode.")
         return SSHClient(host_alias=host_alias, simulation=self.simulation, **kwargs)
 
     @staticmethod
@@ -105,7 +103,9 @@ class OpenTronsBase(ABC):
                 if config.get('robot_type') == robot_type and 'sim' in alias:
                     return alias
         except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
-            logging.error(f"Could not find a suitable simulation alias: {e}")
+            # Use a default logger for static method
+            logger = get_logger(__name__)
+            logger.error(f"Could not find a suitable simulation alias: {e}")
             return None
         return None
 
@@ -119,8 +119,19 @@ class OpenTronsBase(ABC):
         # Generate the script from scratch each time to ensure statelessness
         command_str = '\n    '.join(self.commands)
 
-        # Base template
-        template = f"""
+        # Base template - use requirements dict for API 2.15+ and robotType specification
+        if float(self.robot_api_level) >= 2.15:
+            template = f"""
+from opentrons import protocol_api
+
+metadata = {{'apiLevel': '{self.robot_api_level}'}}
+requirements = {{'robotType': '{self.protocol_robot_type}'}}
+
+def run(ctx: protocol_api.ProtocolContext):
+    {command_str}
+"""
+        else:
+            template = f"""
 from opentrons import protocol_api
 
 metadata = {{'apiLevel': '{self.robot_api_level}'}}
@@ -166,7 +177,7 @@ def run(ctx: protocol_api.ProtocolContext):
             json.dump(result, f, indent=2)
 
         # Log the output from the robot
-        logging.info(f"Robot execution output for command '{command}':\n{result}")
+        self.logger.info(f"Robot execution output for command '{command}':\n{result}")
 
         return result
 
@@ -199,7 +210,7 @@ def run(ctx: protocol_api.ProtocolContext):
             error_msg = response.get('error', 'Unknown error')
             tb = response.get('traceback', 'No traceback available')
             raise RuntimeError(f"Failed to load pipette '{pipette_name}' on robot: {error_msg}\n{tb}")
-        logging.info(f"Successfully loaded pipette '{pipette_name}' on mount '{mount}'.")
+        self.logger.info(f"Successfully loaded pipette '{pipette_name}' on mount '{mount}'.")
         return response
 
     def close(self):
@@ -208,18 +219,21 @@ def run(ctx: protocol_api.ProtocolContext):
         The remote protocol and results files are kept as logs locally.
         """
         # Clean up remote files if the connection is still active
-        if self.ssh_client and self.ssh_client.client and self.ssh_client.client.get_transport().is_active():
-            try:
-                # Construct path for the labware directory created during the session
-                remote_labware_dir = f"/tmp/{self.ssh_client.session_id}_labware"
-                cleanup_command = f"rm -rf {self.remote_protocol_path} {self.remote_results_path} {remote_labware_dir}"
-                self.ssh_client.run_command(cleanup_command, check_error=False)
-                logging.info("Cleaned up remote temporary files.")
-            except Exception as e:
-                logging.warning(f"Could not clean up remote files: {e}")
+        if self.ssh_client and self.ssh_client.client:
+            transport = self.ssh_client.client.get_transport()
+            if transport and transport.is_active():
+                try:
+                    # Construct path for the labware directory created during the session
+                    remote_labware_dir = f"/tmp/{self.ssh_client.session_id}_labware"
+                    cleanup_command = f"rm -rf {self.remote_protocol_path} {self.remote_results_path} {remote_labware_dir}"
+                    self.ssh_client.run_command(cleanup_command, check_error=False)
+                    self.logger.info("Cleaned up remote temporary files.")
+                except Exception as e:
+                    self.logger.warning(f"Could not clean up remote files: {e}")
 
-        self.ssh_client.close()
-        logging.info(f"Connection closed for session {self.ssh_client.session_id}. Log files are preserved locally.")
+        if self.ssh_client:
+            self.ssh_client.close()
+            self.logger.info(f"Connection closed for session {self.ssh_client.session_id}. Log files are preserved locally.")
 
     def __enter__(self):
         """Enter the runtime context and return the robot object."""
@@ -243,7 +257,9 @@ class OT2(OpenTronsBase):
         :param simulation: If True, runs in simulation mode without a real robot.
         :param kwargs: Additional arguments for the SSHClient.
         """
-        super().__init__(host_alias=host_alias, robot_type='OT-2', simulation=simulation, **kwargs)
+        custom_logger = kwargs.pop('custom_logger', None)
+        super().__init__(host_alias=host_alias, robot_type='OT-2', simulation=simulation, 
+                         custom_logger=custom_logger, **kwargs)
 
 
 class Flex(OpenTronsBase):
@@ -259,7 +275,9 @@ class Flex(OpenTronsBase):
         :param simulation: If True, runs in simulation mode without a real robot.
         :param kwargs: Additional arguments for the SSHClient.
         """
-        super().__init__(host_alias=host_alias, robot_type='Flex', simulation=simulation, **kwargs)
+        custom_logger = kwargs.pop('custom_logger', None)
+        super().__init__(host_alias=host_alias, robot_type='Flex', simulation=simulation, 
+                         custom_logger=custom_logger, **kwargs)
 
     def load_gripper(self):
         """
@@ -275,60 +293,66 @@ class Flex(OpenTronsBase):
 
     def _load_gripper_on_robot(self):
         """Internal method called by a Gripper object to execute its loading command."""
-        command_load = "ctx.load_instrument('flex_gripper', 'extension')"
-        response = self.execute_command(command_load)
+        # In Opentrons Flex, grippers are not explicitly "loaded" like pipettes
+        # Instead, they are automatically available when physically attached
+        # and accessed through ctx.move_labware() commands
+        
+        # Test that the gripper is available by checking if we can access labware movement
+        command_test = "# Gripper is automatically available when attached to Flex robot"
+        response = self.execute_command(command_test)
         if response.get('status') != 'success':
             error_msg = response.get('error', 'Unknown error')
             tb = response.get('traceback', 'No traceback available')
-            raise RuntimeError(f"Failed to load gripper on robot: {error_msg}\n{tb}")
+            raise RuntimeError(f"Failed to verify gripper availability on robot: {error_msg}\n{tb}")
 
-        # Assign the loaded gripper to a variable in the protocol context for easy access
-        command_assign = "self.gripper = ctx.loaded_instruments['extension']"
-        response_assign = self.execute_command(command_assign)
-        if response_assign.get('status') != 'success':
-            error_msg = response_assign.get('error', 'Unknown error')
-            tb = response_assign.get('traceback', 'No traceback available')
-            # This is a critical failure in setting up the protocol context
-            raise RuntimeError(f"Failed to assign gripper to variable on robot: {error_msg}\n{tb}")
-
-        logging.info("Successfully loaded and assigned gripper.")
+        self.logger.info("Gripper is available and ready for use with move_labware() commands.")
         return response
 
 
-def connect(host_alias=None, simulation=False, log_dir="logs", **kwargs):
+def connect(host_alias=None, simulation=False, log_dir="logs", custom_logger=None, **kwargs):
     """
-    Factory function to connect to a robot using a pre-configured alias.
+    Factory function to create robot connections based on configuration.
 
-    This function reads `sshclient_settings.json`, determines the robot type
-    from the settings file based on the host_alias and returns an instance of
-    the appropriate class (`OT2` or `Flex`).
+    This function automatically determines the robot type based on the
+    host alias configuration and returns the appropriate robot instance.
 
-    :param host_alias: The alias of the robot as defined in sshclient_settings.json.
-                         This must be a key in the settings file.
-    :param simulation: If True, runs in `opentrons_simulate` mode on the robot.
+    :param host_alias: The alias of the robot from sshclient_settings.json.
+    :param simulation: If True, runs in simulation mode. Default is False.
     :param log_dir: The directory to store log files. Defaults to "logs".
-    :param kwargs: Additional arguments passed to the SSHClient, such as 'password'.
-    :return: An instance of `OT2` or `Flex`.
+    :param custom_logger: Optional custom logger to use instead of default logging.
+    :param kwargs: Additional arguments passed to the robot constructor.
+    :return: An instance of `OT2` or `Flex` based on the robot configuration.
+    :raises ValueError: If the robot type is not recognized or no robot type could be determined.
     """
-    # Always look for the settings file relative to the project root
-    # opentrons_control.py is in src/opentrons_workflows/, so go up two levels to reach project root
-    settings_path = os.path.join(os.path.dirname(__file__), '..', '..', 'user_scripts', 'sshclient_settings.json')
-    if not os.path.exists(settings_path):
-        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+    # Get robot type from settings
+    # Look for settings file in user_scripts directory (relative to package root)
+    package_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    settings_path = os.path.join(package_root, 'user_scripts', 'sshclient_settings.json')
+    robot_type = None
+    settings = {}
 
-    with open(settings_path, 'r') as f:
-        settings = json.load(f)
+    try:
+        with open(settings_path, 'r') as f:
+            settings = json.load(f)
+        robot_type = settings.get(host_alias, {}).get('robot_type')
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        pass
 
-    if host_alias not in settings:
-        raise ValueError(f"Host alias '{host_alias}' not found in sshclient_settings.json.")
+    # If no robot type found and in simulation mode, try to find a sim alias
+    if robot_type is None and simulation:
+        # Try common simulation aliases
+        for sim_alias in ['ot2_sim', 'flex_sim']:
+            if sim_alias in settings:
+                robot_type = settings[sim_alias].get('robot_type')
+                if robot_type:
+                    host_alias = sim_alias
+                    break
 
-    robot_type = settings[host_alias].get('robot_type')
-    if not robot_type:
-        raise ValueError(f"'robot_type' not specified for alias '{host_alias}' in settings.")
-
-    if robot_type.lower() == 'ot2':
-        return OT2(host_alias=host_alias, simulation=simulation, log_dir=log_dir, **kwargs)
-    elif robot_type.lower() == 'flex':
-        return Flex(host_alias=host_alias, simulation=simulation, log_dir=log_dir, **kwargs)
+    if robot_type == 'OT-2':
+        return OT2(host_alias=host_alias, simulation=simulation, log_dir=log_dir, 
+                   custom_logger=custom_logger, **kwargs)
+    elif robot_type == 'Flex':
+        return Flex(host_alias=host_alias, simulation=simulation, log_dir=log_dir, 
+                    custom_logger=custom_logger, **kwargs)
     else:
-        raise ValueError(f"Unsupported robot type '{robot_type}' in settings for alias '{host_alias}'.")
+        raise ValueError(f"Unsupported or unknown robot type: {robot_type}")

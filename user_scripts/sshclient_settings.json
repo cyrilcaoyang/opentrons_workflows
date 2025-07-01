@@ -3,13 +3,13 @@
     "hostname": "192.168.254.50",
     "username": "root",
     "key_file_path": "~/.ssh/ot2_ssh_key",
-    "robot_type": "OT2"
+    "robot_type": "OT-2"
   },
   "ot2_tailscale": {
     "hostname": "100.64.254.90",
     "username": "root",
     "key_file_path": "~/.ssh/ot2_ssh_key",
-    "robot_type": "OT2"
+    "robot_type": "OT-2"
   },
   "otflex_local": {
     "hostname": "192.168.254.20",

@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
-import logging
 from typing import Union, Dict, List, Optional
 import ast
+from .logging_config import get_logger
 
 
 class LabwareGenerator:
@@ -15,7 +15,7 @@ class LabwareGenerator:
 
     Attributes:
         MAX_DIMENSIONS (Dict[str, float]): The maximum allowed dimensions for labware.
-        logger (logging.Logger): A logger for recording messages.
+        logger: A logger for recording messages.
         template (Dict): The base template for the labware definition.
         design (Dict): The user-provided dictionary describing the labware.
     """
@@ -34,8 +34,7 @@ class LabwareGenerator:
             well_plate_design (Dict): A dictionary containing the specifications
                                       for the labware to be generated.
         """
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel("INFO")
+        self.logger = get_logger(__name__)
         self._load_template()
         self.design = well_plate_design
         self._row_count = 0

@@ -1,6 +1,6 @@
 import os
 import json
-import logging
+from .logging_config import get_logger
 
 
 class Well:
@@ -81,7 +81,8 @@ class Deck:
         # The local check is primarily for providing a better error message early.
         # The robot is the final authority on whether a labware can be loaded.
         if load_name not in self._labware_definitions:
-            logging.warning(f"Labware '{load_name}' not found in local custom definitions. Assuming it is a standard labware.")
+            logger = get_logger(__name__)
+            logger.warning(f"Labware '{load_name}' not found in local custom definitions. Assuming it is a standard labware.")
         
         definition = self._labware_definitions.get(load_name, {"loadName": load_name, "wells": {}})
 
