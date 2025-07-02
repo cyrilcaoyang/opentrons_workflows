@@ -21,6 +21,16 @@ This library is organized into a few key modules within the `src/opentrons_workf
 -   **`prefect_tasks.py`**: Provides a collection of pre-built, robust Prefect tasks for common robot actions (`aspirate_task`, `dispense_task`, etc.).
 -   **`labware_generator.py`**: A standalone script to generate new custom labware JSON definitions.
 
+## Web UI
+
+A web-based dashboard is available for real-time robot visualization and control. See [`src/opentrons-ui/README.md`](src/opentrons-ui/README.md) for full documentation.
+
+**Quick Start:**
+```bash
+python user_scripts/start_ui.py
+# Open http://localhost:8080
+```
+
 ## Project Structure
 
 All user-facing scripts, notebooks, and configurations are located in the `user_scripts/` directory, keeping the `src/` directory clean for core library code.
