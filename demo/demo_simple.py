@@ -4,20 +4,20 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from opentrons_workflows import OpenTrons
+from opentrons_workflows import OpentronsControl
 
 
 def demo_simple():
-    """Simple demo showing OpenTrons API usage (requires robot connection)"""
-    print("🤖 OpenTrons Workflows Demo")
+    """Simple demo showing OpentronsControl API usage (requires robot connection)"""
+    print("🤖 Opentrons Workflows Demo")
     print("=" * 40)
     print()
     
-    print("📋 Available OpenTrons Class Methods:")
+    print("📋 Available OpentronsControl Class Methods:")
     print("=" * 40)
     
     # Show available methods
-    methods = [method for method in dir(OpenTrons) if not method.startswith('_')]
+    methods = [method for method in dir(OpentronsControl) if not method.startswith('_')]
     for method in methods:
         print(f"  • {method}")
     
@@ -27,7 +27,7 @@ def demo_simple():
     
     example_code = '''
 # Connect to robot
-ot = OpenTrons(host_alias="ot2", password="your_password", simulation=False)
+ot = OpentronsControl(host_alias="ot2", password="your_password", simulation=False)
 
 # Load labware
 labware = {

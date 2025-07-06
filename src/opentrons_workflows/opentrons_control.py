@@ -3,7 +3,7 @@ import os
 from typing import Dict
 
 
-class OpenTrons:
+class OpentronsControl:
     def __init__(self, host_alias:str = None, password="", simulation=False):
         self._connect(host_alias, password)
         self._get_protocol(simulation)

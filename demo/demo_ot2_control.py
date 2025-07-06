@@ -4,7 +4,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from opentrons_workflows import OpenTrons
+from opentrons_workflows import OpentronsControl
 import json
 import time
 
@@ -14,7 +14,7 @@ def demo_ot2(simulation: bool = True):
     print("🤖 Starting OT2 Demo")
     print("=" * 30)
     
-    ot = OpenTrons(host_alias="ot2", password="accelerate", simulation=simulation)
+    ot = OpentronsControl(host_alias="ot2", password="accelerate", simulation=simulation)
     ot.home()
 
     # Example usage with custom labware (commented out for basic demo)

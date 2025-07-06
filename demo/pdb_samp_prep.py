@@ -1,9 +1,9 @@
 from prefect import flow
-from opentrons_workflows import OpenTrons
+from opentrons_workflows import OpentronsControl
 
 @flow(log_prints=True)
 def demo_ot2(simulation:bool = True):
-    ot = OpenTrons(host_alias="ot2", password = "accelerate", simulation=simulation)
+    ot = OpentronsControl(host_alias="ot2", password = "accelerate", simulation=simulation)
     ot.home()
     with open(Path(r"C:\Users\aag\Downloads\matterlab_24_vialplate_3700ul.json"), "r") as f:
         plate_1 = json.load(f)

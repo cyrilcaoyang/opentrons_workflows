@@ -4,7 +4,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from opentrons_workflows import OpenTrons
+from opentrons_workflows import OpentronsControl
 import time
 
 
@@ -13,7 +13,7 @@ def demo_flex(simulation: bool = True):
     print("🤖 Starting Flex Demo")
     print("=" * 30)
     
-    ot = OpenTrons(host_alias="otflex", password="accelerate", simulation=simulation)
+    ot = OpentronsControl(host_alias="otflex", password="accelerate", simulation=simulation)
     ot.home()
     
     plates = [
