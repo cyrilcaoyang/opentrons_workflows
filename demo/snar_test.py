@@ -1,7 +1,7 @@
 from prefect import flow
 from pathlib import Path
 import json
-from matterlab_opentrons import OpenTrons
+from opentrons_workflows import OpenTrons
 
 @flow(log_prints=True)
 def demo_ot2(simulation:bool = True):

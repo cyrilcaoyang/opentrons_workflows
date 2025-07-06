@@ -5,7 +5,7 @@ requires = ["setuptools>=61.0"]  # Specify setuptools as the build backend
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "matterlab_opentrons"              # The distribution name on PyPI
+name = "opentrons_workflows"              # The distribution name on PyPI
 version = "0.1.0"                         # Initial version - increment as you release updates
 authors = [
     { name="Han Hao", email="clascclon@gmail.com" }, # Change placeholder
@@ -37,4 +37,4 @@ where = ["src"]  # Look for packages in the 'src' directory
 
 # If you want to include non-code files (e.g., data files) within your package:
 # [tool.setuptools.package-data]
-# "matterlab_opentrons" = ["*.yaml", "data/*"] # Example: include yaml files or files in a data/ subdir
+# "opentrons_workflows" = ["*.yaml", "data/*"] # Example: include yaml files or files in a data/ subdir
