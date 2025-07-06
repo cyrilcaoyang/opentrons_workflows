@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opentrons_workflows"              # The distribution name on PyPI
-version = "0.1.0"                         # Initial version - increment as you release updates
+version = "0.2.0"                         # Initial version - increment as you release updates
 authors = [
     { name="Han Hao", email="clascclon@gmail.com" }, # Change placeholder
 ]

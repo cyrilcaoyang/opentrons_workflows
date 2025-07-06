@@ -4,16 +4,15 @@ from .opentrons_sshclient import SSHClient
 
 # State tracking classes (leverages robot's built-in state tracking)
 from .opentrons_states import (
-    PipetteState,
-    WellState,
-    LabwareState,
-    DeckState,
-    ModuleState,
-    check_pipette_state,
-    check_well_state,
-    check_labware_state,
-    check_deck_state,
-    check_module_state
+    get_deck_state,
+    get_labware_state,
+    get_pipette_state,
+    get_well_state,
+    get_module_state,
+    get_all_states,
+    print_deck_summary,
+    print_labware_summary,
+    print_pipette_summary
 )
 
 # Utilities
@@ -26,19 +25,18 @@ __all__ = [
     "OpentronsControl",
     "SSHClient",
     
-    # State tracking classes (robot's built-in state)
-    "PipetteState",
-    "WellState", 
-    "LabwareState",
-    "DeckState",
-    "ModuleState",
+    # State tracking functions (simple dict/list returns)
+    "get_deck_state",
+    "get_labware_state",
+    "get_pipette_state",
+    "get_well_state",
+    "get_module_state",
+    "get_all_states",
     
-    # Convenience state check functions
-    "check_pipette_state",
-    "check_well_state",
-    "check_labware_state", 
-    "check_deck_state",
-    "check_module_state",
+    # Pretty printing functions
+    "print_deck_summary",
+    "print_labware_summary",
+    "print_pipette_summary",
     
     # Utilities
     "LabwareGenerator",

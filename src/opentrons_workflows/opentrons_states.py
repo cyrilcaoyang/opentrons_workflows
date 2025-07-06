@@ -1,448 +1,476 @@
 """
 Opentrons State Tracking Module
 
-This module provides convenient classes to query and monitor the robot's built-in state tracking.
-The Opentrons API already tracks all states - this module just provides easier access to that information.
+This module provides simple access to the robot's built-in state tracking using
+official Opentrons API structures. Perfect for UIs and real-time monitoring.
 
-Based on Opentrons API v2 state tracking capabilities:
-- Tip tracking via has_tip properties
-- Liquid volume tracking via current_liquid_volume
-- Deck state via protocol.deck
-- Pipette state via current_volume, has_tip
-- Module states via their specific properties
+Structure:
+- Deck: Dictionary of slots -> labware/modules
+- Labware: List of wells with properties
+- Wells: Simple dictionaries with all properties
+- Pipettes: Simple dictionaries with state info
+
+All functions return simple Python data structures (dicts, lists) for easy UI integration.
 """
 
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Any, Optional
 import logging
 from datetime import datetime
 
 
-class PipetteState:
-    """Query pipette state from the robot's built-in tracking."""
+def get_deck_state(protocol_context) -> Dict[str, Any]:
+    """
+    Get complete deck state as a simple dictionary.
     
-    def __init__(self, pipette_context):
-        """
-        Initialize with an Opentrons InstrumentContext.
-        
-        :param pipette_context: opentrons.protocol_api.InstrumentContext
-        """
-        self.pipette = pipette_context
-        self.logger = logging.getLogger(f"state.{pipette_context.name}")
-    
-    @property
-    def has_tip(self) -> bool:
-        """Check if pipette has a tip attached."""
-        return self.pipette.has_tip
-    
-    @property
-    def current_volume(self) -> float:
-        """Get current liquid volume in pipette (µL)."""
-        return self.pipette.current_volume
-    
-    @property
-    def max_volume(self) -> float:
-        """Get pipette maximum volume capacity (µL)."""
-        return self.pipette.max_volume
-    
-    @property
-    def min_volume(self) -> float:
-        """Get pipette minimum volume (µL)."""
-        return self.pipette.min_volume
-    
-    @property
-    def starting_tip(self):
-        """Get the next tip position the pipette will pick up from."""
-        return self.pipette.starting_tip
-    
-    @property
-    def name(self) -> str:
-        """Get pipette name."""
-        return self.pipette.name
-    
-    def get_status_summary(self) -> Dict[str, Any]:
-        """Get comprehensive pipette status."""
-        return {
-            'name': self.name,
-            'has_tip': self.has_tip,
-            'current_volume': self.current_volume,
-            'max_volume': self.max_volume,
-            'min_volume': self.min_volume,
-            'starting_tip': str(self.starting_tip) if self.starting_tip else None,
-            'available_volume': self.max_volume - self.current_volume,
-            'volume_percentage': (self.current_volume / self.max_volume) * 100,
-            'timestamp': datetime.now().isoformat()
+    Returns:
+        {
+            'slots': {
+                '1': {'type': 'labware', 'name': 'plate_name', 'load_name': '...'},
+                '2': {'type': 'module', 'name': 'temp_mod', 'status': '...'},
+                '3': None,  # Empty slot
+                ...
+            },
+            'loaded_labwares': {...},
+            'loaded_modules': {...},
+            'loaded_instruments': {...},
+            'timestamp': '...'
         }
+    """
+    logger = logging.getLogger("deck_state")
     
-    def log_status(self, message: str = "Pipette status"):
-        """Log current pipette status."""
-        status = self.get_status_summary()
-        self.logger.info(f"{message}: {status}")
-
-
-class WellState:
-    """Query well state from the robot's built-in tracking."""
-    
-    def __init__(self, well_context):
-        """
-        Initialize with an Opentrons WellCore.
-        
-        :param well_context: opentrons.protocol_api.Well
-        """
-        self.well = well_context
-        self.logger = logging.getLogger(f"state.{well_context.well_name}")
-    
-    @property
-    def current_liquid_volume(self) -> float:
-        """Get current liquid volume in well (µL). Requires liquid initialization."""
+    # Get all 12 deck slots
+    slots = {}
+    for slot_num in range(1, 13):
+        slot = str(slot_num)
         try:
-            return self.well.current_liquid_volume
-        except Exception as e:
-            self.logger.warning(f"Could not get liquid volume for {self.well.well_name}: {e}")
-            return 0.0
+            # Check if something is loaded in this slot
+            deck_item = protocol_context.deck[slot]
+            if deck_item is not None:
+                # Determine what type of item it is
+                if hasattr(deck_item, 'load_name'):  # Labware
+                    slots[slot] = {
+                        'type': 'labware',
+                        'name': getattr(deck_item, 'name', deck_item.load_name),
+                        'load_name': deck_item.load_name,
+                        'is_tiprack': getattr(deck_item, 'is_tiprack', False),
+                        'uri': getattr(deck_item, 'uri', None)
+                    }
+                elif hasattr(deck_item, 'module_name'):  # Module
+                    slots[slot] = {
+                        'type': 'module',
+                        'name': getattr(deck_item, 'name', 'Unknown Module'),
+                        'module_name': deck_item.module_name,
+                        'status': getattr(deck_item, 'status', 'unknown'),
+                        'serial_number': getattr(deck_item, 'serial_number', None)
+                    }
+                else:
+                    slots[slot] = {'type': 'unknown', 'object': str(deck_item)}
+            else:
+                slots[slot] = None  # Empty slot
+        except (KeyError, AttributeError):
+            slots[slot] = None  # Empty slot
     
-    @property
-    def current_liquid_height(self) -> float:
-        """Get current liquid height in well (mm). Requires liquid initialization."""
-        try:
-            return self.well.current_liquid_height
-        except Exception as e:
-            self.logger.warning(f"Could not get liquid height for {self.well.well_name}: {e}")
-            return 0.0
+    # Get loaded items
+    loaded_labwares = {}
+    try:
+        for slot, labware in protocol_context.loaded_labwares.items():
+            loaded_labwares[slot] = {
+                'name': getattr(labware, 'name', labware.load_name),
+                'load_name': labware.load_name,
+                'is_tiprack': getattr(labware, 'is_tiprack', False),
+                'well_count': len(labware.wells()) if hasattr(labware, 'wells') else 0
+            }
+    except AttributeError:
+        loaded_labwares = {}
     
-    @property
-    def has_tip(self) -> bool:
-        """Check if this tip rack well has an unused tip (for tip racks only)."""
-        try:
-            return self.well.has_tip
-        except AttributeError:
-            # Not a tip rack well
-            return False
+    loaded_modules = {}
+    try:
+        for slot, module in protocol_context.loaded_modules.items():
+            loaded_modules[slot] = {
+                'name': getattr(module, 'name', 'Unknown'),
+                'module_name': getattr(module, 'module_name', 'unknown'),
+                'status': getattr(module, 'status', 'unknown')
+            }
+    except AttributeError:
+        loaded_modules = {}
     
-    @property
-    def max_volume(self) -> float:
-        """Get well maximum volume capacity (µL)."""
-        return self.well.max_volume
+    loaded_instruments = {}
+    try:
+        for mount, instrument in protocol_context.loaded_instruments.items():
+            loaded_instruments[mount] = {
+                'name': instrument.name,
+                'max_volume': instrument.max_volume,
+                'min_volume': instrument.min_volume,
+                'has_tip': instrument.has_tip,
+                'current_volume': instrument.current_volume
+            }
+    except AttributeError:
+        loaded_instruments = {}
     
-    @property
-    def diameter(self) -> Optional[float]:
-        """Get well diameter (mm) for circular wells."""
-        return self.well.diameter
+    return {
+        'slots': slots,
+        'loaded_labwares': loaded_labwares,
+        'loaded_modules': loaded_modules,
+        'loaded_instruments': loaded_instruments,
+        'total_slots': 12,
+        'occupied_slots': len([s for s in slots.values() if s is not None]),
+        'empty_slots': len([s for s in slots.values() if s is None]),
+        'timestamp': datetime.now().isoformat()
+    }
+
+
+def get_labware_state(labware_context) -> Dict[str, Any]:
+    """
+    Get complete labware state as a simple dictionary with list of wells.
     
-    @property
-    def depth(self) -> float:
-        """Get well depth (mm)."""
-        return self.well.depth
-    
-    @property
-    def well_name(self) -> str:
-        """Get well name (e.g., 'A1')."""
-        return self.well.well_name
-    
-    def get_status_summary(self) -> Dict[str, Any]:
-        """Get comprehensive well status."""
-        return {
-            'well_name': self.well_name,
-            'current_liquid_volume': self.current_liquid_volume,
-            'current_liquid_height': self.current_liquid_height,
-            'max_volume': self.max_volume,
-            'has_tip': self.has_tip,
-            'diameter': self.diameter,
-            'depth': self.depth,
-            'fill_percentage': (self.current_liquid_volume / self.max_volume) * 100 if self.max_volume > 0 else 0,
-            'timestamp': datetime.now().isoformat()
+    Returns:
+        {
+            'info': {'name': '...', 'load_name': '...', 'is_tiprack': bool, ...},
+            'wells': [
+                {'name': 'A1', 'max_volume': 200, 'has_tip': True, ...},
+                {'name': 'A2', 'max_volume': 200, 'has_tip': False, ...},
+                ...
+            ],
+            'dimensions': {'rows': 8, 'columns': 12},
+            'summary': {'total_wells': 96, 'available_tips': 95, ...}
         }
+    """
+    logger = logging.getLogger(f"labware_state.{labware_context.load_name}")
     
-    def log_status(self, message: str = "Well status"):
-        """Log current well status."""
-        status = self.get_status_summary()
-        self.logger.info(f"{message}: {status}")
-
-
-class LabwareState:
-    """Query labware state from the robot's built-in tracking."""
+    # Basic labware info
+    info = {
+        'name': getattr(labware_context, 'name', labware_context.load_name),
+        'load_name': labware_context.load_name,
+        'parent': str(labware_context.parent),
+        'is_tiprack': getattr(labware_context, 'is_tiprack', False),
+        'uri': getattr(labware_context, 'uri', None),
+        'tip_length': getattr(labware_context, 'tip_length', None)
+    }
     
-    def __init__(self, labware_context):
-        """
-        Initialize with an Opentrons LabwareCore.
-        
-        :param labware_context: opentrons.protocol_api.Labware
-        """
-        self.labware = labware_context
-        self.logger = logging.getLogger(f"state.{labware_context.load_name}")
+    # Get all wells as a simple list
+    wells = []
+    available_tips = 0
+    wells_with_liquid = 0
     
-    @property
-    def load_name(self) -> str:
-        """Get labware load name."""
-        return self.labware.load_name
+    try:
+        for well in labware_context.wells():
+            well_data = {
+                'name': well.well_name,
+                'display_name': getattr(well, 'display_name', well.well_name),
+                'max_volume': well.max_volume,
+                'depth': well.depth,
+                'diameter': getattr(well, 'diameter', None),
+                'shape': getattr(well, 'shape', 'unknown')
+            }
+            
+            # Add tip status for tip racks
+            if info['is_tiprack']:
+                has_tip = getattr(well, 'has_tip', True)
+                well_data['has_tip'] = has_tip
+                if has_tip:
+                    available_tips += 1
+            
+            # Add liquid volume if available
+            try:
+                liquid_volume = well.current_liquid_volume
+                well_data['current_liquid_volume'] = liquid_volume
+                if liquid_volume > 0:
+                    wells_with_liquid += 1
+            except:
+                well_data['current_liquid_volume'] = 0
+            
+            # Add position info
+            try:
+                position = well.geometry.position
+                well_data['position'] = {'x': position.x, 'y': position.y, 'z': position.z}
+            except:
+                well_data['position'] = None
+            
+            wells.append(well_data)
     
-    @property
-    def parent(self) -> str:
-        """Get parent location (deck slot or module)."""
-        return str(self.labware.parent)
+    except Exception as e:
+        logger.warning(f"Error getting wells for {labware_context.load_name}: {e}")
+        wells = []
     
-    def get_all_wells_status(self) -> List[Dict[str, Any]]:
-        """Get status of all wells in this labware."""
-        wells_status = []
-        for well in self.labware.wells():
-            well_state = WellState(well)
-            wells_status.append(well_state.get_status_summary())
-        return wells_status
-    
-    def get_wells_with_liquid(self) -> List[Dict[str, Any]]:
-        """Get only wells that have liquid."""
-        wells_with_liquid = []
-        for well in self.labware.wells():
-            well_state = WellState(well)
-            if well_state.current_liquid_volume > 0:
-                wells_with_liquid.append(well_state.get_status_summary())
-        return wells_with_liquid
-    
-    def get_available_tips(self) -> List[str]:
-        """Get list of tip positions that have tips (for tip racks only)."""
-        available_tips = []
-        for well in self.labware.wells():
-            well_state = WellState(well)
-            if well_state.has_tip:
-                available_tips.append(well.well_name)
-        return available_tips
-    
-    def get_used_tips(self) -> List[str]:
-        """Get list of tip positions that have been used (for tip racks only)."""
-        used_tips = []
-        for well in self.labware.wells():
-            well_state = WellState(well)
-            if not well_state.has_tip:
-                used_tips.append(well.well_name)
-        return used_tips
-    
-    def get_status_summary(self) -> Dict[str, Any]:
-        """Get comprehensive labware status."""
-        wells_status = self.get_all_wells_status()
-        wells_with_liquid = len([w for w in wells_status if w['current_liquid_volume'] > 0])
-        available_tips = len([w for w in wells_status if w['has_tip']])
-        
-        return {
-            'load_name': self.load_name,
-            'parent': self.parent,
-            'total_wells': len(wells_status),
-            'wells_with_liquid': wells_with_liquid,
-            'available_tips': available_tips,
-            'used_tips': len(wells_status) - available_tips,
-            'timestamp': datetime.now().isoformat()
+    # Calculate dimensions
+    try:
+        rows = labware_context.rows()
+        columns = labware_context.columns()
+        dimensions = {
+            'rows': len(rows),
+            'columns': len(columns),
+            'total_wells': len(wells)
         }
+    except:
+        dimensions = {'rows': 0, 'columns': 0, 'total_wells': len(wells)}
     
-    def log_status(self, message: str = "Labware status"):
-        """Log current labware status."""
-        status = self.get_status_summary()
-        self.logger.info(f"{message}: {status}")
+    # Summary stats
+    summary = {
+        'total_wells': len(wells),
+        'wells_with_liquid': wells_with_liquid,
+        'available_tips': available_tips if info['is_tiprack'] else None,
+        'used_tips': (len(wells) - available_tips) if info['is_tiprack'] else None
+    }
     
-    def reset_tip_tracking(self):
-        """Reset tip tracking for this labware (marks all tips as available)."""
-        if hasattr(self.labware, 'reset'):
-            self.labware.reset()
-            self.logger.info(f"Reset tip tracking for {self.load_name}")
+    return {
+        'info': info,
+        'wells': wells,
+        'dimensions': dimensions,
+        'summary': summary,
+        'timestamp': datetime.now().isoformat()
+    }
 
 
-class DeckState:
-    """Query deck state from the robot's built-in tracking."""
+def get_pipette_state(pipette_context) -> Dict[str, Any]:
+    """
+    Get complete pipette state as a simple dictionary.
     
-    def __init__(self, protocol_context):
-        """
-        Initialize with an Opentrons ProtocolContext.
-        
-        :param protocol_context: opentrons.protocol_api.ProtocolContext
-        """
-        self.protocol = protocol_context
-        self.logger = logging.getLogger("state.deck")
-    
-    @property
-    def loaded_labwares(self) -> Dict[str, Any]:
-        """Get all loaded labware."""
-        return self.protocol.loaded_labwares
-    
-    @property
-    def loaded_modules(self) -> Dict[str, Any]:
-        """Get all loaded modules."""
-        return self.protocol.loaded_modules
-    
-    @property
-    def loaded_instruments(self) -> Dict[str, Any]:
-        """Get all loaded instruments."""
-        return self.protocol.loaded_instruments
-    
-    def get_slot_contents(self, slot: Union[str, int]) -> Optional[Any]:
-        """Get contents of a specific deck slot."""
-        return self.protocol.deck[str(slot)]
-    
-    def get_empty_slots(self) -> List[str]:
-        """Get list of empty deck slots."""
-        empty_slots = []
-        for slot, contents in self.protocol.deck.items():
-            if contents is None:
-                empty_slots.append(slot)
-        return empty_slots
-    
-    def get_occupied_slots(self) -> Dict[str, str]:
-        """Get dictionary of occupied slots and their contents."""
-        occupied = {}
-        for slot, contents in self.protocol.deck.items():
-            if contents is not None:
-                occupied[slot] = str(contents)
-        return occupied
-    
-    def get_all_labware_status(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all loaded labware."""
-        labware_status = {}
-        for name, labware in self.loaded_labwares.items():
-            labware_state = LabwareState(labware)
-            labware_status[name] = labware_state.get_status_summary()
-        return labware_status
-    
-    def get_all_pipette_status(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all loaded pipettes."""
-        pipette_status = {}
-        for mount, pipette in self.loaded_instruments.items():
-            if pipette is not None:
-                pipette_state = PipetteState(pipette)
-                pipette_status[mount] = pipette_state.get_status_summary()
-        return pipette_status
-    
-    def get_status_summary(self) -> Dict[str, Any]:
-        """Get comprehensive deck status."""
-        return {
-            'empty_slots': self.get_empty_slots(),
-            'occupied_slots': self.get_occupied_slots(),
-            'total_labware': len(self.loaded_labwares),
-            'total_modules': len(self.loaded_modules),
-            'total_instruments': len([i for i in self.loaded_instruments.values() if i is not None]),
-            'labware_status': self.get_all_labware_status(),
-            'pipette_status': self.get_all_pipette_status(),
-            'timestamp': datetime.now().isoformat()
+    Returns:
+        {
+            'name': 'p300_single_gen2',
+            'mount': 'right',
+            'has_tip': True,
+            'current_volume': 100.0,
+            'max_volume': 300.0,
+            'min_volume': 30.0,
+            'tip_racks': ['tip_rack_1', ...],
+            'flow_rates': {'aspirate': 150, 'dispense': 300, ...},
+            'well_bottom_clearance': {'aspirate': 1.0, 'dispense': 1.0},
+            'timestamp': '...'
         }
+    """
+    logger = logging.getLogger(f"pipette_state.{pipette_context.name}")
     
-    def log_status(self, message: str = "Deck status"):
-        """Log current deck status."""
-        status = self.get_status_summary()
-        self.logger.info(f"{message}: {status}")
-
-
-class ModuleState:
-    """Query module state from the robot's built-in tracking."""
+    # Get tip rack info
+    tip_racks = []
+    try:
+        for tip_rack in pipette_context.tip_racks:
+            tip_racks.append({
+                'name': getattr(tip_rack, 'name', tip_rack.load_name),
+                'load_name': tip_rack.load_name,
+                'parent': str(tip_rack.parent)
+            })
+    except:
+        tip_racks = []
     
-    def __init__(self, module_context):
-        """
-        Initialize with an Opentrons ModuleContext.
-        
-        :param module_context: opentrons.protocol_api module (e.g., TemperatureModuleContext)
-        """
-        self.module = module_context
-        self.logger = logging.getLogger(f"state.{module_context.model}")
-    
-    def get_temperature_status(self) -> Dict[str, Any]:
-        """Get temperature module status (if applicable)."""
-        status = {}
-        if hasattr(self.module, 'current_temperature'):
-            status['current_temperature'] = self.module.current_temperature
-        if hasattr(self.module, 'target_temperature'):
-            status['target_temperature'] = self.module.target_temperature
-        if hasattr(self.module, 'status'):
-            status['status'] = self.module.status
-        return status
-    
-    def get_heater_shaker_status(self) -> Dict[str, Any]:
-        """Get heater-shaker module status (if applicable)."""
-        status = {}
-        if hasattr(self.module, 'current_temperature'):
-            status['current_temperature'] = self.module.current_temperature
-        if hasattr(self.module, 'target_temperature'):
-            status['target_temperature'] = self.module.target_temperature
-        if hasattr(self.module, 'current_speed'):
-            status['current_speed'] = self.module.current_speed
-        if hasattr(self.module, 'target_speed'):
-            status['target_speed'] = self.module.target_speed
-        return status
-    
-    def get_thermocycler_status(self) -> Dict[str, Any]:
-        """Get thermocycler module status (if applicable)."""
-        status = {}
-        if hasattr(self.module, 'block_temperature'):
-            status['block_temperature'] = self.module.block_temperature
-        if hasattr(self.module, 'lid_temperature'):
-            status['lid_temperature'] = self.module.lid_temperature
-        if hasattr(self.module, 'lid_position'):
-            status['lid_position'] = self.module.lid_position
-        return status
-    
-    def get_magnetic_status(self) -> Dict[str, Any]:
-        """Get magnetic module status (if applicable)."""
-        status = {}
-        if hasattr(self.module, 'status'):
-            status['status'] = self.module.status
-        return status
-    
-    def get_status_summary(self) -> Dict[str, Any]:
-        """Get comprehensive module status."""
-        base_status = {
-            'model': self.module.model,
-            'serial_number': getattr(self.module, 'serial_number', 'unknown'),
-            'timestamp': datetime.now().isoformat()
+    # Get flow rates
+    flow_rates = {}
+    try:
+        flow_rates = {
+            'aspirate': pipette_context.flow_rate.aspirate,
+            'dispense': pipette_context.flow_rate.dispense,
+            'blow_out': pipette_context.flow_rate.blow_out
         }
-        
-        # Add module-specific status
-        base_status.update(self.get_temperature_status())
-        base_status.update(self.get_heater_shaker_status())
-        base_status.update(self.get_thermocycler_status())
-        base_status.update(self.get_magnetic_status())
-        
-        return base_status
+    except:
+        flow_rates = {'aspirate': 0, 'dispense': 0, 'blow_out': 0}
     
-    def log_status(self, message: str = "Module status"):
-        """Log current module status."""
-        status = self.get_status_summary()
-        self.logger.info(f"{message}: {status}")
+    # Get well bottom clearance
+    clearance = {}
+    try:
+        clearance = {
+            'aspirate': pipette_context.well_bottom_clearance.aspirate,
+            'dispense': pipette_context.well_bottom_clearance.dispense
+        }
+    except:
+        clearance = {'aspirate': 1.0, 'dispense': 1.0}
+    
+    return {
+        'name': pipette_context.name,
+        'mount': str(pipette_context.mount),
+        'has_tip': pipette_context.has_tip,
+        'current_volume': pipette_context.current_volume,
+        'max_volume': pipette_context.max_volume,
+        'min_volume': pipette_context.min_volume,
+        'tip_racks': tip_racks,
+        'flow_rates': flow_rates,
+        'well_bottom_clearance': clearance,
+        'starting_tip': str(getattr(pipette_context, 'starting_tip', None)),
+        'channels': getattr(pipette_context, 'channels', 1),
+        'timestamp': datetime.now().isoformat()
+    }
 
 
-# Convenience functions for quick state queries
-def check_pipette_state(pipette_context) -> Dict[str, Any]:
-    """Quick function to get pipette status."""
-    state = PipetteState(pipette_context)
-    return state.get_status_summary()
+def get_well_state(well_context) -> Dict[str, Any]:
+    """
+    Get complete well state as a simple dictionary.
+    
+    Returns:
+        {
+            'name': 'A1',
+            'display_name': 'A1 of Plate on 1',
+            'max_volume': 200.0,
+            'current_liquid_volume': 150.0,
+            'depth': 10.5,
+            'diameter': 6.85,
+            'shape': 'circular',
+            'position': {'x': 14.38, 'y': 74.24, 'z': 10.5},
+            'has_tip': True,  # For tip racks only
+            'parent_labware': 'plate_name',
+            'timestamp': '...'
+        }
+    """
+    logger = logging.getLogger(f"well_state.{well_context.well_name}")
+    
+    # Basic well properties
+    well_data = {
+        'name': well_context.well_name,
+        'display_name': getattr(well_context, 'display_name', well_context.well_name),
+        'max_volume': well_context.max_volume,
+        'depth': well_context.depth,
+        'diameter': getattr(well_context, 'diameter', None),
+        'shape': getattr(well_context, 'shape', 'unknown'),
+        'parent_labware': well_context.parent.load_name if hasattr(well_context.parent, 'load_name') else str(well_context.parent)
+    }
+    
+    # Add liquid volume
+    try:
+        well_data['current_liquid_volume'] = well_context.current_liquid_volume
+    except:
+        well_data['current_liquid_volume'] = 0.0
+    
+    # Add tip status for tip racks
+    try:
+        well_data['has_tip'] = well_context.has_tip
+    except AttributeError:
+        well_data['has_tip'] = None  # Not a tip rack well
+    
+    # Add position
+    try:
+        position = well_context.geometry.position
+        well_data['position'] = {'x': position.x, 'y': position.y, 'z': position.z}
+    except:
+        well_data['position'] = None
+    
+    # Add dimensions for rectangular wells
+    try:
+        if hasattr(well_context, 'length'):
+            well_data['length'] = well_context.length
+        if hasattr(well_context, 'width'):
+            well_data['width'] = well_context.width
+    except:
+        pass
+    
+    well_data['timestamp'] = datetime.now().isoformat()
+    
+    return well_data
 
 
-def check_well_state(well_context) -> Dict[str, Any]:
-    """Quick function to get well status."""
-    state = WellState(well_context)
-    return state.get_status_summary()
+def get_module_state(module_context) -> Dict[str, Any]:
+    """
+    Get complete module state as a simple dictionary.
+    
+    Returns:
+        {
+            'name': 'Temperature Module',
+            'module_name': 'temperature module gen2',
+            'status': 'idle',
+            'serial_number': 'TMG20210101A1',
+            'temperature': 25.0,  # For temp modules
+            'target': None,
+            'labware': {...},  # If labware loaded
+            'timestamp': '...'
+        }
+    """
+    logger = logging.getLogger(f"module_state.{getattr(module_context, 'name', 'unknown')}")
+    
+    module_data = {
+        'name': getattr(module_context, 'name', 'Unknown Module'),
+        'module_name': getattr(module_context, 'module_name', 'unknown'),
+        'status': getattr(module_context, 'status', 'unknown'),
+        'serial_number': getattr(module_context, 'serial_number', None)
+    }
+    
+    # Add temperature info for temperature modules
+    if hasattr(module_context, 'temperature'):
+        module_data['temperature'] = module_context.temperature
+        module_data['target'] = getattr(module_context, 'target', None)
+    
+    # Add heater shaker info
+    if hasattr(module_context, 'current_speed'):
+        module_data['current_speed'] = module_context.current_speed
+        module_data['target_speed'] = getattr(module_context, 'target_speed', None)
+    
+    # Add magnetic module info
+    if hasattr(module_context, 'engaged'):
+        module_data['engaged'] = module_context.engaged
+    
+    # Add loaded labware info
+    try:
+        if hasattr(module_context, 'labware') and module_context.labware:
+            module_data['labware'] = {
+                'name': getattr(module_context.labware, 'name', module_context.labware.load_name),
+                'load_name': module_context.labware.load_name
+            }
+        else:
+            module_data['labware'] = None
+    except:
+        module_data['labware'] = None
+    
+    module_data['timestamp'] = datetime.now().isoformat()
+    
+    return module_data
 
 
-def check_labware_state(labware_context) -> Dict[str, Any]:
-    """Quick function to get labware status."""
-    state = LabwareState(labware_context)
-    return state.get_status_summary()
+# Convenience functions for quick access
+def get_all_states(protocol_context) -> Dict[str, Any]:
+    """Get complete robot state in one call."""
+    return {
+        'deck': get_deck_state(protocol_context),
+        'pipettes': {mount: get_pipette_state(pipette) 
+                    for mount, pipette in protocol_context.loaded_instruments.items()},
+        'labwares': {slot: get_labware_state(labware) 
+                    for slot, labware in protocol_context.loaded_labwares.items()},
+        'modules': {slot: get_module_state(module) 
+                   for slot, module in getattr(protocol_context, 'loaded_modules', {}).items()},
+        'timestamp': datetime.now().isoformat()
+    }
 
 
-def check_deck_state(protocol_context) -> Dict[str, Any]:
-    """Quick function to get deck status."""
-    state = DeckState(protocol_context)
-    return state.get_status_summary()
+def print_deck_summary(protocol_context):
+    """Print a nice summary of deck state."""
+    deck = get_deck_state(protocol_context)
+    
+    print("🗂️ Deck Summary")
+    print("=" * 40)
+    
+    for slot in range(1, 13):
+        slot_str = str(slot)
+        item = deck['slots'][slot_str]
+        if item:
+            print(f"Slot {slot:2d}: {item['type'].title()} - {item['name']}")
+        else:
+            print(f"Slot {slot:2d}: Empty")
+    
+    print(f"\n📊 Total: {deck['occupied_slots']}/12 slots occupied")
+    print(f"   Labwares: {len(deck['loaded_labwares'])}")
+    print(f"   Modules: {len(deck['loaded_modules'])}")
+    print(f"   Instruments: {len(deck['loaded_instruments'])}")
 
 
-def check_module_state(module_context) -> Dict[str, Any]:
-    """Quick function to get module status."""
-    state = ModuleState(module_context)
-    return state.get_status_summary()
+def print_labware_summary(labware_context):
+    """Print a nice summary of labware state."""
+    labware = get_labware_state(labware_context)
+    
+    print(f"🧪 {labware['info']['name']} Summary")
+    print("=" * 40)
+    print(f"Type: {labware['info']['load_name']}")
+    print(f"Location: {labware['info']['parent']}")
+    print(f"Dimensions: {labware['dimensions']['rows']} x {labware['dimensions']['columns']} = {labware['dimensions']['total_wells']} wells")
+    
+    if labware['info']['is_tiprack']:
+        print(f"Tips available: {labware['summary']['available_tips']}/{labware['summary']['total_wells']}")
+    
+    if labware['summary']['wells_with_liquid'] > 0:
+        print(f"Wells with liquid: {labware['summary']['wells_with_liquid']}")
 
 
-# Export main classes
-__all__ = [
-    'PipetteState',
-    'WellState', 
-    'LabwareState',
-    'DeckState',
-    'ModuleState',
-    'check_pipette_state',
-    'check_well_state',
-    'check_labware_state',
-    'check_deck_state',
-    'check_module_state'
-] 
+def print_pipette_summary(pipette_context):
+    """Print a nice summary of pipette state."""
+    pipette = get_pipette_state(pipette_context)
+    
+    print(f"🔬 {pipette['name']} Summary")
+    print("=" * 40)
+    print(f"Mount: {pipette['mount']}")
+    print(f"Has tip: {pipette['has_tip']}")
+    print(f"Volume: {pipette['current_volume']}/{pipette['max_volume']} µL")
+    print(f"Tip racks: {len(pipette['tip_racks'])}") 
