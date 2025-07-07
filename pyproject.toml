@@ -22,14 +22,32 @@ classifiers = [                           # Standard classifiers for PyPI
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [                          # List runtime dependencies
-    "prefect>=2.0",                     # For the @flow decorator and Prefect integration
-    "paramiko",                         # Assuming sshclient.py uses paramiko for SSH. Add if needed.
-    # Add any other dependencies your code requires
+    "prefect>=2.14.0",                  # For the @flow decorator and Prefect integration
+    "paramiko>=3.3.1",                  # SSH connectivity for robot control
+    "fastapi>=0.104.1",                 # REST API framework
+    "uvicorn[standard]>=0.24.0",        # ASGI server for FastAPI
+    "pydantic>=2.5.0",                  # Data validation
+    "requests>=2.31.0",                 # HTTP client
+    "asyncssh>=2.14.0",                 # Async SSH support
+    "websocket-client>=1.6.4",         # WebSocket support
+    "python-multipart>=0.0.6",         # Form data parsing
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0",
 ]
 
 [project.urls] # Optional but recommended links
-"Homepage" = "https://github.com/yourusername/ot2" # Change placeholder
-"Repository" = "https://github.com/yourusername/ot2" # Change placeholder
+"Homepage" = "https://github.com/cyrilcaoyang/opentrons_workflows"
+"Repository" = "https://github.com/cyrilcaoyang/opentrons_workflows"
+"Issues" = "https://github.com/cyrilcaoyang/opentrons_workflows/issues"
 
 # --- Configuration for setuptools ---
 [tool.setuptools.packages.find]
@@ -38,3 +56,45 @@ where = ["src"]  # Look for packages in the 'src' directory
 # If you want to include non-code files (e.g., data files) within your package:
 # [tool.setuptools.package-data]
 # "opentrons_workflows" = ["*.yaml", "data/*"] # Example: include yaml files or files in a data/ subdir
+
+# --- Tool configurations ---
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests requiring robot connection",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

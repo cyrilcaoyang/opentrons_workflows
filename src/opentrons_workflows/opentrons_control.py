@@ -20,7 +20,15 @@ class OpentronsControl:
         self.client.connect()
 
     def invoke(self, code):
-        return self.client.invoke(code)
+        """Execute Python code on the robot via SSH"""
+        if not self.client.is_connected:
+            raise Exception("SSH client is not connected")
+        
+        # Ensure we're in Python mode for protocol execution
+        if self.client.session_state.value != "python":
+            self.client.start_python_session()
+        
+        return self.client.execute_python_command(code)
 
     def _disconnect(self):
         self.client.close()
