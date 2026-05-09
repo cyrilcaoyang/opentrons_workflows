@@ -12,7 +12,7 @@ authors = [
 ]
 description = "A package to control Opentrons OT-2 robots via SSH, with Prefect integration."
 readme = "README.md"                      # Assumes you have a README.md file
-requires-python = ">=3.8"                 # Minimum Python version compatibility (adjust if needed)
+requires-python = ">=3.8.1"               # Minimum Python version compatibility (adjust if needed)
 license = { text = "MIT" }                # Specify your license (e.g., MIT, Apache-2.0). Add a LICENSE file.
 classifiers = [                           # Standard classifiers for PyPI
     "Programming Language :: Python :: 3",
@@ -22,7 +22,6 @@ classifiers = [                           # Standard classifiers for PyPI
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [                          # List runtime dependencies
-    "prefect>=2.14.0",                  # For the @flow decorator and Prefect integration
     "paramiko>=3.3.1",                  # SSH connectivity for robot control
     "fastapi>=0.104.1",                 # REST API framework
     "uvicorn[standard]>=0.24.0",        # ASGI server for FastAPI
@@ -34,10 +33,14 @@ dependencies = [                          # List runtime dependencies
 ]
 
 [project.optional-dependencies]
+workflows = [
+    "prefect>=2.14.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
+    "httpx>=0.25.0",
     "black>=23.0.0",
     "isort>=5.12.0",
     "flake8>=6.0.0",

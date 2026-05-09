@@ -1,6 +1,6 @@
 # Core robot control
-from .opentrons_control import OpentronsControl
-from .opentrons_sshclient import SSHClient
+from .control import OT2Control, OpentronsControl
+from .transport import SSHClient
 
 # State tracking classes (leverages robot's built-in state tracking)
 from .opentrons_states import (
@@ -22,6 +22,7 @@ __version__ = "0.2.0"
 
 __all__ = [
     # Core classes
+    "OT2Control",
     "OpentronsControl",
     "SSHClient",
     

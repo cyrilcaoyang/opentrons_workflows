@@ -1,0 +1,217 @@
+"""FastAPI app for an AC-compatible OT-2 gateway."""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from .claims import ClaimConflict, UnknownClaim
+from .models import (
+    ClaimRejection,
+    ClaimRequest,
+    ClaimResponse,
+    CommandResponse,
+    EquipmentStatus,
+    HealthResponse,
+    LiquidMoveRequest,
+    MoveLabwareRequest,
+    ProbeResponse,
+    PROTOCOL_VERSION,
+    ProtocolSetupRequest,
+    StartupRequest,
+    TipRequest,
+)
+from .service import OT2Service, UnknownOutcomeError
+
+
+class ClaimHTTPError(Exception):
+    def __init__(self, status_code: int, payload: dict[str, Any], headers: Optional[dict[str, str]] = None) -> None:
+        super().__init__(payload.get("detail", "claim error"))
+        self.status_code = status_code
+        self.payload = payload
+        self.headers = headers or {}
+
+
+def create_app(*, dry_run: Optional[bool] = None, enforce_claims: bool = True) -> FastAPI:
+    if dry_run is None:
+        dry_run = os.environ.get("OT2_DRY_RUN", "false").lower() in {"1", "true", "yes"}
+
+    service = OT2Service(
+        equipment_id=os.environ.get("OT2_EQUIPMENT_ID", "ot2"),
+        equipment_name=os.environ.get("OT2_EQUIPMENT_NAME", "Opentrons OT-2"),
+        host_alias=os.environ.get("OT2_HOST_ALIAS"),
+        password=os.environ.get("OT2_SSH_PASSWORD", ""),
+        dry_run=dry_run,
+    )
+
+    app = FastAPI(
+        title="Opentrons OT-2 Gateway",
+        version="1.1.0",
+        description="AC-compatible REST gateway for an Opentrons OT-2 liquid handler.",
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.exception_handler(ClaimHTTPError)
+    async def claim_error_handler(request: Any, exc: ClaimHTTPError) -> JSONResponse:  # noqa: ARG001
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.payload,
+            headers=exc.headers,
+        )
+
+    def require_claim(x_claim_token: Optional[str] = Header(default=None, alias="X-Claim-Token")) -> None:
+        if not enforce_claims:
+            return
+        if service.claims.validate(x_claim_token):
+            return
+        current = service.claims.current()
+        raise ClaimHTTPError(
+            status_code=423,
+            payload={
+                "detail": "missing or invalid X-Claim-Token; POST /control/claim first",
+                "claimed_by": current.model_dump(mode="json") if current else None,
+                "retry_after_s": None,
+            },
+        )
+
+    @app.get("/", response_model=ProbeResponse, tags=["spec"])
+    def probe() -> ProbeResponse:
+        return ProbeResponse(
+            equipment_id=service.equipment_id,
+            equipment_name=service.equipment_name,
+            protocol_version=PROTOCOL_VERSION,
+        )
+
+    @app.get("/health", response_model=HealthResponse, tags=["spec"])
+    def health() -> HealthResponse:
+        return HealthResponse()
+
+    @app.get("/status", response_model=EquipmentStatus, tags=["spec"])
+    def status() -> EquipmentStatus:
+        return service.get_status()
+
+    @app.post(
+        "/control/claim",
+        response_model=ClaimResponse,
+        responses={409: {"model": ClaimRejection}},
+        tags=["claim"],
+    )
+    def claim(request: ClaimRequest) -> ClaimResponse:
+        try:
+            return service.claims.acquire(request)
+        except ClaimConflict as exc:
+            rejection = ClaimRejection(
+                detail=str(exc),
+                claimed_by=exc.claimed_by,
+                retry_after_s=exc.retry_after_s,
+            )
+            raise ClaimHTTPError(
+                status_code=409,
+                payload=rejection.model_dump(mode="json"),
+                headers={"Retry-After": str(int(exc.retry_after_s + 1))},
+            )
+
+    @app.post("/control/heartbeat", response_model=ClaimResponse, tags=["claim"])
+    def heartbeat(x_claim_token: Optional[str] = Header(default=None, alias="X-Claim-Token")) -> ClaimResponse:
+        try:
+            return service.claims.heartbeat(x_claim_token)
+        except UnknownClaim:
+            raise HTTPException(status_code=401, detail="claim token is unknown or expired")
+
+    @app.post("/control/release", status_code=204, tags=["claim"])
+    def release(x_claim_token: Optional[str] = Header(default=None, alias="X-Claim-Token")) -> Response:
+        service.claims.release(x_claim_token)
+        return Response(status_code=204)
+
+    @app.post("/control/startup", response_model=CommandResponse, tags=["control"])
+    def startup(request: StartupRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        try:
+            service.startup(
+                host_alias=request.host_alias,
+                password=request.password,
+                simulation=request.simulation,
+            )
+            return CommandResponse(message="OT-2 initialized", state=service.state.value)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+    @app.post("/control/shutdown", response_model=CommandResponse, tags=["control"])
+    def shutdown(_claim: None = Depends(require_claim)) -> CommandResponse:
+        service.shutdown()
+        return CommandResponse(message="OT-2 shutdown", state=service.state.value)
+
+    @app.post("/control/setup", response_model=CommandResponse, tags=["control"])
+    def setup(request: ProtocolSetupRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        try:
+            service.setup_protocol(request.model_dump())
+            return CommandResponse(message="Protocol setup complete", state=service.state.value)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/control/home", response_model=CommandResponse, tags=["control"])
+    def home(_claim: None = Depends(require_claim)) -> CommandResponse:
+        try:
+            service.home()
+            return CommandResponse(message="OT-2 homed", state=service.state.value)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/control/pause", response_model=CommandResponse, tags=["control"])
+    def pause(_claim: None = Depends(require_claim)) -> CommandResponse:
+        service.pause()
+        return CommandResponse(message="OT-2 paused", state=service.state.value)
+
+    @app.post("/control/resume", response_model=CommandResponse, tags=["control"])
+    def resume(_claim: None = Depends(require_claim)) -> CommandResponse:
+        service.resume()
+        return CommandResponse(message="OT-2 resumed", state=service.state.value)
+
+    @app.post("/control/pick-up-tip", response_model=CommandResponse, tags=["control"])
+    def pick_up_tip(request: TipRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        return _run_non_idempotent(lambda: service.pick_up_tip(request), "Tip picked up")
+
+    @app.post("/control/drop-tip", response_model=CommandResponse, tags=["control"])
+    def drop_tip(request: TipRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        return _run_non_idempotent(lambda: service.drop_tip(request), "Tip dropped")
+
+    @app.post("/control/aspirate", response_model=CommandResponse, tags=["control"])
+    def aspirate(request: LiquidMoveRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        return _run_non_idempotent(lambda: service.aspirate(request), "Aspirate complete")
+
+    @app.post("/control/dispense", response_model=CommandResponse, tags=["control"])
+    def dispense(request: LiquidMoveRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        return _run_non_idempotent(lambda: service.dispense(request), "Dispense complete")
+
+    @app.post("/control/move-labware", response_model=CommandResponse, tags=["control"])
+    def move_labware(request: MoveLabwareRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        return _run_non_idempotent(lambda: service.move_labware(request), "Labware moved")
+
+    @app.post("/control/reconcile", response_model=CommandResponse, tags=["control"])
+    def reconcile(snapshot: Optional[dict[str, Any]] = None, _claim: None = Depends(require_claim)) -> CommandResponse:
+        service.reconcile(snapshot)
+        return CommandResponse(message="State reconciled", state=service.state.value)
+
+    def _run_non_idempotent(func: Any, success_message: str) -> CommandResponse:
+        try:
+            func()
+            return CommandResponse(message=success_message, state=service.state.value)
+        except UnknownOutcomeError as exc:
+            raise HTTPException(status_code=409, detail=f"unknown outcome: {exc}")
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    app.state.service = service
+    return app
+
+
+app = create_app()

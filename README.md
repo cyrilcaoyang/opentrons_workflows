@@ -1,5 +1,372 @@
 # Opentrons Workflows
 
+Python tools for controlling an Opentrons OT-2/Flex over SSH, exposing an
+AC-compatible REST gateway, and keeping experiment workflows separate from the
+device runtime.
+
+## What This Repo Contains
+
+The project is now split into layers:
+
+```text
+opentrons_workflows/
+├── src/opentrons_workflows/
+│   ├── transport/              # SSH transport/session management
+│   │   └── ssh_client.py
+│   ├── control/                # OT-2 command wrapper and state readers
+│   │   ├── ot2_control.py
+│   │   └── state_readers.py
+│   ├── gateway/                # FastAPI equipment gateway
+│   │   ├── api.py
+│   │   ├── service.py
+│   │   ├── models.py
+│   │   └── claims.py
+│   ├── labware/                # Container, well, pipette, and event models
+│   │   ├── containers.py
+│   │   └── events.py
+│   ├── opentrons_control.py    # Backward-compatible import path
+│   ├── opentrons_sshclient.py  # Backward-compatible import path
+│   ├── opentrons_states.py     # Backward-compatible import path
+│   └── ot2_rest_api.py         # Backward-compatible gateway entry point
+├── workflows/                  # Prefect examples and helpers
+│   ├── examples/
+│   ├── prefect_tasks.py
+│   └── README.md
+├── tests/
+│   ├── fixtures/
+│   └── unit/
+├── demo/                       # Preserved legacy demos
+└── backup/                     # Preserved backup/reference code
+```
+
+`demo/` and `backup/` are intentionally preserved and are not part of the new
+runtime layout.
+
+## Install
+
+For the gateway/core package:
+
+```bash
+pip install -e .
+```
+
+For API-only deployments:
+
+```bash
+pip install -r requirements_api.txt
+```
+
+For workflow development with Prefect:
+
+```bash
+pip install -e ".[workflows]"
+```
+
+For tests/dev tools:
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Core Concepts
+
+- `transport.SSHClient` owns SSH connection state, shell mode, Python REPL mode,
+  retries, batch execution, and closing sessions.
+- `control.OT2Control` owns high-level OT-2 verbs such as protocol
+  initialization, labware loading, homing, aspirating, dispensing, and moving
+  labware.
+- `control.state_readers` converts live Opentrons protocol/labware/pipette
+  objects into plain dictionaries.
+- `gateway.OT2Service` owns the device state machine used by the REST API.
+- `gateway.api` exposes the FastAPI app for dashboard/status integration.
+- `labware` contains optional stable models for containers, wells, pipette
+  state, and append-only events.
+- `workflows/` contains Prefect orchestration examples. The core gateway does
+  not require Prefect to import or start.
+
+## Basic Python Control
+
+```python
+from opentrons_workflows.control import OT2Control
+
+robot = OT2Control(host_alias="ot2_robot", simulation=False)
+
+robot.setup_protocol(
+    labware=[
+        {
+            "nickname": "tips",
+            "loadname": "opentrons_96_tiprack_300ul",
+            "location": "1",
+            "ot_default": True,
+        },
+        {
+            "nickname": "plate",
+            "loadname": "corning_96_wellplate_360ul_flat",
+            "location": "2",
+            "ot_default": True,
+        },
+    ],
+    instruments=[
+        {
+            "nickname": "p300",
+            "instrument_name": "p300_single_gen2",
+            "mount": "right",
+            "ot_default": True,
+        }
+    ],
+)
+
+robot.get_location_from_labware("tips", "A1")
+robot.pick_up_tip("p300")
+robot.get_location_from_labware("plate", "A1")
+robot.aspirate("p300", 100)
+robot.get_location_from_labware("plate", "B1")
+robot.dispense("p300", 100)
+robot.drop_tip("p300")
+robot.shutdown()
+```
+
+Legacy imports still work:
+
+```python
+from opentrons_workflows import OpentronsControl, SSHClient
+```
+
+## SSH Configuration
+
+The SSH client can use either an SSH host alias or explicit environment
+variables.
+
+Example `~/.ssh/config`:
+
+```sshconfig
+Host ot2_robot
+    HostName 100.64.254.90
+    User root
+    IdentityFile ~/.ssh/ot2_ssh_key
+    StrictHostKeyChecking no
+```
+
+Equivalent environment variables:
+
+```bash
+export HOSTNAME="100.64.254.90"
+export USERNAME="root"
+export KEY_FILE_PATH="$HOME/.ssh/ot2_ssh_key"
+```
+
+On PowerShell:
+
+```powershell
+$env:HOSTNAME = "100.64.254.90"
+$env:USERNAME = "root"
+$env:KEY_FILE_PATH = "$HOME/.ssh/ot2_ssh_key"
+```
+
+## REST Gateway
+
+Start the OT-2 gateway:
+
+```bash
+uvicorn opentrons_workflows.ot2_rest_api:app --host 0.0.0.0 --port 8020
+```
+
+Or with `uv`:
+
+```bash
+uv run uvicorn opentrons_workflows.ot2_rest_api:app --host 0.0.0.0 --port 8020
+```
+
+The `ot2_rest_api` module is now a compatibility entry point. The implementation
+lives in `opentrons_workflows.gateway.api`.
+
+### Required Status Endpoints
+
+The gateway exposes the AC equipment status contract:
+
+- `GET /` - probe response with `equipment_id`, `equipment_name`, and
+  `protocol_version`
+- `GET /health` - liveness
+- `GET /status` - side-effect-free equipment status envelope
+- `GET /openapi.json` - generated by FastAPI
+
+Example:
+
+```bash
+curl http://127.0.0.1:8020/status
+```
+
+Before startup, `/status` should report:
+
+```json
+{
+  "equipment_id": "ot2",
+  "equipment_kind": "liquid_handler",
+  "equipment_status": "requires_init",
+  "required_actions": ["startup"]
+}
+```
+
+## Claim Then Control
+
+Control endpoints use the v1.1 claim protocol. First claim the device:
+
+```bash
+curl -X POST http://127.0.0.1:8020/control/claim \
+  -H "Content-Type: application/json" \
+  -d '{"owner":"sdl2","session_id":"manual-cli","ttl_s":60}'
+```
+
+Use the returned `claim_token` on control calls:
+
+```bash
+curl -X POST http://127.0.0.1:8020/control/startup \
+  -H "Content-Type: application/json" \
+  -H "X-Claim-Token: <claim_token>" \
+  -d '{"simulation": false}'
+```
+
+Heartbeat before the token expires:
+
+```bash
+curl -X POST http://127.0.0.1:8020/control/heartbeat \
+  -H "X-Claim-Token: <claim_token>"
+```
+
+Release when finished:
+
+```bash
+curl -X POST http://127.0.0.1:8020/control/release \
+  -H "X-Claim-Token: <claim_token>"
+```
+
+Useful control endpoints:
+
+- `POST /control/startup`
+- `POST /control/shutdown`
+- `POST /control/setup`
+- `POST /control/home`
+- `POST /control/pause`
+- `POST /control/resume`
+- `POST /control/pick-up-tip`
+- `POST /control/aspirate`
+- `POST /control/dispense`
+- `POST /control/drop-tip`
+- `POST /control/move-labware`
+- `POST /control/reconcile`
+
+## AC Organic Lab Dashboard Integration
+
+In `ac-organic-lab/equipment.yaml`, configure the OT-2 as an HTTP device:
+
+```yaml
+- id: ot2
+  name: Opentrons OT-2
+  platform: hte
+  kind: liquid_handler
+  adapter: http
+  protocol: "1.1"
+  base_url: http://<gateway-host>:8020
+  status_path: /status
+  poll_timeout_seconds: 2.0
+  do_not_call_connect: true
+  tile: { w: 2, h: 2 }
+```
+
+Use `http://127.0.0.1:8020` only when the dashboard API and this gateway run on
+the same host. If the dashboard is on a Linux server and this gateway is on a
+Windows/Tailscale host, use the Windows host's Tailscale MagicDNS name or
+Tailnet IP.
+
+After changing `equipment.yaml`, restart the dashboard API on the Linux host:
+
+```bash
+sudo systemctl restart ac-dashboard-api.service
+sudo systemctl status ac-dashboard-api.service --no-pager
+```
+
+## SSH Failure Policy
+
+The gateway treats SSH failures differently depending on the operation:
+
+- Read-only or idempotent actions may be retried or restarted.
+- Non-idempotent liquid/physical operations are not blindly retried.
+- If SSH fails during `aspirate`, `dispense`, `pick_up_tip`, `drop_tip`, or
+  `move_labware`, the service enters `unknown_outcome`.
+- `unknown_outcome` requires manual inspection/reconciliation before normal
+  operation resumes.
+
+The service exposes this through `/status` as `equipment_status: "unknown"` with
+details in `last_error` and `details.service_state`.
+
+## State and Labware Tracking
+
+`control.state_readers` extracts live Opentrons state from protocol objects:
+
+- deck slots
+- loaded labware
+- loaded modules
+- mounted instruments
+- pipette `has_tip` and `current_volume`
+- tip-rack well `has_tip`
+- well geometry and reported liquid volume when available
+
+The `labware` package provides stable models for plate/tip-rack identity and
+event tracking. These models are intentionally separate from the device gateway:
+the gateway can summarize current deck/pipette state, while full sample
+provenance should live in workflow state or a future inventory service.
+
+## Workflows
+
+Prefect code now lives outside the runtime package:
+
+```text
+workflows/
+├── examples/
+│   ├── sample_preparation.py
+│   ├── analytical_workflow.py
+│   └── high_throughput_screening.py
+└── prefect_tasks.py
+```
+
+Install workflow dependencies with:
+
+```bash
+pip install -e ".[workflows]"
+```
+
+The workflow examples are for experiment orchestration across one or more
+devices. They should call the gateway or `OT2Control`; they should not be needed
+to start the gateway.
+
+## Testing
+
+Run focused gateway tests:
+
+```bash
+uv run --extra dev pytest tests/unit/test_gateway_service.py -q
+```
+
+Run all tests:
+
+```bash
+uv run --extra dev pytest tests -q
+```
+
+Compile/import sanity check:
+
+```bash
+python -m compileall src workflows tests/unit
+```
+
+## Notes
+
+- This repo's OT-2 gateway conforms to the AC lab equipment status contract
+  shape for `liquid_handler` devices.
+- `requirements_api.txt` is intended for gateway/API runtime dependencies.
+- Prefect is optional and belongs to workflow development, not gateway startup.
+# Opentrons Workflows
+
 A Python package for controlling Opentrons OT-2 and Flex robots via SSH with Prefect workflow orchestration integration.
 
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://python.org)

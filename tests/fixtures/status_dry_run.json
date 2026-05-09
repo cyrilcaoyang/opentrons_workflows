@@ -1,0 +1,40 @@
+{
+  "protocol_version": "1.1",
+  "equipment_id": "ot2",
+  "equipment_name": "Opentrons OT-2",
+  "equipment_kind": "liquid_handler",
+  "equipment_version": null,
+  "host": null,
+  "equipment_status": "dry_run",
+  "message": "Dry-run mode - no hardware connected",
+  "required_actions": [],
+  "allowed_actions": ["startup", "shutdown", "home", "setup"],
+  "device_time": "2026-05-08T22:50:01Z",
+  "uptime_seconds": 0.0,
+  "components": {
+    "ssh": {"connected": true, "state": "connected", "message": null, "last_event_at": null},
+    "protocol": {"connected": true, "state": "dry_run", "message": null, "last_event_at": null}
+  },
+  "metrics": {},
+  "last_error": null,
+  "details": {
+    "service_state": "dry_run",
+    "dry_run": true,
+    "simulation": false,
+    "snapshot": {
+      "deck": {
+        "slots": {},
+        "occupied_slots": 0,
+        "empty_slots": 12
+      },
+      "pipettes": {},
+      "labwares": {},
+      "modules": {}
+    },
+    "session_recipe": {
+      "labware": [],
+      "instruments": [],
+      "modules": []
+    }
+  }
+}

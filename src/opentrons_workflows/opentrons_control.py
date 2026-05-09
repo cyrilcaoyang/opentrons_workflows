@@ -1,4 +1,4 @@
-from .opentrons_sshclient import SSHClient
+from .transport import SSHClient
 import os
 from typing import Dict
 
