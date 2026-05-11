@@ -320,7 +320,10 @@ class OT2Service:
             severity=severity,  # type: ignore[arg-type]
             timestamp=datetime.now(timezone.utc),
         )
-        if self.state not in {OT2ServiceState.UNKNOWN_OUTCOME, OT2ServiceState.DRY_RUN}:
+        if (
+            severity in {"error", "critical"}
+            and self.state not in {OT2ServiceState.UNKNOWN_OUTCOME, OT2ServiceState.DRY_RUN}
+        ):
             self.state = OT2ServiceState.ERROR
 
     def _equipment_state(self) -> str:

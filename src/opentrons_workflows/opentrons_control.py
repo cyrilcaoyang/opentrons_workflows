@@ -9,13 +9,15 @@ class OpentronsControl:
         self._get_protocol(simulation)
 
     def _connect(self, host_alias:str = None, password=""):
+        command_timeout = int(os.getenv("OT2_SSH_COMMAND_TIMEOUT", "120"))
         
         self.client = SSHClient(
             hostname=os.getenv("HOSTNAME"),
             username=os.getenv("USERNAME"),
             key_file_path=os.getenv("KEY_FILE_PATH"),
             host_alias=host_alias,
-            password=password
+            password=password,
+            command_timeout=command_timeout,
         )
         self.client.connect()
 

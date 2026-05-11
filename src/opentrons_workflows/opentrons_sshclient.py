@@ -12,6 +12,8 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_WINDOWS_SDL2_HOME = Path("C:/Users/sdl2")
+
 class SessionState(Enum):
     SHELL = "shell"
     PYTHON = "python"
@@ -57,14 +59,68 @@ class SSHClient:
             identity_file = ssh_config["identityfile"]
             if isinstance(identity_file, list):
                 identity_file = identity_file[0]  # Use the first key file
-            self.key_file_path = os.path.expanduser(identity_file)
+            self.key_file_path = self._expand_ssh_path(identity_file)
 
     def _load_ssh_config(self):
-        ssh_config_file = Path.home() / ".ssh" / "config"
+        ssh_config_file = self._ssh_config_path()
+        if not ssh_config_file.exists():
+            logger.info(
+                "SSH config %s not found; using host_alias=%r as hostname",
+                ssh_config_file,
+                self.host_alias,
+            )
+            return self._default_ot2_ssh_config()
         config = paramiko.config.SSHConfig()
         with open(ssh_config_file) as f:
             config.parse(f)
-        return config.lookup(self.host_alias)
+        resolved = config.lookup(self.host_alias)
+        if "hostname" not in resolved:
+            return self._default_ot2_ssh_config()
+        if "identityfile" not in resolved:
+            resolved["identityfile"] = str(self._ssh_home() / ".ssh" / "ot2_ssh_key")
+        if "user" not in resolved:
+            resolved["user"] = "root"
+        return resolved
+
+    def _default_ot2_ssh_config(self) -> Dict[str, str]:
+        return {
+            "hostname": self.host_alias,
+            "user": "root",
+            "identityfile": str(self._ssh_home() / ".ssh" / "ot2_ssh_key"),
+        }
+
+    def _ssh_home(self) -> Path:
+        """Return the home directory used for OT-2 SSH config/key lookup.
+
+        The gateway may run as a Windows service account whose home is
+        ``systemprofile``. In the AC lab deployment the OT-2 SSH config and key
+        live under the interactive ``sdl2`` profile, so prefer that profile when
+        no explicit override is provided.
+        """
+
+        configured_home = os.getenv("OT2_SSH_HOME")
+        if configured_home:
+            return Path(configured_home).expanduser()
+
+        home = Path.home()
+        if (
+            os.name == "nt"
+            and "systemprofile" in str(home).lower()
+            and (_DEFAULT_WINDOWS_SDL2_HOME / ".ssh").exists()
+        ):
+            return _DEFAULT_WINDOWS_SDL2_HOME
+        return home
+
+    def _ssh_config_path(self) -> Path:
+        configured_config = os.getenv("OT2_SSH_CONFIG")
+        if configured_config:
+            return Path(configured_config).expanduser()
+        return self._ssh_home() / ".ssh" / "config"
+
+    def _expand_ssh_path(self, value: str) -> str:
+        if value.startswith("~/") or value.startswith("~\\"):
+            return str(self._ssh_home() / value[2:])
+        return os.path.expanduser(value)
 
     def connect(self) -> bool:
         """Establish SSH connection and start in shell mode"""

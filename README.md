@@ -141,16 +141,41 @@ Example `~/.ssh/config`:
 
 ```sshconfig
 Host ot2_robot
-    HostName 100.64.254.90
+    HostName 192.168.254.50
     User root
     IdentityFile ~/.ssh/ot2_ssh_key
     StrictHostKeyChecking no
 ```
 
+The AC OT-2 key is expected at `~/.ssh/ot2_ssh_key`. When a control request
+passes `host_alias: "ot2_robot"`, the gateway first tries to resolve that alias
+from this SSH config block and uses the `IdentityFile` above. If the config file
+does not exist, the gateway treats `host_alias` as the hostname and uses
+`root` plus `~/.ssh/ot2_ssh_key`.
+
+The AC key is passphrase-protected. Pass the key passphrase in the startup
+request body as `password`; do not commit the passphrase to this repository.
+
+On the AC Windows gateway host, the service may run under `systemprofile`.
+The SSH client still prefers the `sdl2` profile when it detects that case, so
+`~/.ssh/config` and `~/.ssh/ot2_ssh_key` resolve to:
+
+```text
+C:\Users\sdl2\.ssh\config
+C:\Users\sdl2\.ssh\ot2_ssh_key
+```
+
+Override this only if the gateway moves to another account:
+
+```powershell
+$env:OT2_SSH_HOME = "C:\Users\sdl2"
+$env:OT2_SSH_CONFIG = "C:\Users\sdl2\.ssh\config"
+```
+
 Equivalent environment variables:
 
 ```bash
-export HOSTNAME="100.64.254.90"
+export HOSTNAME="192.168.254.50"
 export USERNAME="root"
 export KEY_FILE_PATH="$HOME/.ssh/ot2_ssh_key"
 ```
@@ -158,9 +183,10 @@ export KEY_FILE_PATH="$HOME/.ssh/ot2_ssh_key"
 On PowerShell:
 
 ```powershell
-$env:HOSTNAME = "100.64.254.90"
+$env:HOSTNAME = "192.168.254.50"
 $env:USERNAME = "root"
 $env:KEY_FILE_PATH = "$HOME/.ssh/ot2_ssh_key"
+$env:OT2_SSH_COMMAND_TIMEOUT = "120"
 ```
 
 ## REST Gateway
@@ -206,6 +232,142 @@ Before startup, `/status` should report:
   "required_actions": ["startup"]
 }
 ```
+
+### Initialising the OT-2
+
+If `/status` reports `equipment_status: "requires_init"` or the AC dashboard
+shows **Needs init**, the gateway is running but has not opened an SSH/protocol
+session to the OT-2 in this gateway process.
+
+For this gateway, `ready` means `POST /control/startup` completed successfully:
+
+- the gateway created an `OT2Control` instance;
+- SSH to the OT-2 is connected;
+- a robot-side Python session is running;
+- the Opentrons protocol API was imported;
+- a protocol context was created with `execute.get_protocol_api('2.21')`
+  (`simulate.get_protocol_api('2.21')` when `simulation: true`).
+
+Startup does not load labware, load instruments, or home the robot. Those are
+separate `setup` / `home` actions once the gateway is ready.
+
+On the current OT-2, creating the protocol context can take about a minute.
+The gateway uses `OT2_SSH_COMMAND_TIMEOUT=120` by default so startup has enough
+time to complete.
+
+On the AC HTE deployment, the OT-2 gateway is reachable at:
+
+```text
+http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:8020
+```
+
+Use `Invoke-RestMethod` on Windows when possible; it avoids `curl.exe` JSON
+quoting issues.
+
+```powershell
+$base = "http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:8020"
+
+# 1. Check current state.
+Invoke-RestMethod "$base/status"
+
+# 2. Claim the OT-2 before sending control commands.
+$claim = Invoke-RestMethod `
+  -Method Post "$base/control/claim" `
+  -ContentType "application/json" `
+  -Body (@{
+    owner = $env:USERNAME
+    session_id = "manual-$([guid]::NewGuid())"
+    ttl_s = 60
+  } | ConvertTo-Json -Compress)
+
+# 3. Initialise the gateway's OT-2 session. `host_alias` maps to a `Host`
+#    entry in $HOME\.ssh\config, which should use ~/.ssh/ot2_ssh_key.
+Invoke-RestMethod `
+  -Method Post "$base/control/startup" `
+  -Headers @{ "X-Claim-Token" = $claim.claim_token } `
+  -ContentType "application/json" `
+  -Body (@{
+    simulation = $false
+    host_alias = "192.168.254.50"
+    password = "<key-passphrase>"
+  } | ConvertTo-Json -Compress)
+
+# 4. Confirm the gateway is ready.
+Invoke-RestMethod "$base/status"
+
+# 5. Release the claim when finished.
+Invoke-RestMethod `
+  -Method Post "$base/control/release" `
+  -Headers @{ "X-Claim-Token" = $claim.claim_token }
+```
+
+If the OT-2 uses a different SSH `Host` alias, replace `ot2_robot` with that
+alias. The alias must point at the OT-2 and use the AC key:
+
+```sshconfig
+Host ot2_robot
+    HostName <OT2_IP_OR_HOSTNAME>
+    User root
+    IdentityFile ~/.ssh/ot2_ssh_key
+    StrictHostKeyChecking no
+```
+
+The equivalent startup body is:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post "$base/control/startup" `
+  -Headers @{ "X-Claim-Token" = $claim.claim_token } `
+  -ContentType "application/json" `
+  -Body (@{
+    simulation = $false
+    host_alias = "192.168.254.50"
+    password = "<key-passphrase>"
+  } | ConvertTo-Json -Compress)
+```
+
+PowerShell aliases `curl` and treats quotes differently from bash. If you need
+`curl.exe`, build JSON with `ConvertTo-Json` and avoid trailing spaces after
+backticks.
+
+```powershell
+$base = "http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:8020"
+
+$claimBody = @{
+  owner = $env:USERNAME
+  session_id = "manual-curl-$([guid]::NewGuid())"
+  ttl_s = 60
+} | ConvertTo-Json -Compress
+
+$claim = curl.exe -s -X POST "$base/control/claim" `
+  -H "Content-Type: application/json" `
+  --data-raw $claimBody | ConvertFrom-Json
+
+$startupBody = @{
+  simulation = $false
+  host_alias = "192.168.254.50"
+  password = "<key-passphrase>"
+} | ConvertTo-Json -Compress
+
+curl.exe -X POST "$base/control/startup" `
+  -H "Content-Type: application/json" `
+  -H "X-Claim-Token: $($claim.claim_token)" `
+  --data-raw $startupBody
+
+curl.exe "$base/status"
+
+curl.exe -X POST "$base/control/release" `
+  -H "X-Claim-Token: $($claim.claim_token)"
+```
+
+If `curl.exe` returns a FastAPI `json_invalid` error, the request body reached
+the gateway without valid JSON quoting. Re-run the `ConvertTo-Json` version
+above, or switch to `Invoke-RestMethod`.
+
+After a successful startup, `/status` may include a `snapshot_failed` warning if
+the robot-side Python environment does not have `opentrons_workflows` installed.
+That warning is non-blocking: `equipment_status: "ready"` and
+`components.protocol.connected: true` are the readiness signals.
 
 ## Claim Then Control
 
