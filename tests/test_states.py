@@ -19,7 +19,7 @@ from pathlib import Path
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from opentrons_workflows.opentrons_sshclient import SSHClient
+from opentrons_server.transport import SSHClient
 
 
 def test_simple_persistence(client):

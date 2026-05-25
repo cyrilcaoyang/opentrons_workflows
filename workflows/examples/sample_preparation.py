@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 from prefect import flow, get_run_logger, task
 
-from opentrons_workflows.control import OT2Control
+from opentrons_server.control import OT2Control
 
 
 @task

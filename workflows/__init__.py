@@ -1,1 +1,1 @@
-"""Workflow examples and Prefect helpers for opentrons_workflows."""
+"""Workflow examples and Prefect helpers for opentrons_server."""

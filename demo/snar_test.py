@@ -1,7 +1,7 @@
 from prefect import flow
 from pathlib import Path
 import json
-from opentrons_workflows import OpentronsControl
+from opentrons_server import OpentronsControl
 
 @flow(log_prints=True)
 def demo_ot2(simulation:bool = True):

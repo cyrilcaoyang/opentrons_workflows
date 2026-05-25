@@ -1,16 +1,26 @@
-from .transport import SSHClient
+"""High-level OT-2/Flex command wrapper.
+
+Drives an Opentrons protocol session over SSH via a Python REPL on the
+robot. ``OT2Control`` is the canonical class; ``OpentronsControl`` is
+preserved as an alias for back-compat with older callers.
+"""
+
+from __future__ import annotations
+
 import os
-from typing import Dict
+from typing import Any, Dict, List, Optional
+
+from ..transport import SSHClient
 
 
-class OpentronsControl:
-    def __init__(self, host_alias:str = None, password="", simulation=False):
+class OT2Control:
+    def __init__(self, host_alias: str = None, password: str = "", simulation: bool = False):
         self._connect(host_alias, password)
         self._get_protocol(simulation)
 
-    def _connect(self, host_alias:str = None, password=""):
+    def _connect(self, host_alias: str = None, password: str = ""):
         command_timeout = int(os.getenv("OT2_SSH_COMMAND_TIMEOUT", "120"))
-        
+
         self.client = SSHClient(
             hostname=os.getenv("HOSTNAME"),
             username=os.getenv("USERNAME"),
@@ -21,21 +31,20 @@ class OpentronsControl:
         )
         self.client.connect()
 
-    def invoke(self, code):
-        """Execute Python code on the robot via SSH"""
+    def invoke(self, code: str) -> str:
+        """Execute Python code on the robot via SSH."""
         if not self.client.is_connected:
             raise Exception("SSH client is not connected")
-        
-        # Ensure we're in Python mode for protocol execution
+
         if self.client.session_state.value != "python":
             self.client.start_python_session()
-        
+
         return self.client.execute_python_command(code)
 
-    def _disconnect(self):
+    def _disconnect(self) -> None:
         self.client.close()
 
-    def _get_protocol(self,simulation):
+    def _get_protocol(self, simulation: bool) -> None:
         self.invoke("from opentrons.types import Point, Location")
         self.invoke("from opentrons import protocol_api")
         self.invoke("import json")
@@ -46,15 +55,38 @@ class OpentronsControl:
             self.invoke("from opentrons import execute")
             self.invoke("protocol = execute.get_protocol_api('2.21')")
 
-    def _load_custom_labware(self, nickname: str, labware_config:Dict, location: str):
+    def initialize_protocol(self, simulation: bool = False) -> None:
+        """Initialize or reinitialize the remote Opentrons protocol context."""
+        self._get_protocol(simulation)
+
+    def shutdown(self) -> None:
+        """Close the active robot session without issuing extra workflow logic."""
+        self._disconnect()
+
+    def setup_protocol(
+        self,
+        *,
+        labware: Optional[List[Dict[str, Any]]] = None,
+        instruments: Optional[List[Dict[str, Any]]] = None,
+        modules: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Load labware, instruments, and modules into the active protocol."""
+        for labware_config in labware or []:
+            self.load_labware(labware_config)
+        for instrument_config in instruments or []:
+            self.load_instrument(instrument_config)
+        for module_config in modules or []:
+            self.load_module(module_config)
+
+    def _load_custom_labware(self, nickname: str, labware_config: Dict, location: str):
         loadname = labware_config["parameters"]["loadName"]
         self.invoke(f"{loadname}={labware_config}")
         self.invoke(f"{nickname} = protocol.load_labware_from_definition(labware_def = {loadname}, location = '{location}')")
 
-    def _load_default_labware(self, nickname:str, loadname:str, location:str):
+    def _load_default_labware(self, nickname: str, loadname: str, location: str):
         self.invoke(f"{nickname} = protocol.load_labware(load_name = '{loadname}', location = '{location}')")
 
-    def _load_default_instrument(self, nickname:str, instrument_name:str, mount:str):
+    def _load_default_instrument(self, nickname: str, instrument_name: str, mount: str):
         self.invoke(f"{nickname} = protocol.load_instrument(instrument_name = '{instrument_name}', mount = '{mount}')")
 
     def _load_custom_instrument(self, nickname: str, instrument_config: Dict, mount: str):
@@ -64,41 +96,18 @@ class OpentronsControl:
         self.invoke("p300.well_bottom_clearance.dispense=10")
 
     def load_labware(self, labware: Dict):
-        # sample labware Dict
-        # lw = {
-        #     "nickname": "96 well plate",
-        #     "loadname": "opentrons_96_tiprack_1000ul",
-        #     "location": "1",
-        #     "ot_default": True,
-        #     "config": {}
-        # }
         if labware["ot_default"]:
             self._load_default_labware(nickname=labware["nickname"], loadname=labware["loadname"], location=labware["location"])
         else:
             self._load_custom_labware(nickname=labware["nickname"], labware_config=labware["config"], location=labware["location"])
 
     def load_instrument(self, instrument: Dict):
-        # sample instrument Dict
-        # ins = {
-        #     "nickname": "p1000",
-        #     "instrument_name": "p1000_single_gen2",
-        #     "mount": "right",
-        #     "ot_default": True,
-        #     "config": {}
-        # }
         if instrument["ot_default"]:
             self._load_default_instrument(nickname=instrument["nickname"], instrument_name=instrument["instrument_name"], mount=instrument["mount"])
         else:
             self._load_custom_instrument(nickname=instrument["nickname"], instrument_config=instrument["config"], mount=instrument["mount"])
 
     def load_module(self, module: Dict):
-        # sample module Dict
-        # module = {
-        #     "nickname": "hs",
-        #     "module_name": "heaterShakerModuleV1",
-        #     "location": "A1",
-        #     "adapter": "opentrons_universal_flat_adapter"
-        # }
         nickname = module["nickname"]
         module_name = module["module_name"]
         location = module["location"]
@@ -122,7 +131,7 @@ class OpentronsControl:
         else:
             return None
 
-    def get_location_from_labware(self, labware_nickname: str, position: str, top: float = 0, bottom: float=0, center: float=0):
+    def get_location_from_labware(self, labware_nickname: str, position: str, top: float = 0, bottom: float = 0, center: float = 0):
         if top:
             append = f".top({top})"
         elif bottom:
@@ -130,11 +139,10 @@ class OpentronsControl:
         elif center:
             append = f".center()"
         else:
-            append = ".top(0)" # original one with 0 offset at z axis
+            append = ".top(0)"
         self.invoke(f"location = {labware_nickname}['{position}']{append}")
 
     def get_location_absolute(self, x: float, y: float, z: float, reference: str = None):
-        # reference is deck position "1" "D1" etc. Default is None as deck itself
         self.invoke(f"location = Location(Point({x},{y},{z}), '{str(reference)}')")
 
     def move_to_pip(self, pip_name: str):
@@ -149,7 +157,7 @@ class OpentronsControl:
     def drop_tip(self, pip_name: str):
         self.invoke(f"{pip_name}.drop_tip()")
 
-    def prepare_aspirate(self, pip_name:str):
+    def prepare_aspirate(self, pip_name: str):
         self.invoke(f"{pip_name}.prepare_to_aspirate()")
 
     def aspirate(self, pip_name: str, volume: float):
@@ -164,10 +172,10 @@ class OpentronsControl:
     def blow_out(self, pip_name: str):
         self.invoke(f"{pip_name}.blow_out(location = location)")
 
-    def set_speed(self, pip_name: str, speed:float):
+    def set_speed(self, pip_name: str, speed: float):
         self.invoke(f"{pip_name}.default_speed = {speed}")
 
-    def delay(self, seconds:float = 0, minutes: float = 0):
+    def delay(self, seconds: float = 0, minutes: float = 0):
         self.invoke(f"protocol.delay(seconds={seconds}, minutes = {minutes})")
 
     def resume(self):
@@ -177,14 +185,16 @@ class OpentronsControl:
         self.invoke("protocol.pause()")
 
     def move_labware_w_gripper(self, labware_nickname: str, new_location: str):
-        # labware_nickname is the name of labware to move, not the loadname which could duplicate
-        # new_location "1", "D1", certain module (heater/shaker etc., protocol_api.OFF_DECK)
         if new_location == "OFF_DECK":
             self.invoke(f"protocol.move_labware(labware = {labware_nickname}, new_location = protocol_api.OFF_DECK, use_gripper = True)")
         elif "adapter" in new_location:
             self.invoke(f"protocol.move_labware(labware = {labware_nickname}, new_location = {new_location}, use_gripper = True)")
         else:
             self.invoke(f"protocol.move_labware(labware = {labware_nickname}, new_location = '{new_location}', use_gripper = True)")
+
+    def move_labware(self, labware_nickname: str, new_location: str) -> None:
+        """Move labware using the robot gripper when available."""
+        self.move_labware_w_gripper(labware_nickname, new_location)
 
     def hs_latch_open(self, nickname: str):
         self.invoke(f"{nickname}.open_labware_latch()")
@@ -208,7 +218,7 @@ class OpentronsControl:
         return self.invoke(f"{nickname}.current_speed")
 
     def get_temp(self, nickname: str):
-        return self.invoke(f"{nickname}.current_temperature")   
+        return self.invoke(f"{nickname}.current_temperature")
 
     def remove_labware(self, labware_nickname: str):
         self.invoke(f"deck_pos = {labware_nickname}.parent")
@@ -223,3 +233,8 @@ class OpentronsControl:
     def close_session(self):
         self.home()
         self._disconnect()
+
+
+OpentronsControl = OT2Control
+
+__all__ = ["OT2Control", "OpentronsControl"]

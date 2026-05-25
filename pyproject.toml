@@ -5,10 +5,11 @@ requires = ["setuptools>=61.0"]  # Specify setuptools as the build backend
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "opentrons_workflows"              # The distribution name on PyPI
-version = "0.2.0"                         # Initial version - increment as you release updates
+name = "opentrons_server"                 # The distribution name on PyPI
+version = "0.3.0"                         # 0.3.0: consolidate parallel files
 authors = [
-    { name="Han Hao", email="clascclon@gmail.com" }, # Change placeholder
+    { name="Yang Cao", email="cyrilcaoyang@gmail.com" },
+    { name="Han Hao", email="clascclon@gmail.com" },
 ]
 description = "A package to control Opentrons OT-2 robots via SSH, with Prefect integration."
 readme = "README.md"                      # Assumes you have a README.md file
@@ -48,9 +49,9 @@ dev = [
 ]
 
 [project.urls] # Optional but recommended links
-"Homepage" = "https://github.com/cyrilcaoyang/opentrons_workflows"
-"Repository" = "https://github.com/cyrilcaoyang/opentrons_workflows"
-"Issues" = "https://github.com/cyrilcaoyang/opentrons_workflows/issues"
+"Homepage" = "https://github.com/cyrilcaoyang/opentrons-server"
+"Repository" = "https://github.com/cyrilcaoyang/opentrons-server"
+"Issues" = "https://github.com/cyrilcaoyang/opentrons-server/issues"
 
 # --- Configuration for setuptools ---
 [tool.setuptools.packages.find]
@@ -58,7 +59,7 @@ where = ["src"]  # Look for packages in the 'src' directory
 
 # If you want to include non-code files (e.g., data files) within your package:
 # [tool.setuptools.package-data]
-# "opentrons_workflows" = ["*.yaml", "data/*"] # Example: include yaml files or files in a data/ subdir
+# "opentrons_server" = ["*.yaml", "data/*"] # Example: include yaml files or files in a data/ subdir
 
 # --- Tool configurations ---
 [tool.pytest.ini_options]

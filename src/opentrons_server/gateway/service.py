@@ -85,7 +85,11 @@ class OT2Service:
 
         self.state = OT2ServiceState.CONNECTING
         self.host_alias = host_alias or self.host_alias
-        if password is not None:
+        # Truthy check: an empty-string `password` in the request body
+        # is treated as "no opinion" and falls through to the env-var
+        # default set at __init__. This keeps device secrets in the
+        # gateway's service config and out of workflow repos.
+        if password:
             self.password = password
         if simulation is not None:
             self.simulation = simulation
@@ -205,7 +209,7 @@ class OT2Service:
             # The reader functions need to execute where the protocol object
             # lives: inside the robot-side Python interpreter.
             code = (
-                "from opentrons_workflows.opentrons_states import get_all_states\n"
+                "from opentrons_server.control.state_readers import get_all_states\n"
                 "import json\n"
                 "print(json.dumps(get_all_states(protocol), default=str))"
             )

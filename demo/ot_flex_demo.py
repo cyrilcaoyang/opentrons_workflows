@@ -1,5 +1,5 @@
 from prefect import flow
-from opentrons_workflows import OpentronsControl
+from opentrons_server import OpentronsControl
 
 @flow(log_prints=True)
 def demo_flex(simulation: bool = True):

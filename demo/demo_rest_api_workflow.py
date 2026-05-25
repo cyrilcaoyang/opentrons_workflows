@@ -15,7 +15,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.opentrons_workflows.workflow_orchestrator import (
+from src.opentrons_server.workflow_orchestrator import (
     register_ot2_robot,
     register_instrument,
     sample_preparation_workflow,
@@ -32,7 +32,7 @@ def demo_rest_api_usage():
     print("=" * 50)
     
     # Note: This requires the FastAPI server to be running
-    # Start with: python src/opentrons_workflows/ot2_rest_api.py
+    # Start with: python src/opentrons_server/ot2_rest_api.py
     
     try:
         # Health check
@@ -45,7 +45,7 @@ def demo_rest_api_usage():
             return
     except requests.exceptions.ConnectionError:
         print("❌ API server not running. Start with:")
-        print("   python src/opentrons_workflows/ot2_rest_api.py")
+        print("   python src/opentrons_server/ot2_rest_api.py")
         return
     
     # Connect to robot
@@ -337,7 +337,7 @@ def main():
     
     print("\n🎉 Demo completed!")
     print("\nNext steps:")
-    print("1. Start FastAPI server: python src/opentrons_workflows/ot2_rest_api.py")
+    print("1. Start FastAPI server: python src/opentrons_server/ot2_rest_api.py")
     print("2. Access API docs: http://localhost:8000/docs")
     print("3. Set up Prefect server for workflow monitoring")
     print("4. Integrate with your specific instruments")

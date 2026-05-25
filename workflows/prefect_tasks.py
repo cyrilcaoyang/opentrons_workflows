@@ -1,6 +1,6 @@
 """Reusable Prefect task helpers for workflow code.
 
-This module intentionally lives outside ``src/opentrons_workflows`` so the core
+This module intentionally lives outside ``src/opentrons_server`` so the core
 device package and gateway can import without requiring workflow orchestration.
 """
 

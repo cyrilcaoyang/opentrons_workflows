@@ -16,7 +16,7 @@ The `opentrons_states.py` module provides **simple, direct access** to the robot
 
 ### 🗂️ Deck State
 ```python
-from opentrons_workflows import get_deck_state
+from opentrons_server import get_deck_state
 
 deck = get_deck_state(protocol)
 # Returns:
@@ -36,7 +36,7 @@ deck = get_deck_state(protocol)
 
 ### 🧪 Labware State  
 ```python
-from opentrons_workflows import get_labware_state
+from opentrons_server import get_labware_state
 
 labware = get_labware_state(tip_rack)
 # Returns:
@@ -54,7 +54,7 @@ labware = get_labware_state(tip_rack)
 
 ### 🔬 Pipette State
 ```python
-from opentrons_workflows import get_pipette_state
+from opentrons_server import get_pipette_state
 
 pipette = get_pipette_state(p300)
 # Returns:
@@ -71,7 +71,7 @@ pipette = get_pipette_state(p300)
 
 ### 💧 Well State
 ```python
-from opentrons_workflows import get_well_state
+from opentrons_server import get_well_state
 
 well = get_well_state(plate['A1'])
 # Returns:
@@ -92,7 +92,7 @@ The simple data structures make it easy to build real-time dashboards:
 
 ```python
 # Get complete robot state
-from opentrons_workflows import get_all_states
+from opentrons_server import get_all_states
 
 state = get_all_states(protocol)
 # Returns complete state as nested dictionaries
@@ -202,7 +202,7 @@ status = get_pipette_state(pipette)  # Returns simple dict
 
 ### Old Code
 ```python
-from opentrons_workflows import PipetteState, LabwareState
+from opentrons_server import PipetteState, LabwareState
 
 pipette_state = PipetteState(pipette)
 has_tip = pipette_state.has_tip
@@ -214,7 +214,7 @@ summary = labware_state.get_status_summary()
 
 ### New Code  
 ```python
-from opentrons_workflows import get_pipette_state, get_labware_state
+from opentrons_server import get_pipette_state, get_labware_state
 
 pipette_data = get_pipette_state(pipette)
 has_tip = pipette_data['has_tip']

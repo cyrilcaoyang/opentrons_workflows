@@ -19,7 +19,7 @@ from pathlib import Path
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from opentrons_workflows.opentrons_sshclient import SSHClient
+from opentrons_server.transport import SSHClient
 
 
 def test_basic_python_batch():
@@ -141,7 +141,7 @@ def test_protocol_state_tracking():
     print("-" * 50)
     
     # First load the opentrons_states module
-    states_file = Path(__file__).parent.parent / "src" / "opentrons_workflows" / "opentrons_states.py"
+    states_file = Path(__file__).parent.parent / "src" / "opentrons_server" / "control" / "state_readers.py"
     
     with open(states_file, 'r') as f:
         states_code = f.read()

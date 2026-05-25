@@ -14,7 +14,7 @@ import paramiko
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from opentrons_workflows.opentrons_sshclient import SSHClient
+from opentrons_server.transport import SSHClient
 
 class OT2Client(SSHClient):
     """Simple OT-2 client with proper session handling"""
@@ -151,7 +151,7 @@ if __name__ == "__main__":
     success = main()
     if success:
         print("\n🎉 OT-2 connection and Python session working!")
-        print("Ready for opentrons_workflows testing!")
+        print("Ready for opentrons_server testing!")
     else:
         print("\n❌ Test failed!")
         sys.exit(1) 

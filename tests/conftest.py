@@ -1,5 +1,5 @@
 """
-pytest configuration file with fixtures for opentrons_workflows testing.
+pytest configuration file with fixtures for opentrons_server testing.
 """
 
 import pytest
@@ -10,7 +10,7 @@ from unittest.mock import Mock, MagicMock
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from opentrons_workflows.opentrons_sshclient import SSHClient, SessionState
+from opentrons_server.transport import SSHClient, SessionState
 
 
 @pytest.fixture

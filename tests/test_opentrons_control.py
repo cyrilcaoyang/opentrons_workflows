@@ -12,15 +12,15 @@ from unittest.mock import Mock, patch
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from opentrons_workflows import OpentronsControl
-from opentrons_workflows.opentrons_sshclient import SSHClient, SessionState
+from opentrons_server import OpentronsControl
+from opentrons_server.transport import SSHClient, SessionState
 
 
 def test_opentrons_control_invoke_method():
     """Test that the invoke method works correctly with the fixed implementation"""
     
     # Mock the SSHClient
-    with patch('opentrons_workflows.opentrons_control.SSHClient') as mock_ssh_class:
+    with patch('opentrons_server.control.ot2_control.SSHClient') as mock_ssh_class:
         mock_client = Mock()
         mock_client.is_connected = True
         mock_client.session_state = Mock()
@@ -46,7 +46,7 @@ def test_opentrons_control_invoke_method():
 def test_opentrons_control_invoke_switches_to_python():
     """Test that invoke switches to Python mode if not already in Python mode"""
     
-    with patch('opentrons_workflows.opentrons_control.SSHClient') as mock_ssh_class:
+    with patch('opentrons_server.control.ot2_control.SSHClient') as mock_ssh_class:
         mock_client = Mock()
         mock_client.is_connected = True
         mock_client.session_state = Mock()
@@ -71,7 +71,7 @@ def test_opentrons_control_invoke_switches_to_python():
 def test_opentrons_control_invoke_disconnected_client():
     """Test that invoke raises exception when client is not connected"""
     
-    with patch('opentrons_workflows.opentrons_control.SSHClient') as mock_ssh_class:
+    with patch('opentrons_server.control.ot2_control.SSHClient') as mock_ssh_class:
         mock_client = Mock()
         mock_client.is_connected = True  # Connected during init
         mock_client.connect = Mock(return_value=True)
@@ -93,7 +93,7 @@ def test_opentrons_control_invoke_disconnected_client():
 def test_opentrons_control_basic_methods():
     """Test that basic OpentronsControl methods exist and work"""
     
-    with patch('opentrons_workflows.opentrons_control.SSHClient') as mock_ssh_class:
+    with patch('opentrons_server.control.ot2_control.SSHClient') as mock_ssh_class:
         mock_client = Mock()
         mock_client.is_connected = True
         mock_client.session_state = Mock()
@@ -131,7 +131,7 @@ def test_opentrons_control_basic_methods():
 def test_opentrons_control_simulation_mode():
     """Test OpentronsControl in simulation mode"""
     
-    with patch('opentrons_workflows.opentrons_control.SSHClient') as mock_ssh_class:
+    with patch('opentrons_server.control.ot2_control.SSHClient') as mock_ssh_class:
         mock_client = Mock()
         mock_client.is_connected = True
         mock_client.session_state = Mock()

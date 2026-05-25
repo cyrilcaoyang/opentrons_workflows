@@ -1,9 +1,7 @@
 # Core robot control
-from .control import OT2Control, OpentronsControl
-from .transport import SSHClient
-
-# State tracking classes (leverages robot's built-in state tracking)
-from .opentrons_states import (
+from .control import (
+    OT2Control,
+    OpentronsControl,
     get_deck_state,
     get_labware_state,
     get_pipette_state,
@@ -12,8 +10,9 @@ from .opentrons_states import (
     get_all_states,
     print_deck_summary,
     print_labware_summary,
-    print_pipette_summary
+    print_pipette_summary,
 )
+from .transport import SSHClient
 
 # Utilities
 from .labware_generator import LabwareGenerator
