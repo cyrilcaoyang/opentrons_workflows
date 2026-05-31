@@ -13,7 +13,8 @@
   "uptime_seconds": 0.0,
   "components": {
     "ssh": {"connected": false, "state": "disconnected", "message": null, "last_event_at": null},
-    "protocol": {"connected": false, "state": "requires_init", "message": null, "last_event_at": null}
+    "protocol": {"connected": false, "state": "requires_init", "message": null, "last_event_at": null},
+    "lights": {"connected": false, "state": "unknown", "message": null, "last_event_at": null}
   },
   "metrics": {},
   "last_error": null,

@@ -77,6 +77,27 @@ pip install -e ".[dev]"
 - `workflows/` contains Prefect orchestration examples. The core gateway does
   not require Prefect to import or start.
 
+## OT-2 onboard environment: no install required
+
+The OT-2 runs **only** the official Opentrons SDK. `opentrons_server` is not
+installed on the robot and never should be.
+
+State introspection that needs to run where the live `protocol` object lives
+(deck contents, loaded labware, pipette state) works by shipping the
+`control.state_readers` module **source** over the SSH REPL each snapshot.
+`state_readers.py` has no imports from `opentrons_server` — only stdlib
+`datetime` and the Opentrons SDK that's already on the robot — so the source
+is self-contained.
+
+`gateway.OT2Service.refresh_snapshot` `exec()`s the source as a single
+compiled string (the OT-2's interactive REPL would otherwise break on blank
+lines inside function bodies). Two separate REPL invokes — one to define,
+one to call and capture JSON — because the SSH command reader breaks on the
+first `>>>` prompt it sees.
+
+Result: bumping the gateway's package version never requires touching the
+OT-2 itself.
+
 ## Basic Python Control
 
 ```python
@@ -460,6 +481,11 @@ Useful control endpoints:
 - `POST /control/dispense`
 - `POST /control/drop-tip`
 - `POST /control/move-labware`
+- `POST /control/lights` — body `{"on": bool}`; toggles the deck (rail) lights
+  by proxying to the robot's own `POST /robot/lights`. A convenience control:
+  `lights.set` appears in `allowed_actions` and `components.lights`
+  (`on`/`off`/`unknown`) is reported on `/status` whenever the robot is
+  reachable, regardless of `equipment_status`.
 - `POST /control/reconcile`
 
 ## AC Organic Lab Dashboard Integration

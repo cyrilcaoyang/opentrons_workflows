@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+import os
 import socket
 import time
 from datetime import datetime, timezone
@@ -9,10 +11,43 @@ from enum import Enum
 from typing import Any, Callable, Dict, Optional
 
 import paramiko
+import requests
 
 from ..control import OT2Control
+from ..control import state_readers as _state_readers
 from .claims import ClaimManager
 from .models import ComponentStatus, EquipmentStatus, ErrorInfo
+
+
+# Snapshot is run on the OT-2's Python REPL in two invokes. The OT-2 runs
+# only the official Opentrons SDK — `opentrons_server` is NOT installed
+# there by design — so we ship the reader source over the wire and exec()
+# it as a single string literal. state_readers has zero imports from
+# opentrons_server, so the source is self-contained against the Opentrons
+# SDK + stdlib.
+#
+# Two invokes (not one multi-statement send) because the SSH REPL reader
+# breaks on the FIRST `>>>` prompt; sending the exec + print together would
+# capture only the exec's empty output. The exec defines `get_all_states`
+# in the REPL's module globals so the second invoke can call it.
+# (Blank lines inside function bodies break a naïve paste of the source
+# directly into the REPL — interactive mode treats blank as end-of-compound
+# — so we route the source through compile()/exec() to bypass that quirk.)
+_REMOTE_SNAPSHOT_DEFS = f"exec({inspect.getsource(_state_readers)!r})"
+_REMOTE_SNAPSHOT_CALL = (
+    "import json; print(json.dumps(get_all_states(protocol), default=str))"
+)
+
+# Deck (rail) lights are driven through the robot's own Opentrons HTTP API
+# (GET/POST /robot/lights), not the SSH REPL: it is a stateless, side-effect
+# -free read on the GET path, so a direct HTTP call avoids contending with
+# the shared REPL session that snapshot reads and protocol commands use. The
+# robot host is the same one SSH already reaches; the HTTP server listens on
+# port 31950 and requires an Opentrons-Version header. Both are overridable
+# for non-standard deployments.
+_OT2_HTTP_PORT = os.getenv("OT2_HTTP_PORT", "31950")
+_OT2_HTTP_TIMEOUT = float(os.getenv("OT2_HTTP_TIMEOUT", "2.0"))
+_OPENTRONS_HTTP_HEADERS = {"Opentrons-Version": "3"}
 
 
 class OT2ServiceState(str, Enum):
@@ -24,6 +59,10 @@ class OT2ServiceState(str, Enum):
     DRY_RUN = "dry_run"
     ERROR = "error"
     UNKNOWN_OUTCOME = "unknown_outcome"
+    # Robot reachable over HTTP but a run is active outside this gateway
+    # (e.g. started in the official Opentrons app). We deliberately do NOT
+    # take the REPL control plane in this state — see boot_reconnect().
+    EXTERNAL_CONTROL = "external_control"
 
 
 class UnknownOutcomeError(RuntimeError):
@@ -62,6 +101,11 @@ class OT2Service:
         self.control: Optional[OT2Control] = None
         self.claims = ClaimManager()
         self.last_error: Optional[ErrorInfo] = None
+        self._dry_run_lights_on = False
+        self.equipment_version: Optional[str] = None
+        self._last_probe: Dict[str, Any] = {}
+        self._status_note: Optional[str] = None
+        self._boot_started = False
         self.last_snapshot: Dict[str, Any] = self._empty_snapshot()
         self.session_recipe: Dict[str, Any] = {
             "labware": [],
@@ -102,7 +146,9 @@ class OT2Service:
             )
             self.state = OT2ServiceState.READY
             self.last_error = None
+            self._status_note = None
             self.refresh_snapshot()
+            self._refresh_identity()
         except Exception as exc:
             self._set_error("startup_failed", str(exc), severity="error")
             raise
@@ -194,6 +240,193 @@ class OT2Service:
             idempotent=False,
         )
 
+    def _robot_lights_url(self) -> Optional[str]:
+        """Resolve the robot's /robot/lights HTTP endpoint, or None if unknown.
+
+        Prefers an explicit ``OT2_HTTP_BASE_URL`` override; otherwise reuses
+        the hostname the SSH transport already resolved. Returns None when no
+        session is connected so callers can report the lights as unreachable
+        without attempting a doomed request.
+        """
+
+        base = os.getenv("OT2_HTTP_BASE_URL")
+        if base:
+            return base.rstrip("/") + "/robot/lights"
+        if self.control is None:
+            return None
+        host = getattr(self.control.client, "hostname", None)
+        if not host:
+            return None
+        return f"http://{host}:{_OT2_HTTP_PORT}/robot/lights"
+
+    def get_lights(self) -> Optional[bool]:
+        """Return the deck-light state, or None when it cannot be determined.
+
+        Side-effect-free: a GET against the robot's HTTP API. In dry-run mode
+        the in-memory simulated state is returned.
+        """
+
+        if self.dry_run:
+            return self._dry_run_lights_on
+        url = self._robot_lights_url()
+        if url is None:
+            return None
+        response = requests.get(url, headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT)
+        response.raise_for_status()
+        return bool(response.json().get("on"))
+
+    def set_lights(self, on: bool) -> bool:
+        """Set the deck lights via the robot's HTTP API; return the new state."""
+
+        if self.dry_run:
+            self._dry_run_lights_on = on
+            return on
+        url = self._robot_lights_url()
+        if url is None:
+            raise RuntimeError("OT-2 is not initialized; POST /control/startup first")
+        response = requests.post(
+            url, json={"on": on}, headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT
+        )
+        response.raise_for_status()
+        return bool(response.json().get("on", on))
+
+    def _lights_component(self) -> ComponentStatus:
+        """Build the ``lights`` component, tolerating an unreachable robot.
+
+        Never raises: a failed read is reported as ``unknown``/disconnected so
+        ``/status`` stays side-effect-free and always returns 200.
+        """
+
+        try:
+            on = self.get_lights()
+        except Exception:
+            on = None
+        if on is None:
+            return ComponentStatus(connected=False, state="unknown")
+        return ComponentStatus(connected=True, state="on" if on else "off")
+
+    def _probe_base_url(self) -> Optional[str]:
+        """Resolve the robot's HTTP API base, usable *before* a session exists.
+
+        Unlike the lights path, this falls back to the configured host alias so
+        the boot probe can run while ``self.control`` is still None.
+        """
+
+        base = os.getenv("OT2_HTTP_BASE_URL")
+        if base:
+            return base.rstrip("/")
+        host = getattr(self.control.client, "hostname", None) if self.control is not None else None
+        host = host or self.host_alias
+        if not host:
+            return None
+        return f"http://{host}:{_OT2_HTTP_PORT}"
+
+    def probe_robot(self) -> Dict[str, Any]:
+        """Read-only probe of the robot-server HTTP API. Never raises.
+
+        Derives reachability, identity (api/fw version, model, name), whether a
+        run is active outside this gateway, and the attached instruments — all
+        durable, session-independent state the SSH/REPL plane cannot give us.
+        """
+
+        result: Dict[str, Any] = {
+            "reachable": False,
+            "run_active": False,
+            "api_version": None,
+            "fw_version": None,
+            "robot_model": None,
+            "robot_name": None,
+            "instruments": [],
+        }
+        base = self._probe_base_url()
+        if base is None:
+            return result
+        try:
+            resp = requests.get(base + "/health", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT)
+            resp.raise_for_status()
+            health = resp.json()
+        except Exception:
+            return result  # unreachable
+        result["reachable"] = True
+        result["api_version"] = health.get("api_version")
+        result["fw_version"] = health.get("fw_version")
+        result["robot_model"] = health.get("robot_model")
+        result["robot_name"] = health.get("name")
+        # Best-effort extras: a failure here must not flip reachability.
+        try:
+            runs = requests.get(base + "/runs", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT).json()
+            result["run_active"] = any(
+                r.get("current") and r.get("status") not in {"succeeded", "failed", "stopped"}
+                for r in runs.get("data", []) or []
+            )
+        except Exception:
+            pass
+        try:
+            instruments = requests.get(
+                base + "/instruments", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT
+            ).json()
+            result["instruments"] = [
+                {
+                    "mount": d.get("mount"),
+                    "model": d.get("instrumentModel"),
+                    "name": d.get("instrumentName"),
+                    "channels": (d.get("data") or {}).get("channels"),
+                }
+                for d in instruments.get("data", []) or []
+            ]
+        except Exception:
+            pass
+        return result
+
+    def _refresh_identity(self) -> None:
+        """Update cached probe/version from a best-effort HTTP read."""
+
+        probe = self.probe_robot()
+        if probe.get("reachable"):
+            self._last_probe = probe
+            if probe.get("api_version"):
+                self.equipment_version = probe["api_version"]
+
+    def boot_reconnect(self) -> None:
+        """Guarded one-shot reconnect at process start.
+
+        Probe the robot's HTTP API and only (re)establish the SSH/REPL protocol
+        context when the robot is reachable AND idle, so a service restart
+        self-heals to ``ready`` without ever seizing the hardware from an active
+        run (e.g. one started in the official Opentrons app). The REPL plane and
+        the robot-server run engine are mutually exclusive — this is the guard
+        that keeps them from colliding.
+        """
+
+        if self.dry_run or self._boot_started:
+            return
+        self._boot_started = True
+
+        probe = self.probe_robot()
+        self._last_probe = probe
+        if probe.get("api_version"):
+            self.equipment_version = probe["api_version"]
+
+        if not probe.get("reachable"):
+            self._status_note = (
+                f"Robot unreachable at {self._probe_base_url() or 'unknown host'}; awaiting startup"
+            )
+            return
+        if probe.get("run_active"):
+            self.state = OT2ServiceState.EXTERNAL_CONTROL
+            self._status_note = (
+                "Robot has an active run (external / official app); gateway is standing off"
+            )
+            return
+
+        # Reachable and idle: safe to take the REPL control plane.
+        self._status_note = None
+        try:
+            self.startup()
+        except Exception:
+            # startup() already recorded last_error and flipped to ERROR.
+            pass
+
     def refresh_snapshot(self) -> Dict[str, Any]:
         """Refresh cached state from the remote session when possible."""
 
@@ -207,13 +440,11 @@ class OT2Service:
 
         try:
             # The reader functions need to execute where the protocol object
-            # lives: inside the robot-side Python interpreter.
-            code = (
-                "from opentrons_server.control.state_readers import get_all_states\n"
-                "import json\n"
-                "print(json.dumps(get_all_states(protocol), default=str))"
-            )
-            output = self.control.invoke(code)
+            # lives: inside the robot-side Python interpreter. We send the
+            # reader source over the wire rather than importing it, because
+            # the OT-2 only runs the Opentrons SDK — see _REMOTE_SNAPSHOT_*.
+            self.control.invoke(_REMOTE_SNAPSHOT_DEFS)
+            output = self.control.invoke(_REMOTE_SNAPSHOT_CALL)
             self.last_snapshot = {"raw": output, "note": "remote JSON is embedded in REPL output"}
         except Exception as exc:
             self._set_error("snapshot_failed", str(exc), severity="warning")
@@ -224,6 +455,12 @@ class OT2Service:
 
         now = datetime.now(timezone.utc)
         status = self._equipment_state()
+        lights = self._lights_component()
+        # Lights are a convenience control, not gated on equipment_status, so
+        # advertise lights.set whenever the robot answered the lights read.
+        actions = self.allowed_actions()
+        if lights.connected and "lights.set" not in actions:
+            actions.append("lights.set")
         details: Dict[str, Any] = {
             "service_state": self.state.value,
             "dry_run": self.dry_run,
@@ -231,6 +468,8 @@ class OT2Service:
             "snapshot": self.last_snapshot,
             "session_recipe": self.session_recipe,
         }
+        if self._last_probe:
+            details["robot"] = self._last_probe
         claimed_by = self.claims.current()
         if claimed_by is not None:
             details["claimed_by"] = claimed_by.model_dump(mode="json")
@@ -238,13 +477,14 @@ class OT2Service:
         return EquipmentStatus(
             equipment_id=self.equipment_id,
             equipment_name=self.equipment_name,
+            equipment_version=self.equipment_version,
             equipment_status=status,
             message=self._message(),
             required_actions=self._required_actions(),
-            allowed_actions=self.allowed_actions(),
+            allowed_actions=actions,
             device_time=now,
             uptime_seconds=time.monotonic() - self.started_at,
-            components=self._components(),
+            components=self._components(lights),
             metrics={},
             last_error=self.last_error,
             details=details,
@@ -271,6 +511,9 @@ class OT2Service:
             ]
         if self.state == OT2ServiceState.BUSY:
             return ["pause"]
+        if self.state == OT2ServiceState.EXTERNAL_CONTROL:
+            # Robot is driven from outside this gateway; we issue nothing.
+            return []
         return []
 
     def reconcile(self, snapshot: Optional[Dict[str, Any]] = None) -> None:
@@ -333,7 +576,7 @@ class OT2Service:
     def _equipment_state(self) -> str:
         if self.state == OT2ServiceState.READY:
             return "ready"
-        if self.state in {OT2ServiceState.BUSY, OT2ServiceState.CONNECTING}:
+        if self.state in {OT2ServiceState.BUSY, OT2ServiceState.CONNECTING, OT2ServiceState.EXTERNAL_CONTROL}:
             return "busy"
         if self.state == OT2ServiceState.REQUIRES_INIT:
             return "requires_init"
@@ -348,8 +591,10 @@ class OT2Service:
     def _message(self) -> str:
         if self.last_error is not None:
             return self.last_error.message
+        if self.state == OT2ServiceState.EXTERNAL_CONTROL:
+            return self._status_note or "Robot under external control; gateway is standing off"
         if self.state == OT2ServiceState.REQUIRES_INIT:
-            return "Awaiting startup"
+            return self._status_note or "Awaiting startup"
         if self.state == OT2ServiceState.DRY_RUN:
             return "Dry-run mode - no hardware connected"
         if self.state == OT2ServiceState.UNKNOWN_OUTCOME:
@@ -365,9 +610,9 @@ class OT2Service:
             return ["startup"]
         return []
 
-    def _components(self) -> Dict[str, ComponentStatus]:
+    def _components(self, lights: ComponentStatus) -> Dict[str, ComponentStatus]:
         connected = self.control is not None or self.dry_run
-        return {
+        components: Dict[str, ComponentStatus] = {
             "ssh": ComponentStatus(
                 connected=connected,
                 state="connected" if connected else "disconnected",
@@ -377,7 +622,18 @@ class OT2Service:
                 in {OT2ServiceState.READY, OT2ServiceState.BUSY, OT2ServiceState.PAUSED, OT2ServiceState.DRY_RUN},
                 state=self.state.value,
             ),
+            "lights": lights,
         }
+        # Attached pipettes, surfaced from the (session-independent) HTTP probe.
+        for instrument in self._last_probe.get("instruments", []) or []:
+            mount = instrument.get("mount")
+            if not mount:
+                continue
+            components[f"pipette_{mount}"] = ComponentStatus(
+                connected=True,
+                state=instrument.get("name") or instrument.get("model") or "attached",
+            )
+        return components
 
     def _empty_snapshot(self) -> Dict[str, Any]:
         return {

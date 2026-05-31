@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
@@ -17,6 +18,7 @@ from .models import (
     CommandResponse,
     EquipmentStatus,
     HealthResponse,
+    LightsRequest,
     LiquidMoveRequest,
     MoveLabwareRequest,
     ProbeResponse,
@@ -36,9 +38,16 @@ class ClaimHTTPError(Exception):
         self.headers = headers or {}
 
 
-def create_app(*, dry_run: Optional[bool] = None, enforce_claims: bool = True) -> FastAPI:
+def create_app(
+    *,
+    dry_run: Optional[bool] = None,
+    enforce_claims: bool = True,
+    auto_reconnect: Optional[bool] = None,
+) -> FastAPI:
     if dry_run is None:
         dry_run = os.environ.get("OT2_DRY_RUN", "false").lower() in {"1", "true", "yes"}
+    if auto_reconnect is None:
+        auto_reconnect = os.environ.get("OT2_AUTO_RECONNECT", "true").lower() in {"1", "true", "yes"}
 
     service = OT2Service(
         equipment_id=os.environ.get("OT2_EQUIPMENT_ID", "ot2"),
@@ -196,6 +205,20 @@ def create_app(*, dry_run: Optional[bool] = None, enforce_claims: bool = True) -
     def move_labware(request: MoveLabwareRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
         return _run_non_idempotent(lambda: service.move_labware(request), "Labware moved")
 
+    @app.post("/control/lights", response_model=CommandResponse, tags=["control"])
+    def lights(request: LightsRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        try:
+            on = service.set_lights(request.on)
+        except RuntimeError as exc:
+            # No session yet — same shape as the other "not initialized" refusals.
+            raise HTTPException(status_code=409, detail=str(exc))
+        except Exception as exc:
+            # Upstream robot HTTP API failed/unreachable.
+            raise HTTPException(status_code=502, detail=f"robot lights request failed: {exc}")
+        return CommandResponse(
+            message=f"Deck lights {'on' if on else 'off'}", state=service.state.value
+        )
+
     @app.post("/control/reconcile", response_model=CommandResponse, tags=["control"])
     def reconcile(snapshot: Optional[dict[str, Any]] = None, _claim: None = Depends(require_claim)) -> CommandResponse:
         service.reconcile(snapshot)
@@ -211,6 +234,16 @@ def create_app(*, dry_run: Optional[bool] = None, enforce_claims: bool = True) -
             raise HTTPException(status_code=409, detail=str(exc))
 
     app.state.service = service
+
+    # Guarded self-heal on process start: probe the robot over HTTP and, only
+    # when it's reachable AND idle, re-establish the REPL session in the
+    # background so a restart returns to `ready` without blocking liveness or
+    # seizing hardware from an active run. Skipped in dry-run.
+    if auto_reconnect and not service.dry_run:
+        threading.Thread(
+            target=service.boot_reconnect, name="ot2-boot-reconnect", daemon=True
+        ).start()
+
     return app
 
 

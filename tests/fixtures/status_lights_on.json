@@ -5,22 +5,33 @@
   "equipment_kind": "liquid_handler",
   "equipment_version": null,
   "host": null,
-  "equipment_status": "dry_run",
-  "message": "Dry-run mode - no hardware connected",
+  "equipment_status": "ready",
+  "message": "OT-2 service state: ready",
   "required_actions": [],
-  "allowed_actions": ["startup", "shutdown", "home", "setup", "lights.set"],
+  "allowed_actions": [
+    "shutdown",
+    "home",
+    "setup",
+    "pause",
+    "pick_up_tip",
+    "aspirate",
+    "dispense",
+    "drop_tip",
+    "move_labware",
+    "lights.set"
+  ],
   "device_time": "2026-05-08T22:50:01Z",
   "uptime_seconds": 0.0,
   "components": {
     "ssh": {"connected": true, "state": "connected", "message": null, "last_event_at": null},
-    "protocol": {"connected": true, "state": "dry_run", "message": null, "last_event_at": null},
-    "lights": {"connected": true, "state": "off", "message": null, "last_event_at": null}
+    "protocol": {"connected": true, "state": "ready", "message": null, "last_event_at": null},
+    "lights": {"connected": true, "state": "on", "message": null, "last_event_at": null}
   },
   "metrics": {},
   "last_error": null,
   "details": {
-    "service_state": "dry_run",
-    "dry_run": true,
+    "service_state": "ready",
+    "dry_run": false,
     "simulation": false,
     "snapshot": {
       "deck": {

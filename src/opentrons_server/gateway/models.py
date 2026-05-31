@@ -152,3 +152,7 @@ class TipRequest(BaseModel):
 class MoveLabwareRequest(BaseModel):
     labware_nickname: str
     new_location: str
+
+
+class LightsRequest(BaseModel):
+    on: bool
