@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import socket
 import time
@@ -16,7 +17,8 @@ import requests
 from ..control import OT2Control
 from ..control import state_readers as _state_readers
 from .claims import ClaimManager
-from .models import ComponentStatus, EquipmentStatus, ErrorInfo
+from .models import ComponentStatus, EquipmentStatus, ErrorInfo, LoadedPlate, WellSample
+from .plate_state import PlateStateStore
 
 
 # Snapshot is run on the OT-2's Python REPL in two invokes. The OT-2 runs
@@ -89,6 +91,7 @@ class OT2Service:
         password: str = "",
         dry_run: bool = False,
         simulation: bool = False,
+        plates: Optional[PlateStateStore] = None,
     ) -> None:
         self.equipment_id = equipment_id
         self.equipment_name = equipment_name
@@ -96,6 +99,9 @@ class OT2Service:
         self.password = password
         self.dry_run = dry_run
         self.simulation = simulation
+        # Orchestrator-owned plate/well tracking, persisted across restarts.
+        # Mirrors the Cytation contract so a plate round-trips across devices.
+        self.plates = plates if plates is not None else PlateStateStore(state_path="./ot2_state.json")
         self.started_at = time.monotonic()
         self.state = OT2ServiceState.DRY_RUN if dry_run else OT2ServiceState.REQUIRES_INIT
         self.control: Optional[OT2Control] = None
@@ -239,6 +245,27 @@ class OT2Service:
             ),
             idempotent=False,
         )
+
+    # ---- plate / well tracking (orchestrator-owned bookkeeping) --------
+    #
+    # These mutate persisted metadata only; they do not drive the robot, so
+    # they bypass the BUSY state machine in _run_action and work in any state
+    # (including dry-run). Claim enforcement still applies at the API layer.
+
+    def load_plate(
+        self,
+        *,
+        plate_id: str,
+        model: str,
+        wells: Optional[list[WellSample]] = None,
+    ) -> LoadedPlate:
+        return self.plates.load_plate(plate_id=plate_id, model=model, wells=wells)
+
+    def unload_plate(self) -> Optional[LoadedPlate]:
+        return self.plates.unload_plate()
+
+    def update_well(self, well: str, **kwargs: Any) -> WellSample:
+        return self.plates.update_well(well, **kwargs)
 
     def _robot_lights_url(self) -> Optional[str]:
         """Resolve the robot's /robot/lights HTTP endpoint, or None if unknown.
@@ -445,10 +472,37 @@ class OT2Service:
             # the OT-2 only runs the Opentrons SDK — see _REMOTE_SNAPSHOT_*.
             self.control.invoke(_REMOTE_SNAPSHOT_DEFS)
             output = self.control.invoke(_REMOTE_SNAPSHOT_CALL)
-            self.last_snapshot = {"raw": output, "note": "remote JSON is embedded in REPL output"}
+            self.last_snapshot = self._parse_remote_snapshot(output)
         except Exception as exc:
             self._set_error("snapshot_failed", str(exc), severity="warning")
         return self.last_snapshot
+
+    @staticmethod
+    def _parse_remote_snapshot(output: str) -> Dict[str, Any]:
+        """Extract the structured snapshot dict from the REPL transcript.
+
+        ``output`` is the raw SSH-REPL transcript captured by the transport:
+        the echoed ``json.dumps(...)`` command, the printed JSON object, and a
+        trailing ``>>>`` prompt. The reader prints a single ``json.dumps``
+        line, so the JSON object spans from the first ``{`` to the last ``}``
+        — neither the echoed command nor the prompt contains a brace. Slice
+        that span and parse it so ``details.snapshot`` carries the same
+        ``{deck, pipettes, labwares, modules}`` shape the dry-run path returns.
+
+        Falls back to ``{"raw": output, "note": ...}`` on any parse failure so
+        a garbled read never crashes the side-effect-free ``/status`` handler.
+        """
+
+        start = output.find("{")
+        end = output.rfind("}")
+        if start != -1 and end > start:
+            try:
+                parsed = json.loads(output[start : end + 1])
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                return parsed
+        return {"raw": output, "note": "remote JSON could not be parsed from REPL output"}
 
     def get_status(self) -> EquipmentStatus:
         """Return a side-effect-free AC equipment status envelope."""
@@ -468,6 +522,8 @@ class OT2Service:
             "snapshot": self.last_snapshot,
             "session_recipe": self.session_recipe,
         }
+        loaded_plate = self.plates.get()
+        details["loaded_plate"] = loaded_plate.model_dump(mode="json") if loaded_plate else None
         if self._last_probe:
             details["robot"] = self._last_probe
         claimed_by = self.claims.current()
@@ -494,7 +550,7 @@ class OT2Service:
         if self.state in {OT2ServiceState.REQUIRES_INIT, OT2ServiceState.ERROR}:
             return ["startup"]
         if self.state == OT2ServiceState.DRY_RUN:
-            return ["startup", "shutdown", "home", "setup"]
+            return ["startup", "shutdown", "home", "setup", "plate.load", "plate.unload", "well.update"]
         if self.state == OT2ServiceState.PAUSED:
             return ["resume", "shutdown"]
         if self.state == OT2ServiceState.READY:
@@ -508,6 +564,9 @@ class OT2Service:
                 "dispense",
                 "drop_tip",
                 "move_labware",
+                "plate.load",
+                "plate.unload",
+                "well.update",
             ]
         if self.state == OT2ServiceState.BUSY:
             return ["pause"]

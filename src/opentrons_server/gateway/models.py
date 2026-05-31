@@ -156,3 +156,57 @@ class MoveLabwareRequest(BaseModel):
 
 class LightsRequest(BaseModel):
     on: bool
+
+
+# ---------------------------------------------------------------------------
+# Per-well sample / plate tracking
+#
+# Mirrors the agilent-cytation-server contract (WellSample / LoadedPlate) so a
+# plate's orchestrator-owned state round-trips cleanly across devices: the
+# workflow hydrates each device on plate.load with the previous device's
+# `wells`, and reads `details.loaded_plate` back from /status. Ownership split:
+# the orchestrator owns `plate_id` / `sample_id` / `notes`; the device owns
+# `volume_ul` and `loaded_at`. See agilent-cytation-server/docs/PLATE_STATE.md.
+# ---------------------------------------------------------------------------
+
+
+WellId = str  # "A1" .. "H12"
+
+
+class WellSample(BaseModel):
+    """One well of the currently-loaded plate."""
+
+    well: WellId
+    sample_id: Optional[str] = None
+    volume_ul: Optional[float] = Field(default=None, ge=0.0)
+    notes: Optional[str] = None
+
+
+class LoadedPlate(BaseModel):
+    """The plate the orchestrator currently considers loaded on the deck.
+
+    ``model`` is a free-form labware identifier (typically an Opentrons
+    ``load_name`` such as ``corning_96_wellplate_360ul_flat``). ``plate_id``
+    is an orchestrator-assigned identifier (typically a barcode or
+    run-prefixed UUID). Surfaced under ``EquipmentStatus.details.loaded_plate``.
+    """
+
+    plate_id: str
+    model: str
+    loaded_at: datetime
+    wells: List[WellSample] = Field(default_factory=list)
+
+
+class PlateLoadRequest(BaseModel):
+    plate_id: str = Field(..., min_length=1, max_length=128)
+    model: str = Field(..., min_length=1)
+    wells: Optional[List[WellSample]] = None  # defaults to 96 empty wells
+
+
+class WellUpdateRequest(BaseModel):
+    well: WellId = Field(..., min_length=2, max_length=3, description="e.g. A1, H12")
+    sample_id: Optional[str] = None
+    volume_ul: Optional[float] = Field(default=None, ge=0.0)
+    notes: Optional[str] = None
+    clear_sample_id: bool = False
+    clear_notes: bool = False

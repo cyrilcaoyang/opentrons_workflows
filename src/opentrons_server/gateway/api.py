@@ -20,13 +20,18 @@ from .models import (
     HealthResponse,
     LightsRequest,
     LiquidMoveRequest,
+    LoadedPlate,
     MoveLabwareRequest,
+    PlateLoadRequest,
     ProbeResponse,
     PROTOCOL_VERSION,
     ProtocolSetupRequest,
     StartupRequest,
     TipRequest,
+    WellSample,
+    WellUpdateRequest,
 )
+from .plate_state import PlateStateStore
 from .service import OT2Service, UnknownOutcomeError
 
 
@@ -55,6 +60,9 @@ def create_app(
         host_alias=os.environ.get("OT2_HOST_ALIAS"),
         password=os.environ.get("OT2_SSH_PASSWORD", ""),
         dry_run=dry_run,
+        plates=PlateStateStore(
+            state_path=os.environ.get("OT2_PLATE_STATE_PATH", "./ot2_state.json")
+        ),
     )
 
     app = FastAPI(
@@ -204,6 +212,37 @@ def create_app(
     @app.post("/control/move-labware", response_model=CommandResponse, tags=["control"])
     def move_labware(request: MoveLabwareRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
         return _run_non_idempotent(lambda: service.move_labware(request), "Labware moved")
+
+    @app.post("/control/plate/load", response_model=LoadedPlate, tags=["control"])
+    def plate_load(request: PlateLoadRequest, _claim: None = Depends(require_claim)) -> LoadedPlate:
+        try:
+            return service.load_plate(
+                plate_id=request.plate_id,
+                model=request.model,
+                wells=request.wells,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post("/control/plate/unload", response_model=Optional[LoadedPlate], tags=["control"])
+    def plate_unload(_claim: None = Depends(require_claim)) -> Optional[LoadedPlate]:
+        return service.unload_plate()
+
+    @app.post("/control/well/update", response_model=WellSample, tags=["control"])
+    def well_update(request: WellUpdateRequest, _claim: None = Depends(require_claim)) -> WellSample:
+        try:
+            return service.update_well(
+                request.well,
+                sample_id=request.sample_id,
+                volume_ul=request.volume_ul,
+                notes=request.notes,
+                clear_sample_id=request.clear_sample_id,
+                clear_notes=request.clear_notes,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     @app.post("/control/lights", response_model=CommandResponse, tags=["control"])
     def lights(request: LightsRequest, _claim: None = Depends(require_claim)) -> CommandResponse:

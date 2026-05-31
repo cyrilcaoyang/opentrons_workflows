@@ -166,3 +166,7 @@ generated_labware/
 opentrons_states.py
 robot_logs/
 protocol_runs/
+
+# Persisted plate-state working copy (per-device, never committed)
+ot2_state.json
+ot2_state.json.tmp
