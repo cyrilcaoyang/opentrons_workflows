@@ -1,6 +1,13 @@
 # OT-2 Deck / Labware State Model — Implementation Plan
 
-**Status:** proposal for review. Nothing implemented yet.
+**Status:** IMPLEMENTED and deployed. Phases 0–2 shipped in this repo
+(commit `ede0a85`); Phase 3 (dashboard tile, `deck.declare` SkillDef,
+docs) shipped in `ac-organic-lab`. Both OT-2 gateways (`ot2` :8020,
+`ot2_complexation` :8021) deployed 2026-07-10 on sdl2-pc-03 and verified
+live; the stopgap layouts were migrated into the gateways' declared
+stores. Remaining: delete the dashboard's `api/app/deck.py` stopgap after
+a soak period (tracked in `ac-organic-lab` EQUIP_STATUS §11). This
+document is kept as the design record.
 **Scope:** add a normalized deck/labware state layer to the OT-2 gateway
 (`opentrons-server`) that (a) unifies the two orphan state stores, (b) publishes
 `details.snapshot.deck` on `/status`, and (c) supports operator-declared layout
