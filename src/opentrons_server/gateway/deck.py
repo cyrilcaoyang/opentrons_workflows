@@ -1,0 +1,556 @@
+"""Normalized OT-2 deck / labware state — the merge of up to three sources.
+
+Phase 0 (this module): pure, hardware-free building blocks only —
+
+- :func:`classify_labware` — an Opentrons ``load_name`` -> ``(kind, rows, columns)``.
+- :func:`normalize_repl_slots` — ``state_readers.get_deck_state()`` output -> per-slot
+  :class:`SlotLabware` / :class:`SlotModule`.
+- :func:`normalize_run_slots` — an active robot-server run's labware -> per-slot
+  :class:`SlotLabware`.
+- :func:`build_deck` — merge the sources with precedence **run > repl > declared >
+  empty**, attach the tracked plate's wells to its slot, and flag declared-vs-observed
+  mismatches. A pure function of its inputs; no I/O.
+- :class:`DeckDeclarationStore` — JSON-backed operator-declared layout (mirrors
+  :class:`PlateStateStore`).
+
+Wiring these into ``OT2Service.get_status`` (side-effect-free, cached inputs only) is
+Phase 1+. See ``docs/DECK_STATE_PLAN.md``.
+
+The Opentrons labware definition already carries everything the normalized model needs
+(``parameters.loadName``, ``metadata.displayName``, ``ordering`` for the grid), so this
+module has **no** dependency on the Opentrons SDK or PyLabRobot — it derives the shape
+from the structured ``load_name`` and enriches from whatever the readers hand it.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple, Union
+
+from .models import (
+    DeckSlot,
+    DeckSource,
+    DeckState,
+    LabwareKind,
+    LoadedPlate,
+    SlotLabware,
+    SlotModule,
+)
+
+logger = logging.getLogger(__name__)
+
+SLOTS = [str(i) for i in range(1, 13)]  # "1".."12"
+
+# Standard well-plate / tip-rack grids keyed by total well count -> (rows, columns).
+# rows <= columns by Opentrons landscape convention.
+_PLATE_GRIDS: Dict[int, Tuple[int, int]] = {
+    6: (2, 3),
+    12: (3, 4),
+    24: (4, 6),
+    48: (6, 8),
+    96: (8, 12),
+    384: (16, 24),
+}
+# Tube racks are irregular; fall back to the plate grid when unknown.
+_TUBE_GRIDS: Dict[int, Tuple[int, int]] = {
+    4: (2, 2),
+    6: (2, 3),
+    10: (2, 5),
+    15: (3, 5),
+    24: (4, 6),
+}
+_NAMED_PLATE_KINDS = {6, 12, 24, 48, 96, 384}
+
+
+def classify_labware(
+    load_name: str,
+    is_tiprack: Optional[bool] = None,
+    display_category: Optional[str] = None,
+) -> Tuple[LabwareKind, Optional[int], Optional[int]]:
+    """Derive ``(kind, rows, columns)`` from an Opentrons ``load_name``.
+
+    ``load_name`` is highly structured (``<brand>_<count>_<category>_<...>``)::
+
+        corning_96_wellplate_360ul_flat        -> ("96-well",  8, 12)
+        opentrons_96_tiprack_300ul             -> ("tiprack",  8, 12)
+        nest_12_reservoir_15ml                 -> ("reservoir", 1, 12)
+        opentrons_24_tuberack_nest_1.5ml_...   -> ("tuberack",  4,  6)
+        opentrons_1_trash_1100ml_fixed         -> ("trash",   None, None)
+
+    Category is detected by substring so token order/extra tokens don't matter; the
+    first standalone integer token is the item count. Falls back to ``display_category``
+    then ``is_tiprack`` then ``("unknown", None, None)``. The 12-count ambiguity
+    (12-reservoir = 1x12 vs 12-wellplate = 3x4) is resolved by the category token.
+    """
+
+    name = (load_name or "").lower()
+    count = _first_int_token(name)
+
+    category = _detect_category(name, display_category)
+
+    if category == "tiprack":
+        return "tiprack", *_grid_or_none(_PLATE_GRIDS, count)
+    if category == "wellplate":
+        rows, cols = _grid_or_none(_PLATE_GRIDS, count)
+        kind: LabwareKind = f"{count}-well" if count in _NAMED_PLATE_KINDS else "well_plate"  # type: ignore[assignment]
+        return kind, rows, cols
+    if category == "reservoir":
+        # A reservoir is a single row of `count` channels (count=1 -> a single trough).
+        return "reservoir", (1 if count else None), (count or None)
+    if category == "tuberack":
+        rows, cols = _grid_or_none(_TUBE_GRIDS, count)
+        if rows is None:
+            rows, cols = _grid_or_none(_PLATE_GRIDS, count)
+        return "tuberack", rows, cols
+    if category == "trash":
+        return "trash", None, None
+    if category == "adapter":
+        return "adapter", None, None
+
+    # No recognized category token.
+    if is_tiprack:
+        return "tiprack", *_grid_or_none(_PLATE_GRIDS, count)
+    return "unknown", None, None
+
+
+def make_slot_labware(
+    load_name: str,
+    *,
+    is_tiprack: Optional[bool] = None,
+    display_name: Optional[str] = None,
+    display_category: Optional[str] = None,
+    rows: Optional[int] = None,
+    columns: Optional[int] = None,
+) -> SlotLabware:
+    """Build a :class:`SlotLabware` from a ``load_name``.
+
+    Grid is taken from the ``load_name`` classification, but explicit ``rows`` /
+    ``columns`` (e.g. from an enriched REPL reader that called ``labware.rows()``)
+    win when provided.
+    """
+
+    kind, derived_rows, derived_cols = classify_labware(load_name, is_tiprack, display_category)
+    return SlotLabware(
+        kind=kind,
+        load_name=load_name,
+        display_name=display_name,
+        is_tiprack=(kind == "tiprack"),
+        rows=rows if rows is not None else derived_rows,
+        columns=columns if columns is not None else derived_cols,
+    )
+
+
+def normalize_repl_slots(
+    repl_deck: Optional[Dict[str, Any]],
+) -> Dict[str, Union[SlotLabware, SlotModule]]:
+    """Map ``state_readers.get_deck_state()`` output to per-slot normalized items.
+
+    ``repl_deck`` is the ``deck`` sub-dict of ``OT2Service.last_snapshot`` (i.e.
+    ``{"slots": {"1": {type, load_name, is_tiprack, name} | None, ...}, ...}``).
+    Empty / ``None`` slots are omitted from the result (a missing slot == empty).
+
+    A single slot carries labware xor a module (module-with-labware-on-top is a known
+    Phase-0 limitation — modules render as a module-only slot).
+    """
+
+    out: Dict[str, Union[SlotLabware, SlotModule]] = {}
+    if not repl_deck:
+        return out
+    slots = repl_deck.get("slots") or {}
+    for slot, item in slots.items():
+        if not item:
+            continue
+        item_type = item.get("type")
+        if item_type == "labware":
+            out[str(slot)] = make_slot_labware(
+                item.get("load_name") or "",
+                is_tiprack=item.get("is_tiprack"),
+                display_name=item.get("name"),
+            )
+        elif item_type == "module":
+            out[str(slot)] = SlotModule(
+                module_name=item.get("module_name") or item.get("name") or "unknown",
+                status=item.get("status"),
+                serial_number=item.get("serial_number"),
+            )
+        else:
+            # "unknown" deck item — represent as unknown labware so the slot reads
+            # occupied rather than silently empty.
+            out[str(slot)] = SlotLabware(kind="unknown", load_name="", display_name=str(item.get("object", "")))
+    return out
+
+
+def normalize_run_slots(run_doc: Optional[Dict[str, Any]]) -> Dict[str, SlotLabware]:
+    """Map an active robot-server run's labware list to per-slot :class:`SlotLabware`.
+
+    ``run_doc`` is the shape the gateway's HTTP probe extracts from ``/runs/{id}``::
+
+        {"labware": [{"loadName": "...", "location": {"slotName": "2"},
+                      "displayName": "..."}]}
+
+    Off-deck / module-addressed labware (no ``slotName``) is skipped.
+    """
+
+    out: Dict[str, SlotLabware] = {}
+    if not run_doc:
+        return out
+    for lw in run_doc.get("labware") or []:
+        location = lw.get("location") or {}
+        slot = location.get("slotName")
+        if slot is None:
+            continue
+        slot = str(slot)
+        if slot not in SLOTS:
+            continue
+        out[slot] = make_slot_labware(
+            lw.get("loadName") or "",
+            display_name=lw.get("displayName"),
+        )
+    return out
+
+
+def _kinds_agree(a: SlotLabware, b: SlotLabware) -> bool:
+    """Whether two labware are the same for mismatch purposes.
+
+    Prefer ``load_name`` equality when both carry a real name; otherwise fall back
+    to ``kind`` (a legacy declared entry may only have a kind string). ``unknown`` on
+    either side can't prove a conflict, so it agrees.
+    """
+
+    if a.kind == "unknown" or b.kind == "unknown":
+        return True
+    if a.load_name and b.load_name:
+        return a.load_name.lower() == b.load_name.lower()
+    return a.kind == b.kind
+
+
+def build_deck(
+    *,
+    run: Optional[Dict[str, SlotLabware]] = None,
+    repl: Optional[Dict[str, Union[SlotLabware, SlotModule]]] = None,
+    declared: Optional[Dict[str, SlotLabware]] = None,
+    loaded_plate: Optional[LoadedPlate] = None,
+    nickname_to_slot: Optional[Dict[str, str]] = None,
+    busy: bool = False,
+    now: Optional[datetime] = None,
+) -> DeckState:
+    """Merge deck sources into a normalized :class:`DeckState`.
+
+    Precedence **run > repl > declared > empty**. Per-slot lifecycle follows the
+    decision table in ``docs/DECK_STATE_PLAN.md`` §2.4. The orchestrator-tracked plate
+    (``loaded_plate``) is folded in as a declared entry on its slot (resolved via
+    ``nickname_to_slot``), so its wells attach to whichever labware wins that slot.
+    Pure: no I/O, no clocks other than the injected ``now``.
+    """
+
+    run = run or {}
+    repl = repl or {}
+    declared = declared or {}
+    nickname_to_slot = nickname_to_slot or {}
+    now = now or datetime.now(timezone.utc)
+
+    # Fold the tracked plate into an effective declared map so its wells travel with
+    # the slot regardless of which source ultimately wins.
+    effective_declared: Dict[str, SlotLabware] = dict(declared)
+    plate_slot: Optional[str] = None
+    if loaded_plate is not None:
+        plate_slot = nickname_to_slot.get(loaded_plate.plate_id)
+        if plate_slot in SLOTS:
+            plate_lw = make_slot_labware(loaded_plate.model)
+            plate_lw = plate_lw.model_copy(
+                update={"plate_id": loaded_plate.plate_id, "wells": loaded_plate.wells}
+            )
+            effective_declared[plate_slot] = plate_lw
+
+    slots: Dict[str, DeckSlot] = {}
+    contributing: set[DeckSource] = set()
+
+    for slot in SLOTS:
+        observed: Optional[SlotLabware] = None
+        observed_source: Optional[DeckSource] = None
+        module: Optional[SlotModule] = None
+
+        if slot in run:
+            observed = run[slot]
+            observed_source = "run"
+        elif slot in repl:
+            item = repl[slot]
+            if isinstance(item, SlotModule):
+                module = item
+            else:
+                observed = item
+                observed_source = "repl"
+
+        decl = effective_declared.get(slot)
+
+        deck_slot = _resolve_slot(observed, observed_source, module, decl, busy)
+        slots[slot] = deck_slot
+        if deck_slot.source != "empty":
+            contributing.add(deck_slot.source)
+
+    deck_source: DeckSource = (
+        "run" if "run" in contributing
+        else "repl" if "repl" in contributing
+        else "declared" if "declared" in contributing
+        else "empty"
+    )
+    return DeckState(source=deck_source, slots=slots, timestamp=now)
+
+
+def _resolve_slot(
+    observed: Optional[SlotLabware],
+    observed_source: Optional[DeckSource],
+    module: Optional[SlotModule],
+    declared: Optional[SlotLabware],
+    busy: bool,
+) -> DeckSlot:
+    occupied_state = "in_use" if busy else "occupied"
+
+    if observed is not None:
+        labware = observed
+        # Carry plate_id / wells from the declared (plate-folded) entry when present.
+        if declared is not None and declared.wells is not None and labware.wells is None:
+            labware = labware.model_copy(
+                update={"plate_id": declared.plate_id, "wells": declared.wells}
+            )
+        if declared is not None and not _kinds_agree(observed, declared):
+            return DeckSlot(
+                labware=labware,
+                module=module,
+                slot_state="mismatch",
+                source=observed_source or "run",
+                declared=declared,
+            )
+        return DeckSlot(
+            labware=labware,
+            module=module,
+            slot_state=occupied_state,
+            source=observed_source or "run",
+        )
+
+    if module is not None:
+        # Module present, no labware observed on it.
+        return DeckSlot(module=module, slot_state=occupied_state, source="repl")
+
+    if declared is not None:
+        # Declared-only: either operator intent or an orchestrator-loaded plate that
+        # no live source has confirmed yet.
+        return DeckSlot(labware=declared, slot_state="declared", source="declared")
+
+    return DeckSlot(slot_state="empty", source="empty")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _first_int_token(name: str) -> Optional[int]:
+    for tok in name.split("_"):
+        if tok.isdigit():
+            return int(tok)
+    return None
+
+
+def _detect_category(name: str, display_category: Optional[str]) -> Optional[str]:
+    # Explicit hint from an Opentrons definition's metadata.displayCategory wins.
+    if display_category:
+        dc = display_category.lower()
+        mapping = {
+            "wellplate": "wellplate",
+            "tiprack": "tiprack",
+            "reservoir": "reservoir",
+            "tuberack": "tuberack",
+            "trash": "trash",
+            "adapter": "adapter",
+            "aluminumblock": "adapter",
+        }
+        if dc in mapping:
+            return mapping[dc]
+
+    # Substring scan of the load_name (handles "well_plate" / "tip_rack" variants).
+    compact = re.sub(r"[^a-z0-9]", "", name)
+    if "tiprack" in compact:
+        return "tiprack"
+    if "wellplate" in compact:
+        return "wellplate"
+    if "reservoir" in compact:
+        return "reservoir"
+    if "tuberack" in compact:
+        return "tuberack"
+    if "trash" in compact:
+        return "trash"
+    if "aluminumblock" in compact or "adapter" in compact:
+        return "adapter"
+    return None
+
+
+def _grid_or_none(
+    table: Dict[int, Tuple[int, int]], count: Optional[int]
+) -> Tuple[Optional[int], Optional[int]]:
+    if count is not None and count in table:
+        return table[count]
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# Operator-declared layout store (mirrors PlateStateStore)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_state_path(state_path: Union[str, Path]) -> Path:
+    p = Path(state_path)
+    if not p.is_absolute():
+        # deck.py lives at src/opentrons_server/gateway/, so the repo root is
+        # four levels up — same anchoring as PlateStateStore.
+        p = (Path(__file__).resolve().parents[3] / p).resolve()
+    return p
+
+
+class DeckDeclarationStore:
+    """Thread-safe, JSON-backed operator/recipe-declared deck layout.
+
+    Persists a ``{slot -> SlotLabware}`` map so a declared layout survives a gateway
+    restart, exactly like the dashboard's ``deck_layouts.json`` stopgap it is meant to
+    replace. :meth:`declare` accepts, per slot, a ``load_name`` (preferred), a bare
+    ``kind`` string (legacy dashboard compat), a ``{"load_name": ...}`` /
+    ``{"kind": ...}`` object, or ``None`` to clear that slot.
+    """
+
+    def __init__(self, *, state_path: Union[str, Path]) -> None:
+        self._path = _resolve_state_path(state_path)
+        self._lock = threading.Lock()
+        self._slots: Dict[str, SlotLabware] = {}
+        self._load_from_disk()
+
+    @property
+    def state_path(self) -> Path:
+        return self._path
+
+    def get(self) -> Dict[str, SlotLabware]:
+        with self._lock:
+            return {s: lw.model_copy(deep=True) for s, lw in self._slots.items()}
+
+    def declare(
+        self, mapping: Dict[str, Optional[Union[str, Dict[str, Any]]]]
+    ) -> Dict[str, SlotLabware]:
+        """Replace the declaration with ``mapping`` (a full-layout PUT).
+
+        An empty ``mapping`` clears everything. A ``None`` value clears that slot.
+        Unknown slot ids (outside 1..12) raise :class:`ValueError`.
+        """
+
+        resolved: Dict[str, SlotLabware] = {}
+        for slot, value in mapping.items():
+            slot = str(slot)
+            if slot not in SLOTS:
+                raise ValueError(f"Invalid slot {slot!r}; expected '1'..'12'")
+            if value is None:
+                continue
+            resolved[slot] = _coerce_declaration(value)
+        with self._lock:
+            self._slots = resolved
+            self._persist_locked()
+        return {s: lw.model_copy(deep=True) for s, lw in resolved.items()}
+
+    def clear(self) -> None:
+        with self._lock:
+            self._slots = {}
+            self._persist_locked()
+
+    # ---- internals ----------------------------------------------------
+
+    def _load_from_disk(self) -> None:
+        if not self._path.is_file():
+            return
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.exception("deck declaration at %s is unreadable; ignoring", self._path)
+            return
+        slots_raw = raw.get("slots") or {}
+        parsed: Dict[str, SlotLabware] = {}
+        for slot, lw_raw in slots_raw.items():
+            if str(slot) not in SLOTS:
+                continue
+            try:
+                parsed[str(slot)] = SlotLabware.model_validate(lw_raw)
+            except Exception:
+                logger.exception("deck declaration slot %s is malformed; ignoring", slot)
+        self._slots = parsed
+
+    def _persist_locked(self) -> None:
+        body = {"slots": {s: lw.model_dump(mode="json") for s, lw in self._slots.items()}}
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+            tmp.write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+            tmp.replace(self._path)  # atomic on POSIX + Windows
+        except OSError:
+            logger.exception("Failed to persist deck declaration to %s", self._path)
+
+
+def _coerce_declaration(value: Union[str, Dict[str, Any]]) -> SlotLabware:
+    """Turn one declared slot value into a normalized :class:`SlotLabware`."""
+
+    if isinstance(value, str):
+        return _from_load_name_or_kind(value)
+    if isinstance(value, dict):
+        if value.get("load_name"):
+            return make_slot_labware(value["load_name"], display_name=value.get("display_name"))
+        if value.get("kind"):
+            return _kind_only(value["kind"], display_name=value.get("display_name"))
+        raise ValueError("declaration object needs 'load_name' or 'kind'")
+    raise ValueError(f"unsupported declaration value: {value!r}")
+
+
+def _from_load_name_or_kind(value: str) -> SlotLabware:
+    # A bare string is a load_name if it looks like one (contains '_'); otherwise a
+    # legacy kind string (e.g. "96-well", "24-well", "waste").
+    if "_" in value:
+        return make_slot_labware(value)
+    return _kind_only(value)
+
+
+# Legacy dashboard kind strings -> normalized kind + grid.
+_LEGACY_KIND_ALIASES: Dict[str, Tuple[LabwareKind, Optional[int], Optional[int]]] = {
+    "waste": ("trash", None, None),
+    "trash": ("trash", None, None),
+    "96-well": ("96-well", 8, 12),
+    "384-well": ("384-well", 16, 24),
+    "48-well": ("48-well", 6, 8),
+    "24-well": ("24-well", 4, 6),
+    "12-well": ("12-well", 3, 4),
+    "6-well": ("6-well", 2, 3),
+    "tiprack": ("tiprack", None, None),
+    "reservoir": ("reservoir", None, None),
+    "tuberack": ("tuberack", None, None),
+}
+
+
+def _kind_only(kind: str, display_name: Optional[str] = None) -> SlotLabware:
+    normalized, rows, cols = _LEGACY_KIND_ALIASES.get(kind.lower(), ("unknown", None, None))
+    return SlotLabware(
+        kind=normalized,
+        load_name="",
+        display_name=display_name,
+        is_tiprack=(normalized == "tiprack"),
+        rows=rows,
+        columns=cols,
+    )
+
+
+__all__ = [
+    "SLOTS",
+    "classify_labware",
+    "make_slot_labware",
+    "normalize_repl_slots",
+    "normalize_run_slots",
+    "build_deck",
+    "DeckDeclarationStore",
+]

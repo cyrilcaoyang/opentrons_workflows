@@ -203,6 +203,91 @@ class PlateLoadRequest(BaseModel):
     wells: Optional[List[WellSample]] = None  # defaults to 96 empty wells
 
 
+# ---------------------------------------------------------------------------
+# Deck / labware state (Phase 0: model only — normalizers + merge live in
+# gateway/deck.py; wiring into /status is Phase 1+). See docs/DECK_STATE_PLAN.md.
+#
+# The normalized deck is the single, provenance-tagged view of "what is on each
+# of the 12 OT-2 slots", merged from up to three sources (run > repl > declared).
+# `kind` is derived, never hand-set; the tile renders any grid off rows/columns.
+# ---------------------------------------------------------------------------
+
+
+LabwareKind = Literal[
+    "96-well",
+    "384-well",
+    "48-well",
+    "24-well",
+    "12-well",
+    "6-well",
+    "well_plate",  # a wellPlate whose grid isn't one of the named sizes
+    "tiprack",
+    "reservoir",
+    "tuberack",
+    "trash",
+    "adapter",
+    "unknown",
+]
+
+# Per-slot lifecycle. See docs/DECK_STATE_PLAN.md §2.4 for the decision table.
+SlotState = Literal["empty", "declared", "occupied", "in_use", "mismatch"]
+
+# Which source won a slot / the deck as a whole.
+DeckSource = Literal["run", "repl", "declared", "empty"]
+
+
+class SlotLabware(BaseModel):
+    """Normalized labware on one deck slot.
+
+    ``plate_id`` / ``wells`` are populated only for the orchestrator-tracked
+    plate (unified from :class:`PlateStateStore`), never stored twice.
+    """
+
+    kind: LabwareKind
+    load_name: str
+    display_name: Optional[str] = None
+    is_tiprack: bool = False
+    rows: Optional[int] = None
+    columns: Optional[int] = None
+    plate_id: Optional[str] = None
+    wells: Optional[List[WellSample]] = None
+
+
+class SlotModule(BaseModel):
+    """A hardware module occupying a slot (temperature, magnetic, heater-shaker)."""
+
+    module_name: str
+    status: Optional[str] = None
+    serial_number: Optional[str] = None
+
+
+class DeckSlot(BaseModel):
+    labware: Optional[SlotLabware] = None
+    module: Optional[SlotModule] = None
+    slot_state: SlotState = "empty"
+    source: DeckSource = "empty"
+    # Populated only on a mismatch: the declared intent that lost to the
+    # observed labware, so the operator can see the conflict.
+    declared: Optional[SlotLabware] = None
+
+
+class DeckState(BaseModel):
+    source: DeckSource
+    slots: Dict[str, DeckSlot]  # always all of "1".."12"
+    timestamp: datetime
+
+
+class DeckDeclareRequest(BaseModel):
+    """Operator/recipe-declared layout (Phase 2 endpoint payload).
+
+    Each slot value is a labware ``load_name`` (preferred, full fidelity), a
+    bare ``kind`` string (legacy dashboard compat), or ``null`` to clear that
+    slot. An empty ``slots`` map clears the whole declaration.
+    """
+
+    slots: Dict[str, Optional[Union[str, Dict[str, Any]]]] = Field(default_factory=dict)
+
+
 class WellUpdateRequest(BaseModel):
     well: WellId = Field(..., min_length=2, max_length=3, description="e.g. A1, H12")
     sample_id: Optional[str] = None

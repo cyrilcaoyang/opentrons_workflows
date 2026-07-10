@@ -256,6 +256,70 @@ So workflow code that sends `{"simulation": true}` (or with
 `password=""`) keeps using the gateway's configured credentials;
 only a non-empty value in the body actually overrides.
 
+## Running multiple OT-2 gateways
+
+The gateway is **one process per robot**. To front several OT-2s from the
+same host, run several independent gateway instances, each on its own port,
+pointed at its own robot, with its **own state files**. Everything that
+distinguishes an instance is an environment variable read at startup in
+`gateway/api.py` — nothing is hard-coded to a single robot:
+
+| Env var | Purpose | Must differ per instance? |
+|---|---|---|
+| `OT2_EQUIPMENT_ID` | identity reported on `/status` (e.g. `ot2`, `ot2_complexation`) | **yes** |
+| `OT2_EQUIPMENT_NAME` | human-readable name | recommended |
+| `OT2_HOST_ALIAS` | which robot to SSH to (e.g. `sdl2-ot2-hte` / `sdl2-ot2-complexation`) | **yes** |
+| `OT2_HTTP_BASE_URL` | robot HTTP API base (else derived from the host alias) | if not derivable |
+| `OT2_PLATE_STATE_PATH` | per-well plate store JSON | **yes** — else instances clobber each other |
+| `OT2_DECK_STATE_PATH` | operator-declared deck layout JSON | **yes** — same reason |
+| `OT2_SSH_PASSWORD` | SSH key passphrase | per robot |
+| listen port (uvicorn `--port`) | the gateway's own port | **yes** |
+
+> ⚠️ **Distinct state paths are mandatory.** `OT2_PLATE_STATE_PATH` and
+> `OT2_DECK_STATE_PATH` default to `./ot2_state.json` / `./ot2_deck_state.json`
+> relative to the working directory. Two instances started from the same
+> directory with the defaults would share — and corrupt — each other's state.
+> Always set both to instance-specific paths.
+
+Example: the HTE robot on port 8020 and the Complexation robot on 8021, both
+gateways on `sdl2-pc-03` as separate NSSM services:
+
+```powershell
+# Instance 1 — HTE (matches equipment.yaml `ot2`; robot sdl2-ot2-hte,
+# 100.64.254.90, robot name "ot2cytation")
+nssm set ot2-gateway AppEnvironmentExtra `
+    OT2_EQUIPMENT_ID=ot2 `
+    OT2_HOST_ALIAS=sdl2-ot2-hte `
+    OT2_HTTP_BASE_URL=http://sdl2-ot2-hte.tail6a1dd7.ts.net:31950 `
+    OT2_PLATE_STATE_PATH=C:\ProgramData\ot2\ot2_state.json `
+    OT2_DECK_STATE_PATH=C:\ProgramData\ot2\ot2_deck_state.json `
+    "OT2_SSH_PASSWORD=<passphrase>"
+# ... AppParameters: run uvicorn opentrons_server.gateway.api:app --host 0.0.0.0 --port 8020
+
+# Instance 2 — Complexation (matches equipment.yaml `ot2_complexation`;
+# robot sdl2-ot2-complexation, 100.64.254.91, robot name "ot2training")
+nssm set ot2-gateway-complexation AppEnvironmentExtra `
+    OT2_EQUIPMENT_ID=ot2_complexation `
+    OT2_EQUIPMENT_NAME="Opentrons OT-2 (Complexation)" `
+    OT2_HOST_ALIAS=sdl2-ot2-complexation `
+    OT2_HTTP_BASE_URL=http://sdl2-ot2-complexation.tail6a1dd7.ts.net:31950 `
+    OT2_PLATE_STATE_PATH=C:\ProgramData\ot2_complexation\ot2_state.json `
+    OT2_DECK_STATE_PATH=C:\ProgramData\ot2_complexation\ot2_deck_state.json `
+    "OT2_SSH_PASSWORD=<passphrase>"
+# ... AppParameters: run uvicorn opentrons_server.gateway.api:app --host 0.0.0.0 --port 8021
+```
+
+Set `OT2_HTTP_BASE_URL` explicitly whenever `OT2_HOST_ALIAS` is an
+SSH-config alias rather than a resolvable hostname/IP — the HTTP probe
+(`/health`, `/runs`, lights) derives its URL from the alias otherwise and
+would fail to reach the robot even though SSH works. Both robots are on
+the tailnet with MagicDNS names, so the tailnet URL is the stable choice.
+
+Register each instance as its own entry in the dashboard's `equipment.yaml`
+(`ot2` → `:8020`, `ot2_complexation` → `:8021`). The dashboard's skill catalog
+and `LiquidHandlerTile` are keyed by `kind`/`id`, so both are handled with no
+per-robot code.
+
 ---
 
 ## REST Gateway

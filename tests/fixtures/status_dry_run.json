@@ -8,13 +8,35 @@
   "equipment_status": "dry_run",
   "message": "Dry-run mode - no hardware connected",
   "required_actions": [],
-  "allowed_actions": ["startup", "shutdown", "home", "setup", "lights.set"],
+  "allowed_actions": [
+    "startup",
+    "shutdown",
+    "home",
+    "setup",
+    "lights.set",
+    "deck.declare"
+  ],
   "device_time": "2026-05-08T22:50:01Z",
   "uptime_seconds": 0.0,
   "components": {
-    "ssh": {"connected": true, "state": "connected", "message": null, "last_event_at": null},
-    "protocol": {"connected": true, "state": "dry_run", "message": null, "last_event_at": null},
-    "lights": {"connected": true, "state": "off", "message": null, "last_event_at": null}
+    "ssh": {
+      "connected": true,
+      "state": "connected",
+      "message": null,
+      "last_event_at": null
+    },
+    "protocol": {
+      "connected": true,
+      "state": "dry_run",
+      "message": null,
+      "last_event_at": null
+    },
+    "lights": {
+      "connected": true,
+      "state": "off",
+      "message": null,
+      "last_event_at": null
+    }
   },
   "metrics": {},
   "last_error": null,
@@ -24,9 +46,94 @@
     "simulation": false,
     "snapshot": {
       "deck": {
-        "slots": {},
-        "occupied_slots": 0,
-        "empty_slots": 12
+        "source": "empty",
+        "slots": {
+          "1": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "2": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "3": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "4": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "5": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "6": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "7": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "8": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "9": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "10": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "11": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "12": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          }
+        },
+        "timestamp": "2026-05-08T22:50:01Z"
       },
       "pipettes": {},
       "labwares": {},

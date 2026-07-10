@@ -6,6 +6,7 @@ import inspect
 import json
 import os
 import socket
+import threading
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -17,7 +18,22 @@ import requests
 from ..control import OT2Control
 from ..control import state_readers as _state_readers
 from .claims import ClaimManager
-from .models import ComponentStatus, EquipmentStatus, ErrorInfo, LoadedPlate, WellSample
+from .deck import (
+    SLOTS,
+    DeckDeclarationStore,
+    build_deck,
+    make_slot_labware,
+    normalize_repl_slots,
+    normalize_run_slots,
+)
+from .models import (
+    ComponentStatus,
+    EquipmentStatus,
+    ErrorInfo,
+    LoadedPlate,
+    SlotLabware,
+    WellSample,
+)
 from .plate_state import PlateStateStore
 
 
@@ -50,6 +66,17 @@ _REMOTE_SNAPSHOT_CALL = (
 _OT2_HTTP_PORT = os.getenv("OT2_HTTP_PORT", "31950")
 _OT2_HTTP_TIMEOUT = float(os.getenv("OT2_HTTP_TIMEOUT", "2.0"))
 _OPENTRONS_HTTP_HEADERS = {"Opentrons-Version": "3"}
+
+# Minimum spacing between robot-server run-labware probes. The probe is best-
+# effort and NEVER runs inside the /status handler (which stays side-effect-free
+# and uses only the cached `_last_run_labware`); it is refreshed on boot and on
+# startup. The TTL guards against hammering the robot if refresh points cluster.
+_OT2_DECK_PROBE_TTL = float(os.getenv("OT2_DECK_PROBE_TTL", "3.0"))
+
+# How often the optional background thread refreshes the external-run probe so an
+# EXTERNAL_CONTROL deck stays fresh without the (side-effect-free) /status handler
+# ever issuing HTTP. Only runs when auto_reconnect is on and not in dry-run.
+_OT2_RUN_REFRESH_INTERVAL = float(os.getenv("OT2_RUN_REFRESH_INTERVAL", "5.0"))
 
 
 class OT2ServiceState(str, Enum):
@@ -92,6 +119,7 @@ class OT2Service:
         dry_run: bool = False,
         simulation: bool = False,
         plates: Optional[PlateStateStore] = None,
+        decks: Optional[DeckDeclarationStore] = None,
     ) -> None:
         self.equipment_id = equipment_id
         self.equipment_name = equipment_name
@@ -102,6 +130,10 @@ class OT2Service:
         # Orchestrator-owned plate/well tracking, persisted across restarts.
         # Mirrors the Cytation contract so a plate round-trips across devices.
         self.plates = plates if plates is not None else PlateStateStore(state_path="./ot2_state.json")
+        # Operator/recipe-declared deck layout, persisted across restarts. The
+        # source of truth that retires the dashboard's deck_layouts.json stopgap.
+        self.decks = decks if decks is not None else DeckDeclarationStore(state_path="./ot2_deck_state.json")
+        self._refresh_stop = threading.Event()
         self.started_at = time.monotonic()
         self.state = OT2ServiceState.DRY_RUN if dry_run else OT2ServiceState.REQUIRES_INIT
         self.control: Optional[OT2Control] = None
@@ -110,6 +142,10 @@ class OT2Service:
         self._dry_run_lights_on = False
         self.equipment_version: Optional[str] = None
         self._last_probe: Dict[str, Any] = {}
+        # Cached labware of an active *external* robot-server run (EXTERNAL_CONTROL).
+        # None while the gateway owns the REPL (deck then comes from last_snapshot).
+        self._last_run_labware: Optional[Dict[str, Any]] = None
+        self._last_run_labware_at: float = 0.0
         self._status_note: Optional[str] = None
         self._boot_started = False
         self.last_snapshot: Dict[str, Any] = self._empty_snapshot()
@@ -405,6 +441,55 @@ class OT2Service:
             pass
         return result
 
+    def probe_run_labware(self) -> Optional[Dict[str, Any]]:
+        """Read the active robot-server run's loaded labware. Never raises.
+
+        Returns ``{"labware": [...], "modules": [...]}`` for the current run, or
+        ``None`` when there is no active run or the robot is unreachable. This is
+        the ``run`` source for the deck merge and is session-independent (it works
+        even when the gateway holds no REPL session — e.g. a run started in the
+        official Opentrons app). It is deliberately NOT called from ``get_status``.
+        """
+
+        base = self._probe_base_url()
+        if base is None:
+            return None
+        try:
+            runs = requests.get(
+                base + "/runs", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT
+            ).json()
+        except Exception:
+            return None
+        run_id = None
+        for r in runs.get("data", []) or []:
+            if r.get("current") and r.get("status") not in {"succeeded", "failed", "stopped"}:
+                run_id = r.get("id")
+                break
+        if not run_id:
+            return None
+        try:
+            run = requests.get(
+                base + f"/runs/{run_id}",
+                headers=_OPENTRONS_HTTP_HEADERS,
+                timeout=_OT2_HTTP_TIMEOUT,
+            ).json()
+        except Exception:
+            return None
+        data = run.get("data") or {}
+        return {"labware": data.get("labware") or [], "modules": data.get("modules") or []}
+
+    def _refresh_run_labware(self, *, force: bool = False) -> None:
+        """Refresh the cached run-labware, TTL-guarded. Best-effort; never raises."""
+
+        if (
+            not force
+            and self._last_run_labware_at
+            and (time.monotonic() - self._last_run_labware_at) < _OT2_DECK_PROBE_TTL
+        ):
+            return
+        self._last_run_labware = self.probe_run_labware()
+        self._last_run_labware_at = time.monotonic()
+
     def _refresh_identity(self) -> None:
         """Update cached probe/version from a best-effort HTTP read."""
 
@@ -413,6 +498,7 @@ class OT2Service:
             self._last_probe = probe
             if probe.get("api_version"):
                 self.equipment_version = probe["api_version"]
+        self._refresh_run_labware(force=True)
 
     def boot_reconnect(self) -> None:
         """Guarded one-shot reconnect at process start.
@@ -433,6 +519,9 @@ class OT2Service:
         self._last_probe = probe
         if probe.get("api_version"):
             self.equipment_version = probe["api_version"]
+        # Capture any active external run's labware so the deck reflects it even
+        # while the gateway stands off (EXTERNAL_CONTROL). Cheap, best-effort.
+        self._refresh_run_labware(force=True)
 
         if not probe.get("reachable"):
             self._status_note = (
@@ -515,11 +604,25 @@ class OT2Service:
         actions = self.allowed_actions()
         if lights.connected and "lights.set" not in actions:
             actions.append("lights.set")
+        # Declaring the deck layout is pure metadata (no hardware), so it is a
+        # convenience action available in every state except EXTERNAL_CONTROL,
+        # where the gateway advertises nothing while an external app owns the robot.
+        if self.state != OT2ServiceState.EXTERNAL_CONTROL and "deck.declare" not in actions:
+            actions.append("deck.declare")
+        raw = self.last_snapshot if isinstance(self.last_snapshot, dict) else {}
+        # `snapshot.deck` is the normalized, provenance-tagged DeckState (built from
+        # cached inputs only — see _build_deck_state); pipettes/labwares/modules stay
+        # as the raw REPL read for now.
         details: Dict[str, Any] = {
             "service_state": self.state.value,
             "dry_run": self.dry_run,
             "simulation": self.simulation,
-            "snapshot": self.last_snapshot,
+            "snapshot": {
+                "deck": self._build_deck_state().model_dump(mode="json"),
+                "pipettes": raw.get("pipettes", {}),
+                "labwares": raw.get("labwares", {}),
+                "modules": raw.get("modules", {}),
+            },
             "session_recipe": self.session_recipe,
         }
         loaded_plate = self.plates.get()
@@ -545,6 +648,86 @@ class OT2Service:
             last_error=self.last_error,
             details=details,
         )
+
+    def _build_deck_state(self):
+        """Merge the cached deck sources into a normalized DeckState.
+
+        Side-effect-free: reads only cached fields (`last_snapshot`,
+        `_last_run_labware`, the plate store, `session_recipe`) — no HTTP, no REPL.
+        `declared` is wired in Phase 2. Precedence run > repl > declared > empty.
+        """
+
+        run_active = bool(self._last_probe.get("run_active")) if self._last_probe else False
+        busy = (
+            self.state in {OT2ServiceState.BUSY, OT2ServiceState.EXTERNAL_CONTROL}
+            or run_active
+        )
+        repl = normalize_repl_slots((self.last_snapshot or {}).get("deck"))
+        run = normalize_run_slots(self._last_run_labware) if self._last_run_labware else None
+        return build_deck(
+            run=run,
+            repl=repl,
+            declared=self._declared_slots(),
+            loaded_plate=self.plates.get(),
+            nickname_to_slot=self._nickname_to_slot(),
+            busy=busy,
+            now=datetime.now(timezone.utc),
+        )
+
+    def _declared_slots(self) -> Dict[str, SlotLabware]:
+        """Merge the standalone operator declaration with the realized setup recipe.
+
+        Two declared sub-sources: the persisted :class:`DeckDeclarationStore` (the
+        stopgap replacement — set when there is no session) and ``session_recipe``
+        (what ``/control/setup`` actually loaded). The setup recipe overlays the
+        standalone declaration per slot, since it reflects what the gateway loaded.
+        """
+
+        declared: Dict[str, SlotLabware] = dict(self.decks.get())
+        for lw in self.session_recipe.get("labware", []) or []:
+            loadname = lw.get("loadname") or lw.get("load_name")
+            location = lw.get("location")
+            if loadname and location is not None and str(location) in SLOTS:
+                declared[str(location)] = make_slot_labware(loadname, display_name=lw.get("nickname"))
+        return declared
+
+    def declare_deck(self, mapping: Dict[str, Any]):
+        """Replace the operator-declared layout. Raises ValueError on a bad slot."""
+
+        return self.decks.declare(mapping)
+
+    def clear_deck(self) -> None:
+        self.decks.clear()
+
+    def run_background_refresh(self) -> None:
+        """Daemon loop: periodically refresh the external-run probe.
+
+        Keeps an EXTERNAL_CONTROL deck (and the run-active busy flag) fresh between
+        boots without the status handler ever issuing HTTP. Best-effort; a failed
+        probe is swallowed and retried next tick.
+        """
+
+        while not self._refresh_stop.wait(_OT2_RUN_REFRESH_INTERVAL):
+            try:
+                self._refresh_identity()
+            except Exception:  # pragma: no cover - best-effort background loop
+                pass
+
+    def _nickname_to_slot(self) -> Dict[str, str]:
+        """Map labware nicknames to deck slots from the current setup recipe.
+
+        organic-solubility sends the plate nickname (e.g. "D") as the gateway
+        `plate_id`, and `/control/setup` maps that nickname to a slot; this join
+        is what places the tracked plate's wells on the right slot.
+        """
+
+        out: Dict[str, str] = {}
+        for lw in self.session_recipe.get("labware", []) or []:
+            nickname = lw.get("nickname")
+            location = lw.get("location")
+            if nickname is not None and location is not None:
+                out[str(nickname)] = str(location)
+        return out
 
     def allowed_actions(self) -> list[str]:
         if self.state in {OT2ServiceState.REQUIRES_INIT, OT2ServiceState.ERROR}:

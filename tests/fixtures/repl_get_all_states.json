@@ -1,0 +1,29 @@
+{
+  "deck": {
+    "slots": {
+      "1": {"type": "labware", "name": "Opentrons 96 Tip Rack 300 µL", "load_name": "opentrons_96_tiprack_300ul", "is_tiprack": true, "uri": "opentrons/opentrons_96_tiprack_300ul/1"},
+      "2": {"type": "labware", "name": "Corning 96 Well Plate", "load_name": "corning_96_wellplate_360ul_flat", "is_tiprack": false, "uri": "opentrons/corning_96_wellplate_360ul_flat/2"},
+      "3": null,
+      "4": {"type": "labware", "name": "NEST 12 Reservoir", "load_name": "nest_12_reservoir_15ml", "is_tiprack": false, "uri": "opentrons/nest_12_reservoir_15ml/1"},
+      "5": null,
+      "6": {"type": "labware", "name": "Opentrons 24 Tube Rack", "load_name": "opentrons_24_tuberack_nest_1.5ml_snapcap", "is_tiprack": false, "uri": "opentrons/opentrons_24_tuberack_nest_1.5ml_snapcap/1"},
+      "7": {"type": "module", "name": "Temperature Module", "module_name": "temperature module gen2", "status": "idle", "serial_number": "TMP123"},
+      "8": null,
+      "9": null,
+      "10": null,
+      "11": null,
+      "12": {"type": "labware", "name": "Opentrons Fixed Trash", "load_name": "opentrons_1_trash_1100ml_fixed", "is_tiprack": false, "uri": "opentrons/opentrons_1_trash_1100ml_fixed/1"}
+    },
+    "loaded_labwares": {},
+    "loaded_modules": {},
+    "loaded_instruments": {},
+    "total_slots": 12,
+    "occupied_slots": 6,
+    "empty_slots": 6,
+    "timestamp": "2026-07-09T12:00:00"
+  },
+  "pipettes": {},
+  "labwares": {},
+  "modules": {},
+  "timestamp": "2026-07-09T12:00:00"
+}

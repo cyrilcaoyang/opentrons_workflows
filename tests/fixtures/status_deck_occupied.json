@@ -1,0 +1,229 @@
+{
+  "protocol_version": "1.1",
+  "equipment_id": "ot2",
+  "equipment_name": "Opentrons OT-2",
+  "equipment_kind": "liquid_handler",
+  "equipment_version": null,
+  "host": null,
+  "equipment_status": "ready",
+  "message": "OT-2 service state: ready",
+  "required_actions": [],
+  "allowed_actions": [
+    "shutdown",
+    "home",
+    "setup",
+    "pause",
+    "pick_up_tip",
+    "aspirate",
+    "dispense",
+    "drop_tip",
+    "move_labware",
+    "lights.set",
+    "deck.declare"
+  ],
+  "device_time": "2026-05-08T22:50:01Z",
+  "uptime_seconds": 0.0,
+  "components": {
+    "ssh": {
+      "connected": true,
+      "state": "connected",
+      "message": null,
+      "last_event_at": null
+    },
+    "protocol": {
+      "connected": true,
+      "state": "ready",
+      "message": null,
+      "last_event_at": null
+    },
+    "lights": {
+      "connected": true,
+      "state": "on",
+      "message": null,
+      "last_event_at": null
+    }
+  },
+  "metrics": {},
+  "last_error": null,
+  "details": {
+    "service_state": "ready",
+    "dry_run": false,
+    "simulation": false,
+    "snapshot": {
+      "deck": {
+        "source": "repl",
+        "slots": {
+          "1": {
+            "labware": {
+              "kind": "tiprack",
+              "load_name": "opentrons_96_tiprack_300ul",
+              "display_name": "Opentrons 96 Tip Rack 300 \u00b5L",
+              "is_tiprack": true,
+              "rows": 8,
+              "columns": 12,
+              "plate_id": null,
+              "wells": null
+            },
+            "module": null,
+            "slot_state": "occupied",
+            "source": "repl",
+            "declared": null
+          },
+          "2": {
+            "labware": {
+              "kind": "96-well",
+              "load_name": "corning_96_wellplate_360ul_flat",
+              "display_name": "Corning 96 Well Plate",
+              "is_tiprack": false,
+              "rows": 8,
+              "columns": 12,
+              "plate_id": "D",
+              "wells": [
+                {
+                  "well": "A1",
+                  "sample_id": "caffeine",
+                  "volume_ul": 200.0,
+                  "notes": null
+                }
+              ]
+            },
+            "module": null,
+            "slot_state": "occupied",
+            "source": "repl",
+            "declared": null
+          },
+          "3": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "4": {
+            "labware": {
+              "kind": "reservoir",
+              "load_name": "nest_12_reservoir_15ml",
+              "display_name": "NEST 12 Reservoir",
+              "is_tiprack": false,
+              "rows": 1,
+              "columns": 12,
+              "plate_id": null,
+              "wells": null
+            },
+            "module": null,
+            "slot_state": "occupied",
+            "source": "repl",
+            "declared": null
+          },
+          "5": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "6": {
+            "labware": {
+              "kind": "tuberack",
+              "load_name": "opentrons_24_tuberack_nest_1.5ml_snapcap",
+              "display_name": "Opentrons 24 Tube Rack",
+              "is_tiprack": false,
+              "rows": 4,
+              "columns": 6,
+              "plate_id": null,
+              "wells": null
+            },
+            "module": null,
+            "slot_state": "occupied",
+            "source": "repl",
+            "declared": null
+          },
+          "7": {
+            "labware": null,
+            "module": {
+              "module_name": "temperature module gen2",
+              "status": "idle",
+              "serial_number": "TMP123"
+            },
+            "slot_state": "occupied",
+            "source": "repl",
+            "declared": null
+          },
+          "8": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "9": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "10": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "11": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "12": {
+            "labware": {
+              "kind": "trash",
+              "load_name": "opentrons_1_trash_1100ml_fixed",
+              "display_name": "Opentrons Fixed Trash",
+              "is_tiprack": false,
+              "rows": null,
+              "columns": null,
+              "plate_id": null,
+              "wells": null
+            },
+            "module": null,
+            "slot_state": "occupied",
+            "source": "repl",
+            "declared": null
+          }
+        },
+        "timestamp": "2026-05-08T22:50:01Z"
+      },
+      "pipettes": {},
+      "labwares": {},
+      "modules": {}
+    },
+    "session_recipe": {
+      "labware": [
+        {
+          "nickname": "D",
+          "loadname": "corning_96_wellplate_360ul_flat",
+          "location": "2",
+          "ot_default": true
+        }
+      ],
+      "instruments": [],
+      "modules": []
+    },
+    "loaded_plate": {
+      "plate_id": "D",
+      "model": "corning_96_wellplate_360ul_flat",
+      "loaded_at": "2026-05-08T22:50:01Z",
+      "wells": [
+        {
+          "well": "A1",
+          "sample_id": "caffeine",
+          "volume_ul": 200.0,
+          "notes": null
+        }
+      ]
+    }
+  }
+}

@@ -11,11 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .claims import ClaimConflict, UnknownClaim
+from .deck import DeckDeclarationStore
 from .models import (
     ClaimRejection,
     ClaimRequest,
     ClaimResponse,
     CommandResponse,
+    DeckDeclareRequest,
+    DeckState,
     EquipmentStatus,
     HealthResponse,
     LightsRequest,
@@ -62,6 +65,9 @@ def create_app(
         dry_run=dry_run,
         plates=PlateStateStore(
             state_path=os.environ.get("OT2_PLATE_STATE_PATH", "./ot2_state.json")
+        ),
+        decks=DeckDeclarationStore(
+            state_path=os.environ.get("OT2_DECK_STATE_PATH", "./ot2_deck_state.json")
         ),
     )
 
@@ -244,6 +250,29 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
+    @app.post("/control/deck/declare", response_model=DeckState, tags=["control"])
+    def deck_declare(request: DeckDeclareRequest, _claim: None = Depends(require_claim)) -> DeckState:
+        """Set the operator/recipe-declared deck layout (retires the dashboard stopgap).
+
+        Body ``{"slots": {"2": "<load_name>" | {"load_name"|"kind": ...} | null}}``;
+        an empty ``slots`` map clears the declaration. Returns the resulting merged
+        deck so the caller sees the effect (declared + any observed sources).
+
+        POST (not PUT) so it flows through the dashboard's ``/control/*`` passthrough
+        (which mirrors POST/GET/DELETE) and matches the SDK skill-catalog method set.
+        """
+
+        try:
+            service.declare_deck(request.slots)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return service._build_deck_state()
+
+    @app.delete("/control/deck/declare", response_model=DeckState, tags=["control"])
+    def deck_declare_clear(_claim: None = Depends(require_claim)) -> DeckState:
+        service.clear_deck()
+        return service._build_deck_state()
+
     @app.post("/control/lights", response_model=CommandResponse, tags=["control"])
     def lights(request: LightsRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
         try:
@@ -281,6 +310,11 @@ def create_app(
     if auto_reconnect and not service.dry_run:
         threading.Thread(
             target=service.boot_reconnect, name="ot2-boot-reconnect", daemon=True
+        ).start()
+        # Keep the external-run deck / busy flag fresh between boots without the
+        # /status handler ever issuing HTTP (Phase 1 left this stale after boot).
+        threading.Thread(
+            target=service.run_background_refresh, name="ot2-run-refresh", daemon=True
         ).start()
 
     return app

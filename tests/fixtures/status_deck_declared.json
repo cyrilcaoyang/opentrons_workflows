@@ -44,7 +44,7 @@
     "simulation": false,
     "snapshot": {
       "deck": {
-        "source": "empty",
+        "source": "declared",
         "slots": {
           "1": {
             "labware": null,
@@ -54,10 +54,19 @@
             "declared": null
           },
           "2": {
-            "labware": null,
+            "labware": {
+              "kind": "96-well",
+              "load_name": "corning_96_wellplate_360ul_flat",
+              "display_name": null,
+              "is_tiprack": false,
+              "rows": 8,
+              "columns": 12,
+              "plate_id": null,
+              "wells": null
+            },
             "module": null,
-            "slot_state": "empty",
-            "source": "empty",
+            "slot_state": "declared",
+            "source": "declared",
             "declared": null
           },
           "3": {
@@ -110,10 +119,19 @@
             "declared": null
           },
           "10": {
-            "labware": null,
+            "labware": {
+              "kind": "tuberack",
+              "load_name": "opentrons_24_tuberack_nest_1.5ml_snapcap",
+              "display_name": null,
+              "is_tiprack": false,
+              "rows": 4,
+              "columns": 6,
+              "plate_id": null,
+              "wells": null
+            },
             "module": null,
-            "slot_state": "empty",
-            "source": "empty",
+            "slot_state": "declared",
+            "source": "declared",
             "declared": null
           },
           "11": {
@@ -124,10 +142,19 @@
             "declared": null
           },
           "12": {
-            "labware": null,
+            "labware": {
+              "kind": "trash",
+              "load_name": "opentrons_1_trash_1100ml_fixed",
+              "display_name": null,
+              "is_tiprack": false,
+              "rows": null,
+              "columns": null,
+              "plate_id": null,
+              "wells": null
+            },
             "module": null,
-            "slot_state": "empty",
-            "source": "empty",
+            "slot_state": "declared",
+            "source": "declared",
             "declared": null
           }
         },

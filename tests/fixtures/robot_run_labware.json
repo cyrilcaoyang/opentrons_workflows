@@ -1,0 +1,9 @@
+{
+  "labware": [
+    {"id": "lw-1", "loadName": "opentrons_96_tiprack_300ul", "definitionUri": "opentrons/opentrons_96_tiprack_300ul/1", "location": {"slotName": "1"}, "displayName": "Tips"},
+    {"id": "lw-2", "loadName": "corning_96_wellplate_360ul_flat", "definitionUri": "opentrons/corning_96_wellplate_360ul_flat/2", "location": {"slotName": "2"}, "displayName": "Reaction Plate"},
+    {"id": "lw-3", "loadName": "opentrons_1_trash_1100ml_fixed", "location": {"slotName": "12"}},
+    {"id": "lw-off", "loadName": "corning_96_wellplate_360ul_flat", "location": {"moduleId": "mod-1"}}
+  ],
+  "modules": []
+}
