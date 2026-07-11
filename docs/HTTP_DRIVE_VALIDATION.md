@@ -169,16 +169,19 @@ might be in the way (manual moves do NOT retract — HTTP_DRIVE_PLAN.md §handof
 
 Tick these only with a real observation written down.
 
-- [ ] **Flow rates (biggest gap).** The adapter injects DEFAULTS
-      (aspirate 150 / dispense 300 / blow-out 100 µL/s). During steps 9–10, judge
-      whether the speed is acceptable for your liquids. Then capture the pipette's
-      *real* defaults from the robot and compare:
+- [ ] **Flow rates.** `LiquidMoveRequest` now carries an optional `flow_rate`
+      (µL/s), threaded through `OT2HttpControl.aspirate/dispense`; when omitted the
+      adapter falls back to the `OT2_HTTP_*_FLOW_UL_S` defaults (aspirate 150 /
+      dispense 300 / blow-out 100). During steps 9–10 judge whether the *default*
+      speed is acceptable, then re-run one transfer with an explicit
+      `"flow_rate": <µL/s>` in the body and confirm the pipette visibly changes
+      speed. Capture the pipette's real defaults to pick sensible env values:
       ```bash
       curl -fsS -H 'Opentrons-Version: 3' localhost:31950/pipettes | python3 -m json.tool
       ```
-      **Decision to record:** keep the injected defaults, tune the
-      `OT2_HTTP_*_FLOW_UL_S` env values, or (correct fix) add a `flow_rate` field to
-      `LiquidMoveRequest` and thread it through `OT2HttpControl.aspirate/dispense`.
+      **Decision to record:** the env defaults to ship, and whether callers should
+      always pass `flow_rate` per transfer. (blow-out still has no request field —
+      it uses the env default only.)
 - [ ] **Explicit-tip requirement.** Confirm step 8 works *with* location and that a
       bare `{"pipette":"p300"}` pick-up is rejected. Decide whether the gateway should
       track a "next tip" itself or callers always pass the well. Record the choice.
@@ -186,14 +189,15 @@ Tick these only with a real observation written down.
       **in place** (expected: in place, via `dropTipInPlace`). If trash-drop is
       required, implement drop-to-`fixedTrash` (load the trash labware + pass its
       well) and re-test.
-- [ ] **Deck-snapshot parity.** HTTP mode's `_refresh_snapshot_http` currently only
-      records the run id. Verify the robot's `GET /runs/{id}` carries the deck
-      (steps 6/12 already read it), then implement the parser
-      (`normalize_run_slots`, reused from the external-run path) so
-      `details.snapshot`/deck tiles match SSH. **Then test idle persistence:**
-      after the cycle, `sudo systemctl restart ot2-gateway`, `POST /control/startup`
-      is NOT called, and confirm the last run's deck is still readable from
-      `:31950` — the whole point of the migration (idle deck no longer blanks).
+- [ ] **Deck-snapshot parity.** `_refresh_snapshot_http` now feeds the run's
+      loaded labware/modules into `_last_run_labware`, so the deck tile is built
+      through the same `normalize_run_slots` → `build_deck` path as SSH (run source).
+      **Verify** after step 6 that `curl localhost:8020/status | jq
+      '.details.snapshot.deck'` shows `source: "run"` with slots 1/2 occupied and
+      matches what `GET /runs/{id}` reports. **Then test idle persistence:** after
+      the cycle, `sudo systemctl restart ot2-gateway`, do NOT call
+      `POST /control/startup`, and confirm the last run's deck is still readable
+      from `:31950` — the whole point of the migration (idle deck no longer blanks).
 - [ ] **Custom labware.** Repeat step 6 with an `ot_default:false` entry carrying a
       generated definition (`{"config": <labware_generator JSON>}`) and confirm it
       registers (`POST /runs/{id}/labware_definitions`) then loads. Re-running the
@@ -202,6 +206,11 @@ Tick these only with a real observation written down.
       a control call surfaces as `unknown_outcome` (non-idempotent) via the existing
       `_run_action` path — i.e. `RunEngineUnreachable` (OSError) is handled like an
       SSH drop.
+- [ ] **Command wait-timeout.** A blocking command that outlives the server-side
+      `waitUntilComplete` timeout now raises `CommandNotCompleted` (an OSError), so a
+      non-idempotent action lands in `unknown_outcome` rather than a false success.
+      Optionally force it by setting a tiny `OT2_HTTP_COMMAND_TIMEOUT` and issuing a
+      slow move; confirm the gateway reports `unknown_outcome`, not `ready`.
 
 ---
 

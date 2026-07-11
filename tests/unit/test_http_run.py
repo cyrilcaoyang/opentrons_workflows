@@ -12,6 +12,7 @@ import requests
 from opentrons_server.control.http_run import (
     OFF_DECK,
     CommandFailed,
+    CommandNotCompleted,
     RunEngineClient,
 )
 from opentrons_server.control.http_run import RunEngineCommands as C
@@ -207,6 +208,44 @@ def test_execute_failed_status_raises_command_failed():
     assert excinfo.value.error_type == "MustHomeError"
     assert excinfo.value.error_code == "3003"
     assert "Must home first" in str(excinfo.value)
+
+
+def test_execute_wait_nonterminal_raises_not_completed():
+    # waitUntilComplete timed out server-side: 200 with a still-running command.
+    session = FakeSession(
+        [
+            FakeResponse(201, {"data": {"id": "run-1"}}),
+            FakeResponse(
+                201,
+                {"data": {"id": "cmd-1", "commandType": "aspirate", "status": "running"}},
+            ),
+        ]
+    )
+    client = _client(session)
+    client.create_run()
+
+    with pytest.raises(CommandNotCompleted) as excinfo:
+        client.execute(C.aspirate("pip", "lw", "A1", 10, 100), timeout_ms=30000)
+
+    assert excinfo.value.status == "running"
+    assert excinfo.value.timeout_ms == 30000
+    # Treated as an unknown outcome (OSError) so the gateway routes a
+    # non-idempotent action to UNKNOWN_OUTCOME, like a transport loss.
+    assert isinstance(excinfo.value, OSError)
+
+
+def test_execute_no_wait_tolerates_nonterminal_status():
+    # Without wait we accept a queued command and must NOT raise.
+    session = FakeSession(
+        [
+            FakeResponse(201, {"data": {"id": "run-1"}}),
+            FakeResponse(201, {"data": {"id": "cmd-1", "status": "queued"}}),
+        ]
+    )
+    client = _client(session)
+    client.create_run()
+    result = client.execute(C.home(), wait=False)
+    assert result["status"] == "queued"
 
 
 def test_execute_no_wait_omits_wait_params():

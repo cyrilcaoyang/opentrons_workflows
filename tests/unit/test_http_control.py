@@ -143,6 +143,22 @@ def test_location_precedence_top_wins_over_bottom():
     assert params["flowRate"] == 200.0
 
 
+def test_aspirate_flow_rate_override_beats_default():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "A1", bottom=2)
+    ctl.aspirate("p300", 50, flow_rate=25.0)
+    _, params = _last(client)
+    assert params["flowRate"] == 25.0  # not the 100.0 default
+
+
+def test_dispense_flow_rate_override_beats_default():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "A1", bottom=2)
+    ctl.dispense("p300", 50, flow_rate=75.0)
+    _, params = _last(client)
+    assert params["flowRate"] == 75.0  # not the 200.0 default
+
+
 def test_location_precedence_center():
     ctl, client = _loaded_control()
     ctl.get_location_from_labware("plate", "B2", center=1)

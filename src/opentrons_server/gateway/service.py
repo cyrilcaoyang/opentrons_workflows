@@ -268,16 +268,24 @@ class OT2Service:
         )
 
     def aspirate(self, request: Any) -> None:
+        flow_rate = getattr(request, "flow_rate", None)
+
         def _aspirate() -> None:
             self.set_location_from_well(request)
-            self._require_control().aspirate(request.pipette, request.volume_ul)
+            self._require_control().aspirate(
+                request.pipette, request.volume_ul, flow_rate=flow_rate
+            )
 
         self._run_action("aspirate", _aspirate, idempotent=False)
 
     def dispense(self, request: Any) -> None:
+        flow_rate = getattr(request, "flow_rate", None)
+
         def _dispense() -> None:
             self.set_location_from_well(request)
-            self._require_control().dispense(request.pipette, request.volume_ul)
+            self._require_control().dispense(
+                request.pipette, request.volume_ul, flow_rate=flow_rate
+            )
 
         self._run_action("dispense", _dispense, idempotent=False)
 
@@ -601,20 +609,30 @@ class OT2Service:
         return self.last_snapshot
 
     def _refresh_snapshot_http(self) -> Dict[str, Any]:
-        """Best-effort deck snapshot from the run engine (GET /runs/{id}).
+        """Deck snapshot from the run engine (GET /runs/{id}).
 
-        TODO(http-drive): parse the run's loaded labware/modules into the
-        ``{deck, pipettes, labwares, modules}`` parity shape via
-        ``normalize_run_slots`` (the external-run probe path already does the
-        same parsing). For now this only records the run id and never crashes
-        the side-effect-free ``/status`` handler — full deck parity is deferred
-        to the robot-validation step.
+        The run resource carries the loaded labware/modules under the same
+        top-level keys the external-run probe returns, so we feed them into
+        ``_last_run_labware`` — the ``run`` source of ``_build_deck_state`` — and
+        the deck tile gets full parity through the existing ``build_deck``
+        precedence (run > repl > declared) with no bespoke parser. There is no
+        REPL deck in HTTP mode, so ``last_snapshot`` carries no ``deck`` key and
+        the repl source stays empty. Never crashes the side-effect-free path.
         """
         try:
             run = self.control.run_snapshot()
+            labware = run.get("labware") or []
+            modules = run.get("modules") or []
+            # Same {labware, modules} shape probe_run_labware yields; drives the
+            # `run` deck source via normalize_run_slots.
+            self._last_run_labware = {"labware": labware, "modules": modules}
+            self._last_run_labware_at = time.monotonic()
+            # Raw passthrough for the details panel (run-engine list shape).
             self.last_snapshot = {
                 "run_id": run.get("id"),
-                "note": "http transport; deck parity parsing is TODO (see HTTP_DRIVE_PLAN.md)",
+                "pipettes": run.get("pipettes") or [],
+                "labwares": labware,
+                "modules": modules,
             }
         except Exception as exc:
             self._set_error("snapshot_failed", str(exc), severity="warning")

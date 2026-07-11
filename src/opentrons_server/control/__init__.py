@@ -4,6 +4,7 @@ from .http_control import OT2HttpControl
 from .http_run import (
     OFF_DECK,
     CommandFailed,
+    CommandNotCompleted,
     RunEngineClient,
     RunEngineCommands,
     RunEngineError,
@@ -34,6 +35,7 @@ __all__ = [
     "RunEngineHTTPError",
     "RunEngineUnreachable",
     "CommandFailed",
+    "CommandNotCompleted",
     "OFF_DECK",
     "deck_slot",
     "get_all_states",

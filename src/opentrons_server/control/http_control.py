@@ -9,10 +9,11 @@ STATUS: NOT wired into ``service.py`` yet, and NOT exercised against a real robo
 See ``docs/HTTP_DRIVE_PLAN.md``. Known semantic gaps vs. the SSH REPL (each flagged
 inline and in the plan doc):
 
-- **Flow rates.** ``aspirate``/``dispense``/``blow_out`` take no flow rate in the
-  ``OT2Control`` surface, but the run engine *requires* ``flowRate``. This adapter
-  injects a configurable default (constructor args). Until ``LiquidMoveRequest``
-  grows a ``flow_rate`` field these defaults are a stopgap, not per-call truth.
+- **Flow rates.** The run engine *requires* ``flowRate``. ``aspirate``/``dispense``
+  accept an optional per-call ``flow_rate`` (µL/s), threaded from
+  ``LiquidMoveRequest.flow_rate`` through the gateway; when omitted they fall back
+  to the constructor defaults (``OT2_HTTP_*_FLOW_UL_S``). ``blow_out`` still uses
+  the default only (no request field yet).
 - **Explicit tips.** The run engine's ``pickUpTip`` needs an explicit labware+well;
   there is no implicit "next tip" tracking like the protocol API. ``pick_up_tip``
   therefore requires a pending location (set via ``get_location_from_labware``) and
@@ -172,7 +173,9 @@ class OT2HttpControl:
 
     # -- liquid handling ---------------------------------------------------
 
-    def aspirate(self, pip_name: str, volume: float) -> None:
+    def aspirate(
+        self, pip_name: str, volume: float, *, flow_rate: Optional[float] = None
+    ) -> None:
         loc = self._take_pending("aspirate")
         self.client.execute(
             RunEngineCommands.aspirate(
@@ -180,13 +183,20 @@ class OT2HttpControl:
                 loc["labware_id"],
                 loc["well_name"],
                 volume,
-                self.aspirate_flow_rate,
+                flow_rate if flow_rate is not None else self.aspirate_flow_rate,
                 origin=loc["origin"],
                 offset=loc["offset"],
             )
         )
 
-    def dispense(self, pip_name: str, volume: float, push_out: Optional[float] = None) -> None:
+    def dispense(
+        self,
+        pip_name: str,
+        volume: float,
+        push_out: Optional[float] = None,
+        *,
+        flow_rate: Optional[float] = None,
+    ) -> None:
         loc = self._take_pending("dispense")
         self.client.execute(
             RunEngineCommands.dispense(
@@ -194,7 +204,7 @@ class OT2HttpControl:
                 loc["labware_id"],
                 loc["well_name"],
                 volume,
-                self.dispense_flow_rate,
+                flow_rate if flow_rate is not None else self.dispense_flow_rate,
                 origin=loc["origin"],
                 offset=loc["offset"],
                 push_out=push_out,

@@ -5,10 +5,29 @@ the ``transport="http"`` branch, with a fake RunEngineClient so no network or
 robot is touched.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from opentrons_server.control.http_control import OT2HttpControl
 from opentrons_server.gateway.service import OT2Service, OT2ServiceState
+
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_files(tmp_path, monkeypatch):
+    """Anchor the default plate/deck stores under tmp (they resolve relative
+    paths against the repo root, not cwd — see test_deck_status)."""
+    from opentrons_server.gateway import deck as deck_mod
+    from opentrons_server.gateway import plate_state as plate_mod
+
+    def _isolated(state_path):
+        return tmp_path / Path(state_path).name
+
+    monkeypatch.setattr(deck_mod, "_resolve_state_path", _isolated)
+    monkeypatch.setattr(plate_mod, "_resolve_state_path", _isolated)
 
 
 class FakeClient:
@@ -116,6 +135,26 @@ def test_http_aspirate_flows_through_to_a_command(fake_http):
     aspirate = next(c for c in fake_http.commands if c[0] == "aspirate")
     assert aspirate[1]["labwareId"] == "plate"
     assert aspirate[1]["wellName"] == "A1"
+
+
+def test_http_snapshot_populates_deck_parity_from_run(fake_http):
+    # The run resource carries loaded labware; the deck tile should reflect it
+    # via the `run` source (build_deck precedence run > repl > declared).
+    run_doc = json.loads((_FIXTURES / "robot_run_labware.json").read_text())
+    fake_http.get_run = lambda: {"id": "run-1", "pipettes": [], **run_doc}
+
+    service = OT2Service(dry_run=False, transport="http")
+    service.startup()
+    service.state = OT2ServiceState.READY
+    service.refresh_snapshot()
+
+    deck = service.get_status().details["snapshot"]["deck"]
+    assert deck["source"] == "run"
+    assert deck["slots"]["1"]["labware"] is not None  # tiprack
+    assert deck["slots"]["2"]["labware"] is not None  # reaction plate
+    # and the raw passthrough carries the run's labware list
+    assert service.last_snapshot["run_id"] == "run-1"
+    assert len(service.last_snapshot["labwares"]) == len(run_doc["labware"])
 
 
 def test_http_shutdown_stops_and_closes(fake_http):

@@ -67,6 +67,29 @@ class RunEngineHTTPError(RunEngineError):
         super().__init__(f"{status_code} from {path}: {detail}")
 
 
+class CommandNotCompleted(RunEngineError, OSError):
+    """A blocking command did not reach a terminal status within the wait window.
+
+    When ``waitUntilComplete=true``'s server-side ``timeout`` elapses, robot-server
+    returns HTTP 200 with the command still ``queued`` / ``running`` (NOT ``failed``).
+    Surfacing that as an error instead of a false success is the whole point: the
+    command may still be executing on the robot, so the outcome is genuinely
+    *unknown*. Subclasses ``OSError`` for the same reason as
+    :class:`RunEngineUnreachable` — a non-idempotent action lands in
+    ``UNKNOWN_OUTCOME`` (via ``OT2Service._run_action``) rather than a plain error.
+    """
+
+    def __init__(self, command: Dict[str, Any], *, timeout_ms: Optional[int] = None) -> None:
+        self.command = command
+        self.status: Optional[str] = command.get("status")
+        self.timeout_ms = timeout_ms
+        command_type = command.get("commandType", "command")
+        waited = f", waited {timeout_ms} ms" if timeout_ms is not None else ""
+        super().__init__(
+            f"{command_type} did not complete (status={self.status!r}{waited})"
+        )
+
+
 class CommandFailed(RunEngineError):
     """A posted command reached a terminal ``failed`` status.
 
@@ -410,6 +433,7 @@ class RunEngineClient:
 
         params_q: Dict[str, Any] = {}
         read_timeout = self.request_timeout_s
+        effective_ms: Optional[int] = None
         if wait:
             params_q["waitUntilComplete"] = "true"
             effective_ms = (
@@ -428,8 +452,14 @@ class RunEngineClient:
             params=params_q,
             timeout=read_timeout,
         )
-        if result.get("status") == "failed":
+        status = result.get("status")
+        if status == "failed":
             raise CommandFailed(result)
+        # A blocking call must actually reach ``succeeded``. If the server-side
+        # ``waitUntilComplete`` timeout elapsed, robot-server returns 200 with the
+        # command still queued/running — do not report that as a completed command.
+        if wait and status != "succeeded":
+            raise CommandNotCompleted(result, timeout_ms=effective_ms)
         return result
 
     def get_command(self, command_id: str) -> Dict[str, Any]:
