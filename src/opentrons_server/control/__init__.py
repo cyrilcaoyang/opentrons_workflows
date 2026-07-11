@@ -1,6 +1,16 @@
 """High-level Opentrons control and state snapshot helpers."""
 
-from .ot2_control import OT2Control, OpentronsControl
+from .http_run import (
+    OFF_DECK,
+    CommandFailed,
+    RunEngineClient,
+    RunEngineCommands,
+    RunEngineError,
+    RunEngineHTTPError,
+    RunEngineUnreachable,
+    deck_slot,
+)
+from .ot2_control import OpentronsControl, OT2Control
 from .state_readers import (
     get_all_states,
     get_deck_state,
@@ -16,6 +26,14 @@ from .state_readers import (
 __all__ = [
     "OT2Control",
     "OpentronsControl",
+    "RunEngineClient",
+    "RunEngineCommands",
+    "RunEngineError",
+    "RunEngineHTTPError",
+    "RunEngineUnreachable",
+    "CommandFailed",
+    "OFF_DECK",
+    "deck_slot",
     "get_all_states",
     "get_deck_state",
     "get_labware_state",
