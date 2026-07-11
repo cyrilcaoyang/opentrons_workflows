@@ -24,6 +24,24 @@ record, and is served by both the stock robot-server *and* the `opentrons-ot2`
 connector (in-process, same hardware lock). So this migration is also what makes
 adopting `opentrons-ot2` a no-op for our control path.
 
+## Enabling / reverting the HTTP transport (opt-in, fully reversible)
+
+The run-engine backend is wired into `OT2Service` behind a single switch. **SSH is
+the default; nothing changes until you opt in.**
+
+- **Enable:** set `OT2_TRANSPORT=http` in the service env (and `OT2_HTTP_BASE_URL`
+  if the robot's HTTP host differs from the SSH host). Restart.
+- **Revert:** unset `OT2_TRANSPORT` (or set it to `ssh`) and restart. No code change,
+  no redeploy of a different build — the SSH REPL path is byte-for-byte unchanged.
+- The switch is `OT2Service(transport=...)` / `OT2_TRANSPORT`; it only branches at
+  control construction (`_connect_http`) and snapshot (`_refresh_snapshot_http`).
+
+**Still unproven against the real robot** — the HTTP path is covered only by
+offline unit tests (fake client). Do not flip `OT2_TRANSPORT=http` in production
+until the full cycle is validated against `ot2cytation`, and mind the flagged gaps
+(guessed flow rates, explicit-tip requirement, drop-in-place fallback, deck-snapshot
+parity is still TODO in `_refresh_snapshot_http`).
+
 ## Confirmed against the live robot (2026-07-11, via the gateway probe)
 
 Pulled from `GET :8020/status` → `details.robot` on `sdl2-pc-03-cytation`:

@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Optional
 import paramiko
 import requests
 
-from ..control import OT2Control
+from ..control import OT2Control, OT2HttpControl, RunEngineClient
 from ..control import state_readers as _state_readers
 from .claims import ClaimManager
 from .deck import (
@@ -36,7 +36,6 @@ from .models import (
 )
 from .plate_state import PlateStateStore
 
-
 # Snapshot is run on the OT-2's Python REPL in two invokes. The OT-2 runs
 # only the official Opentrons SDK — `opentrons_server` is NOT installed
 # there by design — so we ship the reader source over the wire and exec()
@@ -52,9 +51,7 @@ from .plate_state import PlateStateStore
 # directly into the REPL — interactive mode treats blank as end-of-compound
 # — so we route the source through compile()/exec() to bypass that quirk.)
 _REMOTE_SNAPSHOT_DEFS = f"exec({inspect.getsource(_state_readers)!r})"
-_REMOTE_SNAPSHOT_CALL = (
-    "import json; print(json.dumps(get_all_states(protocol), default=str))"
-)
+_REMOTE_SNAPSHOT_CALL = "import json; print(json.dumps(get_all_states(protocol), default=str))"
 
 # Deck (rail) lights are driven through the robot's own Opentrons HTTP API
 # (GET/POST /robot/lights), not the SSH REPL: it is a stateless, side-effect
@@ -120,6 +117,7 @@ class OT2Service:
         simulation: bool = False,
         plates: Optional[PlateStateStore] = None,
         decks: Optional[DeckDeclarationStore] = None,
+        transport: Optional[str] = None,
     ) -> None:
         self.equipment_id = equipment_id
         self.equipment_name = equipment_name
@@ -127,16 +125,27 @@ class OT2Service:
         self.password = password
         self.dry_run = dry_run
         self.simulation = simulation
+        # Control-plane transport: "ssh" (default, the SSH REPL) or "http" (the
+        # robot-server run engine, docs/HTTP_DRIVE_PLAN.md). Opt-in and fully
+        # reversible: unset OT2_TRANSPORT (or pass transport="ssh") to restore the
+        # SSH path with zero behaviour change. HTTP is not yet robot-validated.
+        self.transport = (transport or os.getenv("OT2_TRANSPORT") or "ssh").lower()
         # Orchestrator-owned plate/well tracking, persisted across restarts.
         # Mirrors the Cytation contract so a plate round-trips across devices.
-        self.plates = plates if plates is not None else PlateStateStore(state_path="./ot2_state.json")
+        self.plates = (
+            plates if plates is not None else PlateStateStore(state_path="./ot2_state.json")
+        )
         # Operator/recipe-declared deck layout, persisted across restarts. The
         # source of truth that retires the dashboard's deck_layouts.json stopgap.
-        self.decks = decks if decks is not None else DeckDeclarationStore(state_path="./ot2_deck_state.json")
+        self.decks = (
+            decks if decks is not None else DeckDeclarationStore(state_path="./ot2_deck_state.json")
+        )
         self._refresh_stop = threading.Event()
         self.started_at = time.monotonic()
         self.state = OT2ServiceState.DRY_RUN if dry_run else OT2ServiceState.REQUIRES_INIT
-        self.control: Optional[OT2Control] = None
+        # Either an OT2Control (SSH) or an OT2HttpControl (run engine); both expose
+        # the same method surface the service calls.
+        self.control: Optional[Any] = None
         self.claims = ClaimManager()
         self.last_error: Optional[ErrorInfo] = None
         self._dry_run_lights_on = False
@@ -181,11 +190,14 @@ class OT2Service:
             self.simulation = simulation
 
         try:
-            self.control = OT2Control(
-                host_alias=self.host_alias,
-                password=self.password,
-                simulation=self.simulation,
-            )
+            if self.transport == "http":
+                self.control = self._connect_http()
+            else:
+                self.control = OT2Control(
+                    host_alias=self.host_alias,
+                    password=self.password,
+                    simulation=self.simulation,
+                )
             self.state = OT2ServiceState.READY
             self.last_error = None
             self._status_note = None
@@ -194,6 +206,21 @@ class OT2Service:
         except Exception as exc:
             self._set_error("startup_failed", str(exc), severity="error")
             raise
+
+    def _connect_http(self) -> OT2HttpControl:
+        """Build the run-engine control backend and create the (unplayed) run.
+
+        Reuses ``_probe_base_url()`` (``OT2_HTTP_BASE_URL`` or the configured host)
+        so the same address the boot probe already uses drives control.
+        """
+        base_url = self._probe_base_url()
+        if not base_url:
+            raise RuntimeError(
+                "http transport requires OT2_HTTP_BASE_URL or a configured host_alias"
+            )
+        control = OT2HttpControl(RunEngineClient(base_url))
+        control.initialize_protocol(simulation=self.simulation)
+        return control
 
     def shutdown(self) -> None:
         """Close the robot session and return to requires-init."""
@@ -405,7 +432,9 @@ class OT2Service:
         if base is None:
             return result
         try:
-            resp = requests.get(base + "/health", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT)
+            resp = requests.get(
+                base + "/health", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT
+            )
             resp.raise_for_status()
             health = resp.json()
         except Exception:
@@ -417,7 +446,9 @@ class OT2Service:
         result["robot_name"] = health.get("name")
         # Best-effort extras: a failure here must not flip reachability.
         try:
-            runs = requests.get(base + "/runs", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT).json()
+            runs = requests.get(
+                base + "/runs", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT
+            ).json()
             result["run_active"] = any(
                 r.get("current") and r.get("status") not in {"succeeded", "failed", "stopped"}
                 for r in runs.get("data", []) or []
@@ -554,6 +585,9 @@ class OT2Service:
             self.last_snapshot = self._empty_snapshot()
             return self.last_snapshot
 
+        if self.transport == "http":
+            return self._refresh_snapshot_http()
+
         try:
             # The reader functions need to execute where the protocol object
             # lives: inside the robot-side Python interpreter. We send the
@@ -562,6 +596,26 @@ class OT2Service:
             self.control.invoke(_REMOTE_SNAPSHOT_DEFS)
             output = self.control.invoke(_REMOTE_SNAPSHOT_CALL)
             self.last_snapshot = self._parse_remote_snapshot(output)
+        except Exception as exc:
+            self._set_error("snapshot_failed", str(exc), severity="warning")
+        return self.last_snapshot
+
+    def _refresh_snapshot_http(self) -> Dict[str, Any]:
+        """Best-effort deck snapshot from the run engine (GET /runs/{id}).
+
+        TODO(http-drive): parse the run's loaded labware/modules into the
+        ``{deck, pipettes, labwares, modules}`` parity shape via
+        ``normalize_run_slots`` (the external-run probe path already does the
+        same parsing). For now this only records the run id and never crashes
+        the side-effect-free ``/status`` handler — full deck parity is deferred
+        to the robot-validation step.
+        """
+        try:
+            run = self.control.run_snapshot()
+            self.last_snapshot = {
+                "run_id": run.get("id"),
+                "note": "http transport; deck parity parsing is TODO (see HTTP_DRIVE_PLAN.md)",
+            }
         except Exception as exc:
             self._set_error("snapshot_failed", str(exc), severity="warning")
         return self.last_snapshot
@@ -658,10 +712,7 @@ class OT2Service:
         """
 
         run_active = bool(self._last_probe.get("run_active")) if self._last_probe else False
-        busy = (
-            self.state in {OT2ServiceState.BUSY, OT2ServiceState.EXTERNAL_CONTROL}
-            or run_active
-        )
+        busy = self.state in {OT2ServiceState.BUSY, OT2ServiceState.EXTERNAL_CONTROL} or run_active
         repl = normalize_repl_slots((self.last_snapshot or {}).get("deck"))
         run = normalize_run_slots(self._last_run_labware) if self._last_run_labware else None
         return build_deck(
@@ -688,7 +739,9 @@ class OT2Service:
             loadname = lw.get("loadname") or lw.get("load_name")
             location = lw.get("location")
             if loadname and location is not None and str(location) in SLOTS:
-                declared[str(location)] = make_slot_labware(loadname, display_name=lw.get("nickname"))
+                declared[str(location)] = make_slot_labware(
+                    loadname, display_name=lw.get("nickname")
+                )
         return declared
 
     def declare_deck(self, mapping: Dict[str, Any]):
@@ -733,7 +786,15 @@ class OT2Service:
         if self.state in {OT2ServiceState.REQUIRES_INIT, OT2ServiceState.ERROR}:
             return ["startup"]
         if self.state == OT2ServiceState.DRY_RUN:
-            return ["startup", "shutdown", "home", "setup", "plate.load", "plate.unload", "well.update"]
+            return [
+                "startup",
+                "shutdown",
+                "home",
+                "setup",
+                "plate.load",
+                "plate.unload",
+                "well.update",
+            ]
         if self.state == OT2ServiceState.PAUSED:
             return ["resume", "shutdown"]
         if self.state == OT2ServiceState.READY:
@@ -809,16 +870,20 @@ class OT2Service:
             severity=severity,  # type: ignore[arg-type]
             timestamp=datetime.now(timezone.utc),
         )
-        if (
-            severity in {"error", "critical"}
-            and self.state not in {OT2ServiceState.UNKNOWN_OUTCOME, OT2ServiceState.DRY_RUN}
-        ):
+        if severity in {"error", "critical"} and self.state not in {
+            OT2ServiceState.UNKNOWN_OUTCOME,
+            OT2ServiceState.DRY_RUN,
+        }:
             self.state = OT2ServiceState.ERROR
 
     def _equipment_state(self) -> str:
         if self.state == OT2ServiceState.READY:
             return "ready"
-        if self.state in {OT2ServiceState.BUSY, OT2ServiceState.CONNECTING, OT2ServiceState.EXTERNAL_CONTROL}:
+        if self.state in {
+            OT2ServiceState.BUSY,
+            OT2ServiceState.CONNECTING,
+            OT2ServiceState.EXTERNAL_CONTROL,
+        }:
             return "busy"
         if self.state == OT2ServiceState.REQUIRES_INIT:
             return "requires_init"
@@ -861,7 +926,12 @@ class OT2Service:
             ),
             "protocol": ComponentStatus(
                 connected=self.state
-                in {OT2ServiceState.READY, OT2ServiceState.BUSY, OT2ServiceState.PAUSED, OT2ServiceState.DRY_RUN},
+                in {
+                    OT2ServiceState.READY,
+                    OT2ServiceState.BUSY,
+                    OT2ServiceState.PAUSED,
+                    OT2ServiceState.DRY_RUN,
+                },
                 state=self.state.value,
             ),
             "lights": lights,
