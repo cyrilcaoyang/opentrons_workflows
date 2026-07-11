@@ -1,5 +1,6 @@
 """High-level Opentrons control and state snapshot helpers."""
 
+from .http_control import OT2HttpControl
 from .http_run import (
     OFF_DECK,
     CommandFailed,
@@ -26,6 +27,7 @@ from .state_readers import (
 __all__ = [
     "OT2Control",
     "OpentronsControl",
+    "OT2HttpControl",
     "RunEngineClient",
     "RunEngineCommands",
     "RunEngineError",
