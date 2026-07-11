@@ -131,8 +131,8 @@ an HTTP command POST.
 | `/control/aspirate` | `aspirate` invoke | `aspirate` command (labware, well, volume, flowRate, offset) |
 | `/control/dispense` | `dispense` invoke | `dispense` command (labware, well, volume, flowRate, offset, pushOut) |
 | `/control/drop-tip` | `drop_tip` invoke | `dropTip` command (or `dropTipInPlace`) |
-| `/control/move-labware` | `move_labware` invoke | `moveLabware` command, `strategy: manualMoveWithPause` (OT-2 has no gripper) |
-| `/control/plate/unload` | bookkeeping | `moveLabware` off-deck / mark removed **+ `PlateStateStore` bookkeeping unchanged** |
+| `/control/move-labware` | `move_labware` invoke | `moveLabware` command, `strategy: manualMoveWithoutPause` (only viable value — see handoff spec; OT-2 has no gripper and `manualMoveWithPause` breaks the setup-only model) |
+| `/control/plate/unload` | bookkeeping only | **atomic robot action:** `moveLabware(offDeck, manualMoveWithoutPause)` for the plate's labwareId **+** clear `PlateStateStore` (see handoff spec) |
 | `/control/home` | `protocol.home()` | `home` command |
 | `/control/pause` `/resume` | REPL pause/resume | **no run-queue analogue in setup mode** — each command already blocks to completion; decide whether to keep these as no-ops, hardware pause, or drop them |
 | `/control/shutdown` | close REPL session | `actions` `stop` (+ drop run reference) — or just discard the run id |
@@ -182,6 +182,125 @@ Errors: each command POST returns a structured result; a failed command yields
 `status: failed` + an error object → map to our `CommandResponse`/`last_error`
 instead of scraping a REPL traceback. This is cleaner than today.
 
+## Plate handoff spec (option (a): keep the run-engine deck view truthful)
+
+**Decision:** the gateway records every plate arrival/departure in the run engine so
+`GET /runs/{runId}` is the single truthful deck picture, and mirrors sample metadata
+in `PlateStateStore`. Confirmed from v8.7.0 source below; safety-relevant.
+
+### Strategy choice — CONFIRMED, and it's forced
+
+For an OT-2 in the never-played / setup-intent model, **the only usable strategy is
+`manualMoveWithoutPause`.** From source (`commands/move_labware.py`,
+`execution/run_control.py`, `state/commands.py`):
+
+- `manualMoveWithoutPause`: makes **no hardware move**, sets
+  `state_update.set_labware_location(...)`, returns `succeeded` immediately, run stays
+  in `SETUP`. ✅ compatible.
+- `manualMoveWithPause`: its `execute()` calls `wait_for_resume()`, which dispatches
+  `PauseAction` (run `SETUP → PAUSED`) and blocks until the queue is `RUNNING`. That
+  (a) **hangs** our `waitUntilComplete` POST until something else issues `play`, and
+  (b) once resumed via `play` the run is `RUNNING`, so **all further `intent:setup`
+  commands are rejected** (`SetupCommandNotAllowedError`). ❌ permanently ends
+  imperative driving — do not use.
+- `usingGripper`: OT-2 has no gripper — invalid.
+
+**Consequence:** we never use the engine's pause to gate a physical move. Any
+human-in-the-loop move is gated *outside* the engine (the gateway simply stops
+posting commands until a confirmation arrives), then recorded with
+`manualMoveWithoutPause`. One strategy covers both the xArm and human cases.
+
+### Two safety facts that drive the ordering
+
+1. **No auto-retraction.** Manual moves do **not** home or move the gantry (only
+   `usingGripper` retracts, and that's Flex-only). Whatever pose the last command left
+   the gantry in persists. So **the gateway MUST `home` before any arm/hand enters the
+   deck** — the `moveLabware` command will not clear the gantry for you.
+2. **`moveLabware` is bookkeeping-only here** — it moves no hardware, so its *timing*
+   is not safety-critical; only the `home`-before-entry ordering is.
+
+### Plate-OUT handoff (xArm lifts a plate off slot N)
+
+Cross-device sequencing is the **orchestrator's** job (interlock layer 4, workflow
+repo — see INTERLOCKS.md); the gateway exposes primitives and truthful state, and
+never commands the xArm.
+
+1. Gateway: confirm no command in flight (device state machine idle, layer 2).
+2. Gateway: `home` command → park the gantry clear of slot N. **Safety-critical: must
+   complete before step 4.** Gateway reports a "safe for handoff" state.
+3. Orchestrator: only now signal the xArm to enter and grasp (layer-4 interlock:
+   *xArm must not enter while the OT-2 gantry is unparked* — enforced in the workflow,
+   backed by step 2 + the device state machine; physical e-stop is the backstop).
+4. xArm lifts the plate clear.
+5. Gateway: `moveLabware {labwareId: <plate's id>, newLocation: "offDeck", strategy:
+   "manualMoveWithoutPause"}` — engine now records slot N empty. Succeeds immediately,
+   run stays in SETUP. (Issue *after* the lift so the engine never claims empty while
+   the plate is still physically present.)
+6. Gateway: clear the plate from `PlateStateStore`.
+
+Steps 5+6 are the **atomic `/control/plate/unload`** (see API impact). `newLocation`
+for off-deck is the bare JSON string `"offDeck"` (not an object). `labwareId` is
+required and the plate must have been loaded earlier (reuse the id from its
+`loadLabware`).
+
+### Plate-IN handoff (xArm places a plate onto slot N)
+
+Mirror, with the same `home`-before-entry rule:
+
+1. Gateway: `home`; report safe-for-handoff.
+2. Orchestrator: signal the xArm to place the plate on slot N; xArm confirms release + clear.
+3. Gateway records the plate — **two cases, keyed off the nickname→labwareId map:**
+   - **New plate** (not known to this run): if custom labware, first
+     `POST /runs/{runId}/labware_definitions`; then `loadLabware {location:{slotName:"N"},
+     loadName, namespace, version}`; store the returned `labwareId`; load `PlateStateStore`.
+   - **Returning plate** (labwareId already exists in this run, was moved `offDeck`):
+     `moveLabware {labwareId, newLocation:{slotName:"N"}, strategy:"manualMoveWithoutPause"}`
+     — do **not** `loadLabware` again (that would create a second labware).
+
+### labwareId lifetime & crash recovery
+
+The `labwareId` is owned by the run and lives as long as the run does. The
+nickname→labwareId map is per-run and **reconstructable** after a gateway restart from
+`GET /runs/{runId}` (each loaded labware carries its id, location, and displayName).
+So a crash mid-residency doesn't orphan the mapping — rebuild it from the run.
+
+### Error / edge cases
+
+- **Unload when the engine has no such labwareId** (already gone / never loaded): skip
+  the `moveLabware`, just clear `PlateStateStore`, log a reconcile warning. Unload stays
+  idempotent.
+- **`moveLabware` returns `failed`**: surface via `last_error`; do **not** clear the
+  store (physical state uncertain) — leave for operator reconciliation.
+- **`loadLabware` onto an occupied slot**: engine errors; reconcile against
+  `GET /runs/{runId}` rather than blindly retrying.
+- **Custom-def re-register**: idempotent (same namespace/loadName/version overwrites) —
+  safe on repeat plate-ins of the same labware type.
+
+### Gateway API impact
+
+- `MoveLabwareRequest`: add `new_location` support for the `"offDeck"` string, and a
+  `strategy` field **constrained to `manualMoveWithoutPause`** (the only viable value;
+  document that `manualMoveWithPause`/`usingGripper` are deliberately unsupported).
+- `/control/plate/unload`: becomes **atomic and a robot action** — issue
+  `moveLabware(offDeck, manualMoveWithoutPause)` for the loaded plate's labwareId, then
+  clear the store. It therefore moves under the BUSY state machine (today it bypasses it).
+- `/control/plate/load`: register custom def if needed → `loadLabware` (or `moveLabware`
+  back from offDeck for a returning plate) → store labwareId + `PlateStateStore`.
+- **Homing is the orchestrator's call, not auto-done inside load/unload** — the gateway
+  must not auto-home inside these because the safe moment depends on the xArm's state,
+  which the gateway doesn't know. The gateway offers `/control/home` + a truthful
+  safe-for-handoff state; the workflow sequences it against the arm.
+
+### Deck-occupancy vs. metadata split (retires the deck/declare redundancy)
+
+Under this spec: **deck occupancy** (which slot holds which labware) is owned by the
+run engine (`loadLabware`/`moveLabware`, read via `GET /runs/{runId}`); **well/sample
+metadata** (sample_id, volume_ul, notes) stays in `PlateStateStore`. Coupling the
+engine move and the store update inside plate/load+unload keeps them consistent by
+construction — which is the whole reason for choosing option (a). This also removes the
+need for the separate `deck/declare` bookkeeping the old `DECK_STATE_PLAN.md` flagged as
+unnormalized; `deck/declare` can be deprecated once the run-engine deck read lands.
+
 ## What we KEEP as-is (no work)
 
 - **`labware_generator.py`** — pure JSON; reused verbatim. Only the *load* step
@@ -216,17 +335,19 @@ instead of scraping a REPL traceback. This is cleaner than today.
   and is our path; `/maintenance_runs` is ephemeral/unrecorded so we don't use it.
 - ~~Custom labware namespace/version collision handling~~ — **RESOLVED**: idempotent
   overwrite, no error; a later `loadLabware` references it by namespace/loadName/version.
-- **STILL A DESIGN DECISION (needs owner):** `moveLabware` on plate-out. On OT-2 the
-  only valid strategies are `manualMoveWithPause` / `manualMoveWithoutPause` (no
-  gripper). Options: (a) issue `moveLabware ... offDeck` with `manualMoveWithPause`
-  so the run engine records the plate leaving and prompts; (b) skip the command and
-  only update `PlateStateStore` while the xArm physically lifts it. (b) keeps the run
-  engine's deck view out of sync with reality; (a) keeps them consistent but injects
-  a pause the xArm handoff must satisfy. **Recommend (a)** for deck-state fidelity —
-  but confirm the xArm handoff can clear the manual-move pause. Owner: needs your call.
-- **Minor, verify at implementation:** the exact `pause`/`resume` mapping in setup
-  mode (likely no-op or hardware-level), and whether we ever need `stop` on shutdown
-  vs. just discarding the run id.
+- ~~`moveLabware` on plate-out — design decision~~ — **RESOLVED (option (a)), and the
+  strategy is forced by source:** record the move in the engine with
+  `manualMoveWithoutPause` (NOT `manualMoveWithPause` — it pauses the run out of SETUP
+  and permanently blocks further setup commands; confirmed at v8.7.0). Gateway must
+  `home` before the arm enters (manual moves don't retract). Full protocol in the
+  "Plate handoff spec" section above.
+- **Verify at implementation (`config.ignore_pause`):** the pause analysis assumes a
+  robot-server live run honors pauses (`ignore_pause=False`). Not load-bearing for us
+  now that we've dropped `manualMoveWithPause`, but confirm in
+  `robot-server` `EngineStore`/`create_protocol_engine` if we ever revisit pause.
+- **Minor, verify at implementation:** `/control/pause`/`resume` mapping in setup mode
+  (likely no-op or hardware-level), and whether `stop` is needed on shutdown vs. just
+  discarding the run id.
 
 ## Confirmed command reference (Opentrons v8.7.0, read from source at tag `v8.7.0`)
 
