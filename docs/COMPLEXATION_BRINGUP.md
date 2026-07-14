@@ -188,13 +188,23 @@ server pulls it).
 
 ---
 
-## 6. Sign-off
+## 6. Sign-off — COMPLETE (2026-07-14, operator: Cyril Cao)
 
-- [ ] Gateway answers `/`, `/health`, `/status` on :8021; `requires_init` at rest.
-- [ ] Phase A startup succeeds in simulation.
-- [ ] `--mode dry` completes all steps; pipette-match check passed.
-- [ ] `--mode wet` completed the full cycle without an unplanned stop.
-- [ ] `equipment.yaml` flipped to `http` and the tile is green.
-- [ ] State files land in `C:\SDL_State\` (not shared with the HTE ot2).
+Gateway was already deployed as NSSM service **`ot2-gateway-complexation`** (§1–2
+skipped); robot `ot2training` (`100.64.254.91`), pipettes left `p300_single_gen2` /
+right `p20_multi_gen2`.
 
-Record date / operator / observations in the branch PR.
+- [x] Gateway answers `/`, `/health`, `/status` on :8021.
+- [x] Phase A / startup succeeds in simulation (via `--mode dry`).
+- [x] `--mode dry` completes all 34 steps; pipette-match check passed.
+- [x] `--mode wet` completed the full cycle (real motion, no unplanned stop).
+- [x] `equipment.yaml` `ot2_complexation` on `adapter: http` (was already flipped).
+- [x] State files separated (`OT2_PLATE_STATE_PATH=C:\ProgramData\ot2_complexation\…`).
+
+**Bugs found + fixed during bring-up:** demo-script cp1252 encoding + 30→180 s
+timeout (`f28cc87`); `tip_length`-on-non-tiprack SSH snapshot 500 (`68c0803`); plus
+the off-deck `/status` 500 (`ea58a5b`) from the parallel HTTP-drive work.
+
+**Caveat:** the p300 draws its whole 25→300 µL gradient from **A12 alone**, so A12
+depletes after the first couple aspirates — the wet run validated **motion**, not
+liquid accuracy. Add source-refill / tune volumes before a quantitative run.

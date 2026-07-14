@@ -31,12 +31,14 @@ See `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
    note: set `OT2_HTTP_BASE_URL` to the robot's reachable **tailnet IP** (bare host
    alias didn't reach `:31950`); on the host use Git Bash + `python`, or SSH into WSL
    and use the tailnet name + `/mnt/c` paths.
-2. **Complexation gateway bring-up** — follow `COMPLEXATION_BRINGUP.md`:
-   deploy the second `opentrons-server` instance on port 8021 (own checkout,
-   own `C:\SDL_State\` files), set up the `ot2training` SSH alias (or the HTTP
-   fallback), run the dispense test `plan → dry → wet`, then flip the
-   `equipment.yaml` `ot2_complexation` entry `mock → http` **only after** the
-   gateway answers on :8021.
+2. **Complexation gateway bring-up — DONE** (2026-07-14). Gateway was already
+   deployed on :8021 (`ot2_complexation` → `ot2training`); dispense test
+   `plan → dry → wet` all passed (34 steps, wet = real motion, no unplanned
+   stop); `equipment.yaml` already `adapter: http`. Flushed out 3 bugs, all
+   fixed: off-deck `/status` 500 (`ea58a5b`), demo-script cp1252 encoding +
+   30→180 s timeout (`f28cc87`), `tip_length`-on-non-tiprack SSH snapshot 500
+   (`68c0803`). Optional follow-up: tune the p300 volumes so A12 doesn't deplete
+   (source-refill), for a liquid-accurate — not just motion — run.
 
 ## Desk work — unblocked (can do remotely now)
 
