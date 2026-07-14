@@ -201,6 +201,10 @@ def normalize_run_slots(run_doc: Optional[Dict[str, Any]]) -> Dict[str, SlotLabw
         return out
     for lw in run_doc.get("labware") or []:
         location = lw.get("location") or {}
+        # Off-deck labware carries the bare string "offDeck", not a dict — skip it
+        # (found live 2026-07-14: it 500'd /status after a move-labware OFF_DECK).
+        if not isinstance(location, dict):
+            continue
         slot = location.get("slotName")
         if slot is None:
             continue

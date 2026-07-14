@@ -126,6 +126,19 @@ def test_normalize_run_slots_from_fixture():
     assert slots["12"].kind == "trash"
 
 
+def test_normalize_run_slots_skips_offdeck_string_location():
+    # After moveLabware OFF_DECK the run engine reports the bare string
+    # "offDeck" (not a dict) — this 500'd /status live on 2026-07-14.
+    raw = {
+        "labware": [
+            {"loadName": "opentrons_96_tiprack_300ul", "location": {"slotName": "1"}},
+            {"loadName": "corning_96_wellplate_360ul_flat", "location": "offDeck"},
+        ]
+    }
+    slots = normalize_run_slots(raw)
+    assert set(slots) == {"1"}
+
+
 # ---------------------------------------------------------------------------
 # build_deck — one case per §2.4 decision-table row
 # ---------------------------------------------------------------------------
