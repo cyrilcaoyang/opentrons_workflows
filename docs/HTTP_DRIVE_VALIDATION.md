@@ -8,20 +8,23 @@ plate-out cycle, and close each flagged gap with a real observation.
 This is a live checklist: boxes are ticked **only** with a real hardware
 observation. Tick top-down; everything still unchecked is outstanding.
 
-**Status: PARTIAL sign-off.** Core cycle (bring-up → home → setup → plate-in →
-pick-up → aspirate → dispense → drop-tip) validated; flow-rate / explicit-tip /
-drop-location gaps + deck-parity (first half) closed. Step 12 and several §C checks
-remain — see the unticked boxes.
+**Status: VALIDATED (2026-07-14).** Full cycle (bring-up → home → setup → plate-in →
+pick-up → aspirate → dispense → drop-tip → **plate-out**) validated on `ot2cytation`,
+all §C gaps closed (flow-rate, explicit-tip, drop-location, deck-parity +
+idle-persistence, custom labware, transport-loss). One live bug found and fixed
+(off-deck `/status` 500 → `ea58a5b`). Only caveat: **command wait-timeout** was not
+force-triggered live — it shares the exact `_run_action` OSError → `unknown_outcome`
+path proven by the transport-loss test, and is unit-tested (`CommandNotCompleted`).
 
 ### Run log
 
 | | |
 |---|---|
-| **Session** | 2026-07-13 evening (local) / 2026-07-14 UTC |
+| **Session 1** | 2026-07-13 evening (local) / 2026-07-14 UTC — steps 1–11, §C flow-rate/explicit-tip/drop-location, deck-parity (first half). Run `40cdcab8…` (deleted). |
+| **Session 2** | 2026-07-14 — step 12, idle-persistence, custom labware, transport-loss; off-deck 500 bug fixed. Run `f4274592…` (deleted). |
 | **Operator** | Cyril Cao (`yangcyril.cao@utoronto.ca`) |
 | **Robot** | `ot2cytation` — OT-2 Standard, Opentrons `8.7.0`, fw `v1.1.0-25e5cea`, tailnet `100.64.254.90` (SSH host `192.168.254.50`) |
 | **Gateway** | `ot2-gateway` NSSM service, port `8020`, host `sdl2-pc-03-cytation` (Windows hostname `DESKTOP-OVJ3SSL`) |
-| **Run id** | `40cdcab8-3eba-416b-a075-…` (created `2026-07-14T01:48:22Z`; deleted at end) |
 
 > **Run this ON the gateway host, in Git Bash** (native Windows — `localhost:8020`
 > and the robot's `:31950` do not resolve from WSL). Use **`python`**, not `python3`.
@@ -152,12 +155,14 @@ echo "$TOKEN"; H="-H X-Claim-Token:$TOKEN -H Content-Type:application/json"
       curl -fsS $H -X POST localhost:8020/control/home
       curl -fsS $H -X POST localhost:8020/control/drop-tip -d '{"pipette":"p300"}'
       ```
-- [ ] **12. Plate-out (safety-critical handoff) — NOT YET RUN.** `home`, then
-      `move-labware OFF_DECK` (must return immediately, **no pause prompt** → confirms
-      `manualMoveWithoutPause`), then `plate/unload`; run then shows slot 2 empty.
+- [x] **12. Plate-out (safety-critical handoff) — PASS.** `move-labware OFF_DECK`
+      returned in **0.454 s with no pause prompt** (confirms `manualMoveWithoutPause`);
+      robot run then showed the plate `offDeck`, tiprack still slot 1. 🐛 **Exposed a
+      live bug:** the off-deck labware reports `location: "offDeck"` (bare string), which
+      500'd `/status` in `normalize_run_slots` — fixed + regression-tested (`ea58a5b`).
       ```bash
       curl -fsS $H -X POST localhost:8020/control/home
-      curl -fsS $H -X POST localhost:8020/control/move-labware -d '{"labware_nickname":"plate","new_location":"OFF_DECK"}'
+      time curl -fsS $H -X POST localhost:8020/control/move-labware -d '{"labware_nickname":"plate","new_location":"OFF_DECK"}'
       curl -fsS $H -X POST localhost:8020/control/plate/unload
       ```
 
@@ -180,39 +185,43 @@ echo "$TOKEN"; H="-H X-Claim-Token:$TOKEN -H Content-Type:application/json"
 - [x] **Drop location — OBSERVED (fix deferred).** No location → `dropTipInPlace`
       (drops where the head is). `home` first lands tips at slot 12 (fixed-trash region)
       — usable stopgap. Real drop-to-`fixedTrash` remains future work.
-- [ ] **Deck-snapshot parity — idle-persistence NOT YET RUN.** (Run-sourced deck already
-      confirmed above.) After the cycle: `nssm restart ot2-gateway`, do **not** call
-      startup, confirm the last run's deck is still readable from `:31950` (the whole
-      point — idle deck no longer blanks).
-- [ ] **Custom labware — NOT YET RUN.** Repeat step 6 with an `ot_default:false` entry
-      carrying `{"config": <labware_generator JSON>}`; confirm it registers
-      (`POST /runs/{id}/labware_definitions`) then loads; re-running the same def is
-      idempotent.
-- [ ] **Claim / transport loss — NOT YET RUN.** Kill the robot's network mid-idle;
-      confirm a non-idempotent control call surfaces as `unknown_outcome`
-      (`RunEngineUnreachable` handled like an SSH drop).
-- [ ] **Command wait-timeout — NOT YET RUN.** Tiny `OT2_HTTP_COMMAND_TIMEOUT` + a slow
-      move; confirm `CommandNotCompleted` → `unknown_outcome`, not a false `ready`.
+- [x] **Deck-snapshot parity — idle-persistence PASS.** Restarted the gateway with a
+      loaded run present and did **not** call startup; `/status` came back 200 with
+      `deck.source: run` still showing the run's labware (slot 1 tiprack) read from
+      `:31950`. Idle deck no longer blanks across a restart.
+- [x] **Custom labware — PASS.** Setup with `ot_default:false` + a generated def
+      (`custom_val/val_custom_96_flat/1`) registered (`POST /runs/{id}/labware_definitions`)
+      and loaded (slot 4). Re-running the **same** def (slot 5) loaded cleanly — register
+      is idempotent (no conflict).
+- [x] **Claim / transport loss — PASS.** Blocked host→robot (`netsh` firewall rule),
+      fired a non-idempotent `move-labware`: gateway returned **HTTP 409 "unknown
+      outcome"**, `equipment_status: unknown`, `required_actions: ["manual_reconcile"]`,
+      `last_error.code: move_labware_unknown_outcome` (critical). OSError handled exactly
+      like an SSH drop.
+- [◐] **Command wait-timeout — covered by shared path (live-force deferred).** Not
+      triggered live (would need a tiny `OT2_HTTP_COMMAND_TIMEOUT` + restart + slow
+      motion). It raises `CommandNotCompleted` (OSError) into the **same** `_run_action`
+      OSError → `unknown_outcome` path proven by the transport-loss test above, and is
+      unit-tested. Force it live if you want the box fully ticked.
 
 ---
 
 ## Sign-off
 
-- [ ] Full cycle (steps 5–12) completed on hardware without an unplanned stop —
-      **steps 5–11 done; step 12 outstanding.**
-- [ ] Every §C gap has a recorded observation + decision — **flow-rate / explicit-tip /
-      drop-location done; deck idle-persistence, custom labware, transport-loss,
-      wait-timeout outstanding.**
-- [ ] Deck parity idle-persistence confirmed, OR deferred with the limitation written
-      into `HTTP_DRIVE_PLAN.md`.
-- [x] Flow-rate handling resolved (per-call works; lower the aspirate env default before
-      production).
+- [x] Full cycle (steps 5–12) completed on hardware without an unplanned stop.
+- [x] Every §C gap has a recorded observation + decision — flow-rate / explicit-tip /
+      drop-location / idle-persistence / custom labware / transport-loss all done;
+      wait-timeout covered by the shared `unknown_outcome` path (live-force deferred).
+- [x] Deck parity idle-persistence confirmed.
+- [x] Flow-rate handling resolved (per-call works; aspirate env default lowered 150→90
+      in `e0566bf`).
 - [x] Reverted to SSH at end of session (transport overrides removed; leftover run
       deleted; claim released; gateway back to `ready`).
 
-**Before production HTTP use:** wire the lowered aspirate flow default; run the
-outstanding boxes above (especially step 12 + idle-persistence); implement
-drop-to-`fixedTrash` if required; keep the multi-channel + leftover-run-standoff notes.
+**Remaining before/for production HTTP use** (functional validation is complete):
+optionally force the wait-timeout box live; implement drop-to-`fixedTrash` if a real
+trash-drop is needed (the location mechanism landed in `e0566bf`); mind the
+multi-channel addressing + leftover-run-standoff + ~110 s SSH-reconnect notes.
 
 **Security:** the robot SSH password appeared in `nssm get` output this session and is
 now in operator transcripts — rotate when convenient.

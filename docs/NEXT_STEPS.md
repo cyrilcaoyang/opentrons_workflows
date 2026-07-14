@@ -17,23 +17,20 @@ run-engine transport and the standalone complexation bring-up. Companion to
   `deploy/ot2_complexation.env.example`, `docs/COMPLEXATION_BRINGUP.md`.
 - Full offline suite green (`178 passed`); `--mode plan` validated offline.
 
-**HTTP transport partially validated on real hardware (2026-07-14, `ot2cytation`)**
-— see `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
+**HTTP transport VALIDATED on real hardware (2026-07-14, `ot2cytation`)** — full
+cycle incl. step 12 plate-out, idle-persistence, custom labware, and transport-loss
+→ `unknown_outcome`; one live bug found + fixed (off-deck `/status` 500, `ea58a5b`).
+Only wait-timeout not force-triggered (shared `unknown_outcome` path + unit-tested).
+See `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
 
 ## At the machine — remaining physical-access work
 
-1. **Finish HTTP-drive validation on the cytation OT-2** — core cycle (home →
-   setup → plate-in → pick-up → aspirate → dispense → drop-tip) PASSED, plus the
-   flow-rate / explicit-tip / drop-location gaps + deck-parity (first half). Still
-   to run (unticked boxes in `HTTP_DRIVE_VALIDATION.md`):
-   - **step 12 plate-out** (`move-labware OFF_DECK` → no pause prompt =
-     `manualMoveWithoutPause`);
-   - **deck idle-persistence** (restart gateway, no startup, deck still readable);
-   - **custom labware** register + load (idempotent);
-   - **transport-loss** → `unknown_outcome`;
-   - **command wait-timeout** → `unknown_outcome` (tiny `OT2_HTTP_COMMAND_TIMEOUT`).
-   Deploy note: set `OT2_HTTP_BASE_URL` to the robot's reachable **tailnet IP**
-   (bare host alias didn't reach `:31950`); run in Git Bash with `python`.
+1. **HTTP-drive validation — DONE** (functional). Optional leftovers: force the
+   wait-timeout box live (tiny `OT2_HTTP_COMMAND_TIMEOUT` + slow move), and a wet
+   custom-labware run (today's custom-labware test was bookkeeping-only). Deploy
+   note: set `OT2_HTTP_BASE_URL` to the robot's reachable **tailnet IP** (bare host
+   alias didn't reach `:31950`); on the host use Git Bash + `python`, or SSH into WSL
+   and use the tailnet name + `/mnt/c` paths.
 2. **Complexation gateway bring-up** — follow `COMPLEXATION_BRINGUP.md`:
    deploy the second `opentrons-server` instance on port 8021 (own checkout,
    own `C:\SDL_State\` files), set up the `ot2training` SSH alias (or the HTTP
