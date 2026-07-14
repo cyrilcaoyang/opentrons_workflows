@@ -288,7 +288,7 @@ def test_status_lights_on_fixture_matches_contract():
 # ---------------------------------------------------------------------------
 
 
-def _fake_probe_get(*, health=None, run_active=False, instruments=None, fail=False):
+def _fake_probe_get(*, health=None, run_active=False, instruments=None, modules=None, fail=False):
     """Build a fake requests.get that dispatches by robot-server endpoint."""
 
     default_health = {
@@ -317,9 +317,50 @@ def _fake_probe_get(*, health=None, run_active=False, instruments=None, fail=Fal
         if url.endswith("/instruments"):
             data = default_instruments if instruments is None else instruments
             return _FakeResponse({"data": data})
+        if url.endswith("/modules"):
+            return _FakeResponse({"data": modules or []})
         return _FakeResponse({})
 
     return fake_get
+
+
+def test_probe_surfaces_attached_modules(monkeypatch):
+    mods = [
+        {
+            "moduleModel": "temperatureModuleV2",
+            "moduleType": "temperatureModuleType",
+            "serialNumber": "TMV2123",
+            "id": "mod-1",
+            "data": {"status": "idle"},
+        }
+    ]
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(modules=mods)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9")
+
+    probe = service.probe_robot()
+    assert probe["modules"] == [
+        {
+            "model": "temperatureModuleV2",
+            "type": "temperatureModuleType",
+            "serial": "TMV2123",
+            "id": "mod-1",
+            "status": "idle",
+        }
+    ]
+    # flows through to /status as details.robot.modules
+    service._last_probe = probe
+    status = service.get_status()
+    assert status.details["robot"]["modules"][0]["model"] == "temperatureModuleV2"
+
+
+def test_probe_no_modules_is_empty_list(monkeypatch):
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get()
+    )
+    probe = OT2Service(dry_run=False, host_alias="192.168.0.9").probe_robot()
+    assert probe["modules"] == []
 
 
 def test_boot_reconnect_idle_establishes_session(monkeypatch):

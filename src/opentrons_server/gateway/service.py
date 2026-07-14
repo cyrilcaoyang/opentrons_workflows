@@ -430,8 +430,11 @@ class OT2Service:
         """Read-only probe of the robot-server HTTP API. Never raises.
 
         Derives reachability, identity (api/fw version, model, name), whether a
-        run is active outside this gateway, and the attached instruments — all
-        durable, session-independent state the SSH/REPL plane cannot give us.
+        run is active outside this gateway, and the attached instruments and
+        modules — all durable, session-independent state the SSH/REPL plane
+        cannot give us. Surfaces on ``/status`` as ``details.robot`` (see
+        ``get_status``), so the dashboard can show/constrain module setup from
+        what is physically attached.
         """
 
         result: Dict[str, Any] = {
@@ -442,6 +445,7 @@ class OT2Service:
             "robot_model": None,
             "robot_name": None,
             "instruments": [],
+            "modules": [],
         }
         base = self._probe_base_url()
         if base is None:
@@ -482,6 +486,22 @@ class OT2Service:
                     "channels": (d.get("data") or {}).get("channels"),
                 }
                 for d in instruments.get("data", []) or []
+            ]
+        except Exception:
+            pass
+        try:
+            modules = requests.get(
+                base + "/modules", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT
+            ).json()
+            result["modules"] = [
+                {
+                    "model": m.get("moduleModel"),
+                    "type": m.get("moduleType"),
+                    "serial": m.get("serialNumber"),
+                    "id": m.get("id"),
+                    "status": (m.get("data") or {}).get("status"),
+                }
+                for m in modules.get("data", []) or []
             ]
         except Exception:
             pass
