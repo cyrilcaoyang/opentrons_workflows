@@ -1,7 +1,9 @@
 # HTTP-Drive Plan — replacing the SSH REPL with the OT-2 run engine
 
 **Branch:** `develop-http-drive`
-**Status:** design map only — no code yet.
+**Status:** implemented behind `OT2_TRANSPORT=http` and **partially validated on real
+hardware (2026-07-14, `ot2cytation`)** — core cycle passes; step 12 + several §C
+checks outstanding. See [`HTTP_DRIVE_VALIDATION.md`](HTTP_DRIVE_VALIDATION.md).
 **Scope:** OT-2 gateway (`opentrons-server`). Flex (`sdl2_sampleprep_platform`) is
 explicitly out of scope: its absolute-motion/gripper surface has no run-engine
 equivalent (see the transport analysis; the run engine is well/labware-level only).
@@ -36,11 +38,25 @@ the default; nothing changes until you opt in.**
 - The switch is `OT2Service(transport=...)` / `OT2_TRANSPORT`; it only branches at
   control construction (`_connect_http`) and snapshot (`_refresh_snapshot_http`).
 
-**Still unproven against the real robot** — the HTTP path is covered only by
-offline unit tests (fake client). Do not flip `OT2_TRANSPORT=http` in production
-until the full cycle is validated against `ot2cytation`, and mind the flagged gaps
-(guessed flow rates, explicit-tip requirement, drop-in-place fallback, deck-snapshot
-parity is still TODO in `_refresh_snapshot_http`).
+**Partially proven against the real robot (2026-07-14, `ot2cytation`).** The core
+cycle — bring-up → home → setup → plate-in → pick-up → aspirate → dispense →
+drop-tip — was driven end-to-end over HTTP and passed. Flagged gaps as of that run:
+
+- **Flow rates — resolved.** Per-call `flow_rate` works; default aspirate ≈150 µL/s
+  judged slightly fast → lower `OT2_HTTP_ASPIRATE_FLOW_UL_S` to ~80–100. Blow-out is
+  env-only (no request field).
+- **Explicit-tip requirement — confirmed** (bare pick-up → 409; caller passes the well).
+- **Drop-in-place fallback — confirmed**; real drop-to-`fixedTrash` still future work.
+- **Deck-snapshot parity — half proven:** run-sourced deck (`source: run`) matches
+  `GET /runs/{id}` after setup; **idle-persistence-across-restart not yet run**.
+
+**Still do NOT flip `OT2_TRANSPORT=http` in production yet** — not exercised: step 12
+plate-out (`manualMoveWithoutPause` handoff), idle-persistence, custom-labware
+registration, transport-loss → `unknown_outcome`, and command wait-timeout. Also note
+(from the run): `OT2_HTTP_BASE_URL` must be the robot's reachable tailnet IP (bare host
+alias didn't reach `:31950`), SSH reconnect on rollback takes ~110 s, and a leftover
+HTTP `current` run makes the SSH gateway stand off until the run is deleted. Full
+detail + follow-ups in [`HTTP_DRIVE_VALIDATION.md`](HTTP_DRIVE_VALIDATION.md).
 
 ## Confirmed against the live robot (2026-07-11, via the gateway probe)
 

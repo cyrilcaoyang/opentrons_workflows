@@ -1,6 +1,6 @@
 # Next Steps — `develop-http-drive`
 
-Snapshot as of 2026-07-12. Tracks the remaining work on the opt-in HTTP
+Snapshot as of 2026-07-14. Tracks the remaining work on the opt-in HTTP
 run-engine transport and the standalone complexation bring-up. Companion to
 `HTTP_DRIVE_PLAN.md`, `HTTP_DRIVE_VALIDATION.md`, and `COMPLEXATION_BRINGUP.md`.
 
@@ -17,36 +17,39 @@ run-engine transport and the standalone complexation bring-up. Companion to
   `deploy/ot2_complexation.env.example`, `docs/COMPLEXATION_BRINGUP.md`.
 - Full offline suite green (`178 passed`); `--mode plan` validated offline.
 
-Nothing here is robot-validated yet.
+**HTTP transport partially validated on real hardware (2026-07-14, `ot2cytation`)**
+— see `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
 
-## At the machine — blocked on physical access (do these first)
+## At the machine — remaining physical-access work
 
-1. **Complexation gateway bring-up** — follow `COMPLEXATION_BRINGUP.md`:
+1. **Finish HTTP-drive validation on the cytation OT-2** — core cycle (home →
+   setup → plate-in → pick-up → aspirate → dispense → drop-tip) PASSED, plus the
+   flow-rate / explicit-tip / drop-location gaps + deck-parity (first half). Still
+   to run (unticked boxes in `HTTP_DRIVE_VALIDATION.md`):
+   - **step 12 plate-out** (`move-labware OFF_DECK` → no pause prompt =
+     `manualMoveWithoutPause`);
+   - **deck idle-persistence** (restart gateway, no startup, deck still readable);
+   - **custom labware** register + load (idempotent);
+   - **transport-loss** → `unknown_outcome`;
+   - **command wait-timeout** → `unknown_outcome` (tiny `OT2_HTTP_COMMAND_TIMEOUT`).
+   Deploy note: set `OT2_HTTP_BASE_URL` to the robot's reachable **tailnet IP**
+   (bare host alias didn't reach `:31950`); run in Git Bash with `python`.
+2. **Complexation gateway bring-up** — follow `COMPLEXATION_BRINGUP.md`:
    deploy the second `opentrons-server` instance on port 8021 (own checkout,
    own `C:\SDL_State\` files), set up the `ot2training` SSH alias (or the HTTP
    fallback), run the dispense test `plan → dry → wet`, then flip the
    `equipment.yaml` `ot2_complexation` entry `mock → http` **only after** the
    gateway answers on :8021.
-2. **HTTP-drive validation on the cytation OT-2** — follow
-   `HTTP_DRIVE_VALIDATION.md` end to end (`OT2_TRANSPORT=http`). Specifically
-   confirm the four items this branch touched:
-   - claim lifecycle (claim → move → heartbeat → release; `details.claimed_by`
-     populates);
-   - `flow_rate` in an aspirate/dispense body **visibly** changes pipette speed;
-   - deck parity: `/status.details.snapshot.deck.source == "run"` matches
-     `GET /runs/{id}`, and survives an idle gateway restart (idle deck no longer
-     blanks);
-   - command wait-timeout → `unknown_outcome` (force with a tiny
-     `OT2_HTTP_COMMAND_TIMEOUT` + a slow move).
-   Record observations for the flagged gaps (flow-rate defaults, explicit-tip,
-   drop-in-place) in the branch PR.
 
 ## Desk work — unblocked (can do remotely now)
 
-- **`drop_tip` → fixed trash.** Today HTTP `drop_tip` without a location falls
-  back to `dropTipInPlace` (drops where the pipette is, not the trash). Load the
-  trash labware id and target its well; add a test. Then update the complexation
-  test to drop-to-trash.
+- **Lower the aspirate flow default.** Validation judged the default ≈150 µL/s
+  slightly fast → set `OT2_HTTP_ASPIRATE_FLOW_UL_S` to ~80–100 in the gateway env
+  (dispense/blow-out left as-is pending a real recipe).
+- **`drop_tip` → fixed trash.** Confirmed live: HTTP `drop_tip` without a location
+  falls back to `dropTipInPlace` (drops where the pipette is; `home`-first lands at
+  slot 12 trash region). Load the trash labware id and target its well; add a test.
+  Then update the complexation test to drop-to-trash.
 - **`blow_out` endpoint + flow rate.** `blow_out` exists in the control adapters
   but has no `/control/blow-out` route and no request field. If a complexation
   step needs it, add the route + a `flow_rate` field (mirroring

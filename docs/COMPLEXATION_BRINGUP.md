@@ -16,6 +16,12 @@ Installed pipettes (read from the robot's `:31950/pipettes`):
 > **Have a person at the machine with the e-stop in reach** for Phase C
 > (motion). Phases A–B and `--mode plan`/`dry` involve no liquid motion.
 
+> **Shell (learned on the cytation host, 2026-07-14):** run in **Git Bash on the
+> host**, and use **`python`** — `python3` is not on PATH there (swap it in the
+> commands below). If you use the **HTTP transport fallback**, set `OT2_HTTP_BASE_URL`
+> to the robot's reachable **tailnet IP** (`http://100.64.254.91:31950`) — a bare host
+> alias did not reach `:31950` from the gateway host on the sibling `ot2cytation` box.
+
 ---
 
 ## 0. Rollback / stop

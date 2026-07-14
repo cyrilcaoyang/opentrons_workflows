@@ -7,7 +7,10 @@ docs) shipped in `ac-organic-lab`. Both OT-2 gateways (`ot2` :8020,
 live; the stopgap layouts were migrated into the gateways' declared
 stores. Remaining: delete the dashboard's `api/app/deck.py` stopgap after
 a soak period (tracked in `ac-organic-lab` EQUIP_STATUS §11). This
-document is kept as the design record.
+document is kept as the design record. **HTTP-transport deck parity
+validated live 2026-07-14** (`/status…deck.source == "run"` matched
+`GET /runs/{id}` after setup on `ot2cytation`); idle-persistence-across-restart
+still to confirm — see `HTTP_DRIVE_VALIDATION.md`.
 **Scope:** add a normalized deck/labware state layer to the OT-2 gateway
 (`opentrons-server`) that (a) unifies the two orphan state stores, (b) publishes
 `details.snapshot.deck` on `/status`, and (c) supports operator-declared layout
