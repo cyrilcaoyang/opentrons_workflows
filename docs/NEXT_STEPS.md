@@ -43,13 +43,16 @@ run-engine transport and the standalone complexation bring-up. Companion to
 
 ## Desk work — unblocked (can do remotely now)
 
-- **Lower the aspirate flow default.** Validation judged the default ≈150 µL/s
-  slightly fast → set `OT2_HTTP_ASPIRATE_FLOW_UL_S` to ~80–100 in the gateway env
-  (dispense/blow-out left as-is pending a real recipe).
-- **`drop_tip` → fixed trash.** Confirmed live: HTTP `drop_tip` without a location
-  falls back to `dropTipInPlace` (drops where the pipette is; `home`-first lands at
-  slot 12 trash region). Load the trash labware id and target its well; add a test.
-  Then update the complexation test to drop-to-trash.
+- ✅ **Aspirate flow default lowered** 150 → 90 µL/s (`e0566bf`). Per-call override
+  and dispense/blow-out unchanged.
+- ◐ **`drop_tip` → trash — mechanism done** (`e0566bf`): `/control/drop-tip` now
+  honors an explicit `labware_nickname`+`position`, so HTTP drops into a named
+  loaded trash; no location → `dropTipInPlace` (SSH already auto-trashes). **Left:**
+  auto-load the OT-2 fixed trash + default the HTTP path to it (bench-unverified),
+  and update the complexation test to drop-to-trash.
+- ✅ **Multi-channel addressing** — no code change needed: the complexation test
+  already uses row-A column addressing for the p20 multi; the `A1→B1` hazard was
+  runbook-only and is fixed there. (New finding from the 2026-07-14 run.)
 - **`blow_out` endpoint + flow rate.** `blow_out` exists in the control adapters
   but has no `/control/blow-out` route and no request field. If a complexation
   step needs it, add the route + a `flow_rate` field (mirroring
