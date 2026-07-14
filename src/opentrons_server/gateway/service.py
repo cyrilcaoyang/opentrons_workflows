@@ -301,11 +301,18 @@ class OT2Service:
         self._run_action("pick_up_tip", _pick_up_tip, idempotent=False)
 
     def drop_tip(self, request: Any) -> None:
-        self._run_action(
-            "drop_tip",
-            lambda: self._require_control().drop_tip(request.pipette),
-            idempotent=False,
-        )
+        def _drop_tip() -> None:
+            # Optional explicit drop location (e.g. a loaded trash labware). When
+            # given, HTTP drops into that well; when omitted, HTTP drops in place
+            # and SSH auto-routes to the fixed trash. Mirrors pick_up_tip.
+            if request.labware_nickname and request.position:
+                self._require_control().get_location_from_labware(
+                    request.labware_nickname,
+                    request.position,
+                )
+            self._require_control().drop_tip(request.pipette)
+
+        self._run_action("drop_tip", _drop_tip, idempotent=False)
 
     def move_labware(self, request: Any) -> None:
         self._run_action(

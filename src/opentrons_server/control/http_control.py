@@ -18,9 +18,13 @@ inline and in the plan doc):
   there is no implicit "next tip" tracking like the protocol API. ``pick_up_tip``
   therefore requires a pending location (set via ``get_location_from_labware``) and
   raises otherwise.
-- **Drop location.** ``drop_tip`` uses the pending location if set, else falls back
-  to ``dropTipInPlace`` — which drops where the pipette is, NOT in the trash. A
-  faithful drop-to-trash needs the trash labware id (future work).
+- **Drop location.** ``drop_tip`` uses the pending location if set (drop into that
+  labware/well — e.g. a loaded trash), else falls back to ``dropTipInPlace``, which
+  drops where the pipette is. The gateway now threads ``TipRequest.labware_nickname``
+  /``position`` into the pending location (mirroring ``pick_up_tip``), so a caller
+  drops to trash by loading a trash labware and naming it on ``/control/drop-tip``.
+  (The SSH backend's ``drop_tip()`` takes no arg and auto-routes to the fixed trash;
+  auto-loading + defaulting the HTTP path to the fixed trash is still bench-unverified.)
 - **Default labware namespace/version.** Built-in labware is assumed
   ``namespace="opentrons"``, ``version=1``; labware needing another version must
   carry ``namespace``/``version`` keys in its config.
@@ -39,7 +43,11 @@ from typing import Any, Dict, List, Optional
 
 from .http_run import OFF_DECK, RunEngineClient, RunEngineCommands, deck_slot
 
-_DEFAULT_ASPIRATE_FLOW = float(os.getenv("OT2_HTTP_ASPIRATE_FLOW_UL_S", "150"))
+# Default flow rates (µL/s) used when a call omits `flow_rate`. Aspirate lowered
+# 150 -> 90 after the 2026-07-14 ot2cytation validation judged 150 slightly fast
+# (~90 also aligns with the p300 gen2 factory default). Override per-deployment
+# via the env vars, or per-call via LiquidMoveRequest.flow_rate.
+_DEFAULT_ASPIRATE_FLOW = float(os.getenv("OT2_HTTP_ASPIRATE_FLOW_UL_S", "90"))
 _DEFAULT_DISPENSE_FLOW = float(os.getenv("OT2_HTTP_DISPENSE_FLOW_UL_S", "300"))
 _DEFAULT_BLOWOUT_FLOW = float(os.getenv("OT2_HTTP_BLOWOUT_FLOW_UL_S", "100"))
 

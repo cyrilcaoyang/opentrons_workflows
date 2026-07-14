@@ -137,6 +137,46 @@ def test_http_aspirate_flows_through_to_a_command(fake_http):
     assert aspirate[1]["wellName"] == "A1"
 
 
+def _http_service_with_pipette(fake_http):
+    service = OT2Service(dry_run=False, transport="http")
+    service.startup()
+    service.state = OT2ServiceState.READY
+    service.control.load_instrument(
+        {"ot_default": True, "nickname": "p300", "instrument_name": "p300_single_gen2", "mount": "right"}
+    )
+    return service
+
+
+def test_http_drop_tip_with_location_targets_that_labware(fake_http):
+    # An explicit labware+well on /control/drop-tip (e.g. a loaded trash) makes
+    # HTTP drop INTO that well rather than dropTipInPlace — the drop-to-trash path.
+    from opentrons_server.gateway.models import TipRequest
+
+    service = _http_service_with_pipette(fake_http)
+    service.control.load_labware(
+        {"ot_default": True, "nickname": "trash", "loadname": "opentrons_1_trash_1100ml_fixed", "location": "12"}
+    )
+
+    service.drop_tip(TipRequest(pipette="p300", labware_nickname="trash", position="A1"))
+
+    drop = next(c for c in fake_http.commands if c[0] in ("dropTip", "dropTipInPlace"))
+    assert drop[0] == "dropTip"
+    assert drop[1]["labwareId"] == "trash"
+    assert drop[1]["wellName"] == "A1"
+
+
+def test_http_drop_tip_without_location_drops_in_place(fake_http):
+    # No location -> unchanged fallback (drops where the pipette is).
+    from opentrons_server.gateway.models import TipRequest
+
+    service = _http_service_with_pipette(fake_http)
+
+    service.drop_tip(TipRequest(pipette="p300"))
+
+    drop = next(c for c in fake_http.commands if c[0] in ("dropTip", "dropTipInPlace"))
+    assert drop[0] == "dropTipInPlace"
+
+
 def test_http_snapshot_populates_deck_parity_from_run(fake_http):
     # The run resource carries loaded labware; the deck tile should reflect it
     # via the `run` source (build_deck precedence run > repl > declared).
