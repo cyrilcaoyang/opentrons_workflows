@@ -59,6 +59,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+# The device PC's console defaults to cp1252, which can't encode the status
+# glyphs (✅ / ❌ / →) this script prints — an unhandled UnicodeEncodeError would
+# otherwise abort the run mid-test on Windows. Force utf-8 output.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # pre-3.7 or already-wrapped stream
+        pass
+
 # --------------------------------------------------------------------------- #
 # Configuration — edit here if the machine changes. The dry/wet preflight also
 # verifies these against the robot's live /pipettes when --robot-url is given.
@@ -118,7 +127,7 @@ PIPETTES: List[Dict[str, Any]] = [
 ASPIRATE_BOTTOM_MM = 2.0  # aspirate 2 mm off the source well bottom
 DISPENSE_BOTTOM_MM = 2.0  # dispense 2 mm off the target well bottom
 CLAIM_TTL_S = 900.0
-REQUEST_TIMEOUT_S = 30.0
+REQUEST_TIMEOUT_S = 180.0  # SSH startup/setup (REPL bring-up) can take >100 s
 
 
 # --------------------------------------------------------------------------- #
