@@ -141,6 +141,10 @@ class LiquidMoveRequest(BaseModel):
     pipette: str
     volume_ul: float
     location: WellLocation
+    # Flow rate in µL/s. Optional: omit to use the transport's default (the
+    # pipette's protocol-API default on SSH; the OT2_HTTP_*_FLOW_UL_S env default
+    # on the run-engine HTTP transport, which has no implicit pipette default).
+    flow_rate: Optional[float] = Field(default=None, gt=0.0)
 
 
 class TipRequest(BaseModel):

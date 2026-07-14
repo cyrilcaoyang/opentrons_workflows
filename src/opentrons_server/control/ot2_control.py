@@ -160,10 +160,16 @@ class OT2Control:
     def prepare_aspirate(self, pip_name: str):
         self.invoke(f"{pip_name}.prepare_to_aspirate()")
 
-    def aspirate(self, pip_name: str, volume: float):
+    def aspirate(self, pip_name: str, volume: float, *, flow_rate: float = None):
+        # flow_rate (µL/s) is optional; when omitted the pipette keeps its
+        # protocol-API default, so the invoke is byte-for-byte unchanged.
+        if flow_rate is not None:
+            self.invoke(f"{pip_name}.flow_rate.aspirate = {flow_rate}")
         self.invoke(f"{pip_name}.aspirate(volume = {volume}, location = location)")
 
-    def dispense(self, pip_name: str, volume: float, push_out: float = None):
+    def dispense(self, pip_name: str, volume: float, push_out: float = None, *, flow_rate: float = None):
+        if flow_rate is not None:
+            self.invoke(f"{pip_name}.flow_rate.dispense = {flow_rate}")
         self.invoke(f"{pip_name}.dispense(volume = {volume}, location = location, push_out = {str(push_out)})")
 
     def touch_tip(self, pip_name: str, labware_nickname: str, position: str, radius: float = 1.0, v_offset: float = -1.0):

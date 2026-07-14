@@ -1,0 +1,277 @@
+"""Unit tests for OT2HttpControl (control/http_control.py).
+
+Uses a fake RunEngineClient that records executed (commandType, params) tuples,
+so the adapter's command translation is verified offline.
+"""
+
+import pytest
+
+from opentrons_server.control.http_control import OT2HttpControl
+
+
+class FakeClient:
+    def __init__(self):
+        self.commands = []  # list of (commandType, params)
+        self.labware_defs = []
+        self.created = False
+        self.stopped = False
+        self.closed = False
+        self.run_id = None
+
+    def create_run(self):
+        self.created = True
+        self.run_id = "run-1"
+        return "run-1"
+
+    def execute(self, command, **kwargs):
+        self.commands.append(command)
+        return {"status": "succeeded"}
+
+    def add_labware_definition(self, definition):
+        self.labware_defs.append(definition)
+        return "custom/plate/1"
+
+    def get_run(self):
+        return {"id": "run-1", "labware": []}
+
+    def stop_run(self):
+        self.stopped = True
+
+    def close(self):
+        self.closed = True
+
+
+def _loaded_control():
+    """Control with a pipette 'p300' and labware 'plate' + 'tips' loaded."""
+    client = FakeClient()
+    ctl = OT2HttpControl(client, aspirate_flow_rate=100.0, dispense_flow_rate=200.0)
+    ctl.initialize_protocol()
+    ctl.load_instrument(
+        {
+            "ot_default": True,
+            "nickname": "p300",
+            "instrument_name": "p300_single_gen2",
+            "mount": "right",
+        }
+    )
+    ctl.load_labware(
+        {
+            "ot_default": True,
+            "nickname": "plate",
+            "loadname": "corning_96_wellplate_360ul_flat",
+            "location": "2",
+        }
+    )
+    ctl.load_labware(
+        {
+            "ot_default": True,
+            "nickname": "tips",
+            "loadname": "opentrons_96_tiprack_300ul",
+            "location": "1",
+        }
+    )
+    return ctl, client
+
+
+def _last(client):
+    return client.commands[-1]
+
+
+# --- loading ----------------------------------------------------------------
+
+
+def test_initialize_creates_run():
+    client = FakeClient()
+    OT2HttpControl(client).initialize_protocol()
+    assert client.created is True
+
+
+def test_load_pipette_and_labware_use_nickname_ids():
+    ctl, client = _loaded_control()
+    ctype, params = client.commands[0]
+    assert ctype == "loadPipette"
+    assert params == {"pipetteName": "p300_single_gen2", "mount": "right", "pipetteId": "p300"}
+
+    ctype, params = client.commands[1]
+    assert ctype == "loadLabware"
+    assert params["location"] == {"slotName": "2"}
+    assert params["namespace"] == "opentrons"
+    assert params["version"] == 1
+    assert params["labwareId"] == "plate"
+
+
+def test_custom_labware_registers_definition_first():
+    client = FakeClient()
+    ctl = OT2HttpControl(client)
+    ctl.initialize_protocol()
+    definition = {"namespace": "custom", "version": 2, "parameters": {"loadName": "weird_plate"}}
+    ctl.load_labware({"ot_default": False, "nickname": "wp", "location": "5", "config": definition})
+
+    assert client.labware_defs == [definition]
+    ctype, params = _last(client)
+    assert ctype == "loadLabware"
+    assert (params["loadName"], params["namespace"], params["version"]) == (
+        "weird_plate",
+        "custom",
+        2,
+    )
+
+
+# --- location precedence (must match OT2Control) ----------------------------
+
+
+def test_location_precedence_bottom():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "A1", bottom=3)
+    ctl.aspirate("p300", 50)
+    ctype, params = _last(client)
+    assert ctype == "aspirate"
+    assert params["wellLocation"] == {"origin": "bottom", "offset": {"x": 0, "y": 0, "z": 3}}
+    assert params["volume"] == 50
+    assert params["flowRate"] == 100.0
+    assert params["labwareId"] == "plate"
+    assert params["wellName"] == "A1"
+
+
+def test_location_precedence_top_wins_over_bottom():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "A1", top=1, bottom=3)
+    ctl.dispense("p300", 25)
+    _, params = _last(client)
+    assert params["wellLocation"]["origin"] == "top"
+    assert params["wellLocation"]["offset"]["z"] == 1
+    assert params["flowRate"] == 200.0
+
+
+def test_aspirate_flow_rate_override_beats_default():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "A1", bottom=2)
+    ctl.aspirate("p300", 50, flow_rate=25.0)
+    _, params = _last(client)
+    assert params["flowRate"] == 25.0  # not the 100.0 default
+
+
+def test_dispense_flow_rate_override_beats_default():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "A1", bottom=2)
+    ctl.dispense("p300", 50, flow_rate=75.0)
+    _, params = _last(client)
+    assert params["flowRate"] == 75.0  # not the 200.0 default
+
+
+def test_location_precedence_center():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "B2", center=1)
+    ctl.aspirate("p300", 10)
+    _, params = _last(client)
+    assert params["wellLocation"]["origin"] == "center"
+
+
+def test_location_default_is_top_zero():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "C3")
+    ctl.aspirate("p300", 10)
+    _, params = _last(client)
+    assert params["wellLocation"] == {"origin": "top", "offset": {"x": 0, "y": 0, "z": 0}}
+
+
+# --- pending-location lifecycle ---------------------------------------------
+
+
+def test_aspirate_consumes_pending_location():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "A1", bottom=2)
+    ctl.aspirate("p300", 10)
+    # second aspirate with no new location must fail (pending consumed)
+    with pytest.raises(RuntimeError, match="needs a location"):
+        ctl.aspirate("p300", 10)
+
+
+def test_pick_up_tip_requires_location():
+    ctl, client = _loaded_control()
+    with pytest.raises(RuntimeError, match="explicit tip location"):
+        ctl.pick_up_tip("p300")
+
+
+def test_pick_up_tip_with_location():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("tips", "A1")
+    ctl.pick_up_tip("p300")
+    ctype, params = _last(client)
+    assert ctype == "pickUpTip"
+    assert params["labwareId"] == "tips"
+    assert params["wellName"] == "A1"
+
+
+def test_drop_tip_without_location_uses_drop_in_place():
+    ctl, client = _loaded_control()
+    ctl.drop_tip("p300")
+    ctype, params = _last(client)
+    assert ctype == "dropTipInPlace"
+    assert params == {"pipetteId": "p300"}
+
+
+def test_drop_tip_with_location_uses_drop_tip():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("tips", "A1")
+    ctl.drop_tip("p300")
+    ctype, params = _last(client)
+    assert ctype == "dropTip"
+    assert params["labwareId"] == "tips"
+
+
+# --- move labware / handoff -------------------------------------------------
+
+
+def test_move_labware_offdeck_uses_manual_without_pause():
+    ctl, client = _loaded_control()
+    ctl.move_labware("plate", "OFF_DECK")
+    ctype, params = _last(client)
+    assert ctype == "moveLabware"
+    assert params["labwareId"] == "plate"
+    assert params["newLocation"] == "offDeck"
+    assert params["strategy"] == "manualMoveWithoutPause"
+
+
+def test_move_labware_to_slot():
+    ctl, client = _loaded_control()
+    ctl.move_labware("plate", "6")
+    _, params = _last(client)
+    assert params["newLocation"] == {"slotName": "6"}
+
+
+def test_move_unknown_labware_raises():
+    ctl, client = _loaded_control()
+    with pytest.raises(RuntimeError, match="not loaded"):
+        ctl.move_labware("ghost", "3")
+
+
+# --- robot / lifecycle ------------------------------------------------------
+
+
+def test_home_emits_home_command():
+    ctl, client = _loaded_control()
+    ctl.home()
+    assert _last(client)[0] == "home"
+
+
+def test_pause_resume_are_noops():
+    ctl, client = _loaded_control()
+    before = len(client.commands)
+    ctl.pause()
+    ctl.resume()
+    assert len(client.commands) == before  # no commands emitted
+
+
+def test_shutdown_stops_and_closes():
+    ctl, client = _loaded_control()
+    ctl.shutdown()
+    assert client.stopped is True
+    assert client.closed is True
+
+
+def test_unknown_pipette_raises():
+    ctl, client = _loaded_control()
+    ctl.get_location_from_labware("plate", "A1")
+    with pytest.raises(RuntimeError, match="pipette 'p999' is not loaded"):
+        ctl.aspirate("p999", 10)

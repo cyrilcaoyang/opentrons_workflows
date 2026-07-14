@@ -16,6 +16,27 @@ from opentrons_server.gateway.service import OT2Service, OT2ServiceState
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_state_files(tmp_path, monkeypatch):
+    """Point the default plate/deck stores at an empty tmp dir.
+
+    ``OT2Service``'s default stores persist to ``ot2_state.json`` /
+    ``ot2_deck_state.json``; both resolve a *relative* path against the repo root
+    (not cwd), so a stale runtime file left there (e.g. from running the gateway
+    locally) bleeds a *declared* deck into the dry-run "empty deck" assertions —
+    failing only on developer machines, not in CI. Re-anchor the resolver under
+    ``tmp_path`` so each test gets a clean, isolated store.
+    """
+    from opentrons_server.gateway import deck as deck_mod
+    from opentrons_server.gateway import plate_state as plate_mod
+
+    def _isolated(state_path):
+        return tmp_path / Path(state_path).name
+
+    monkeypatch.setattr(deck_mod, "_resolve_state_path", _isolated)
+    monkeypatch.setattr(plate_mod, "_resolve_state_path", _isolated)
+
+
 def _repl_deck():
     return json.loads((_FIXTURES / "repl_get_all_states.json").read_text())
 

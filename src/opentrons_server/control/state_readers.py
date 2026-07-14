@@ -116,13 +116,18 @@ def get_labware_state(labware_context) -> Dict[str, Any]:
     """Get complete labware state as a simple dictionary with list of wells."""
     logger = logging.getLogger(f"labware_state.{labware_context.load_name}")
 
+    is_tiprack = getattr(labware_context, 'is_tiprack', False)
     info = {
         'name': getattr(labware_context, 'name', labware_context.load_name),
         'load_name': labware_context.load_name,
         'parent': str(labware_context.parent),
-        'is_tiprack': getattr(labware_context, 'is_tiprack', False),
+        'is_tiprack': is_tiprack,
         'uri': getattr(labware_context, 'uri', None),
-        'tip_length': getattr(labware_context, 'tip_length', None)
+        # `tip_length` is a property that RAISES LabwareIsNotTipRackError on a
+        # non-tiprack (not a missing attr, so getattr's default won't catch it) —
+        # only read it for tipracks, else the whole snapshot 500s. Found live
+        # 2026-07-14 on ot2_complexation after loading a plate.
+        'tip_length': (getattr(labware_context, 'tip_length', None) if is_tiprack else None),
     }
 
     wells = []
