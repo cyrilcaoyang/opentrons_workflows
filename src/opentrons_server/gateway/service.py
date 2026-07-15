@@ -499,7 +499,12 @@ class OT2Service:
                     "type": m.get("moduleType"),
                     "serial": m.get("serialNumber"),
                     "id": m.get("id"),
+                    # Live per-module telemetry from the robot-server — available
+                    # whenever the module is powered, independent of any run, so
+                    # the dashboard can show the reading before/after an experiment.
                     "status": (m.get("data") or {}).get("status"),
+                    "current_temperature": (m.get("data") or {}).get("currentTemperature"),
+                    "target_temperature": (m.get("data") or {}).get("targetTemperature"),
                 }
                 for m in modules.get("data", []) or []
             ]

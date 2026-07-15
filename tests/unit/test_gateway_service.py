@@ -331,7 +331,7 @@ def test_probe_surfaces_attached_modules(monkeypatch):
             "moduleType": "temperatureModuleType",
             "serialNumber": "TMV2123",
             "id": "mod-1",
-            "data": {"status": "idle"},
+            "data": {"status": "heating", "currentTemperature": 26.0, "targetTemperature": 37.0},
         }
     ]
     monkeypatch.setattr(
@@ -346,13 +346,29 @@ def test_probe_surfaces_attached_modules(monkeypatch):
             "type": "temperatureModuleType",
             "serial": "TMV2123",
             "id": "mod-1",
-            "status": "idle",
+            "status": "heating",
+            "current_temperature": 26.0,
+            "target_temperature": 37.0,
         }
     ]
-    # flows through to /status as details.robot.modules
+    # flows through to /status as details.robot.modules (live reading + all)
     service._last_probe = probe
     status = service.get_status()
-    assert status.details["robot"]["modules"][0]["model"] == "temperatureModuleV2"
+    mod0 = status.details["robot"]["modules"][0]
+    assert mod0["model"] == "temperatureModuleV2"
+    assert mod0["current_temperature"] == 26.0
+
+
+def test_probe_module_without_temperature_reads_none(monkeypatch):
+    # Idle modules may omit currentTemperature/targetTemperature -> None, not KeyError.
+    mods = [{"moduleModel": "temperatureModuleV2", "moduleType": "temperatureModuleType",
+             "serialNumber": "S", "id": "m", "data": {"status": "idle"}}]
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(modules=mods)
+    )
+    probe = OT2Service(dry_run=False, host_alias="192.168.0.9").probe_robot()
+    assert probe["modules"][0]["current_temperature"] is None
+    assert probe["modules"][0]["target_temperature"] is None
 
 
 def test_probe_no_modules_is_empty_list(monkeypatch):
