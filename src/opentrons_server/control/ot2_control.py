@@ -3,6 +3,17 @@
 Drives an Opentrons protocol session over SSH via a Python REPL on the
 robot. ``OT2Control`` is the canonical class; ``OpentronsControl`` is
 preserved as an alias for back-compat with older callers.
+
+Remote calls are built through two small helper layers:
+
+- **Typed readback** (``_invoke_scalar_line`` / ``_invoke_float`` /
+  ``_invoke_bool``) parses the REPL transcript (echoed command, printed
+  value, trailing ``>>>`` prompt) into a Python value instead of ad-hoc
+  ``split("\\r\\n")[-2]`` at every call site.
+- **Kwargs formatting** (``_format_kwargs``) renders optional keyword
+  arguments into remote-Python source, skipping ``None`` values so the
+  invoked string stays minimal. ``_RAW_LOCATION`` marks the remote
+  ``location`` variable so it is emitted unquoted.
 """
 
 from __future__ import annotations
@@ -11,6 +22,13 @@ import os
 from typing import Any, Dict, List, Optional
 
 from ..transport import SSHClient
+
+
+class _Raw(str):
+    """A pre-formatted remote Python expression — emitted verbatim, not repr'd."""
+
+
+_RAW_LOCATION = _Raw("location")
 
 
 class OT2Control:
@@ -62,6 +80,46 @@ class OT2Control:
     def shutdown(self) -> None:
         """Close the active robot session without issuing extra workflow logic."""
         self._disconnect()
+
+    # ---- remote-call helpers ----------------------------------------------
+
+    def _invoke_lines(self, code: str) -> List[str]:
+        return self.invoke(code).split("\r\n")
+
+    def _invoke_scalar_line(self, code: str) -> str:
+        """The printed value of a single-expression invoke.
+
+        The transcript is ``[echoed command, printed value, '>>> ' prompt]``,
+        so the value is the second-to-last line.
+        """
+        return self._invoke_lines(code)[-2].strip()
+
+    def _invoke_float(self, code: str) -> float:
+        return float(self._invoke_scalar_line(code))
+
+    def _invoke_bool(self, code: str) -> bool:
+        value = self._invoke_scalar_line(code)
+        if value == "True":
+            return True
+        if value == "False":
+            return False
+        raise ValueError(f"Expected bool-like SSH response, got: {value!r}")
+
+    @staticmethod
+    def _py_repr(value: Any) -> str:
+        if isinstance(value, _Raw):
+            return str(value)
+        return "None" if value is None else repr(value)
+
+    def _format_kwargs(self, **kwargs: Any) -> str:
+        """Render kwargs as remote-Python source, skipping None values."""
+        return ", ".join(
+            f"{key} = {self._py_repr(value)}"
+            for key, value in kwargs.items()
+            if value is not None
+        )
+
+    # ---- protocol setup -----------------------------------------------------
 
     def setup_protocol(
         self,
@@ -115,71 +173,34 @@ class OT2Control:
         self.invoke(f"{nickname} = protocol.load_module(module_name = '{module_name}', location = '{location}')")
         self.invoke(f"{nickname}_adapter = {nickname}.load_adapter(name = '{adapter}')")
 
+    def load_trash_bin(self, nickname: str = "default_trash", location: str = "A3"):
+        """Flex only; the OT-2's fixed trash is always present in slot 12."""
+        self.invoke(f"{nickname} = protocol.load_trash_bin(location = '{location}')")
+
+    def remove_labware(self, labware_nickname: str):
+        self.invoke(f"deck_pos = {labware_nickname}.parent")
+        self.invoke(f"del protocol.deck[deck_pos]")
+
+    # ---- protocol-level controls ---------------------------------------------
+
     def home(self):
         self.invoke("protocol.home()")
 
-    def well_diameter(self, labware_nickname: str, position: str):
-        return float(self.invoke(f"{labware_nickname}['{position}'].diameter").split("\r\n")[-2])
+    def comment(self, message: str):
+        self.invoke(f"protocol.comment({self._py_repr(message)})")
 
-    def well_depth(self, labware_nickname: str, position: str):
-        return float(self.invoke(f"{labware_nickname}['{position}'].depth").split("\r\n")[-2])
+    def set_rail_lights(self, on: bool = True):
+        self.invoke(f"protocol.set_rail_lights({self._py_repr(bool(on))})")
 
-    def tip_length(self, labware_nickname: str, position: str):
-        rtn = self.invoke(f"{labware_nickname}['{position}'].length").split("\r\n")
-        if len(rtn == 3):
-            return float(rtn[-2])
-        else:
-            return None
+    def get_rail_lights(self) -> bool:
+        return self._invoke_bool("protocol.rail_lights_on")
 
-    def get_location_from_labware(self, labware_nickname: str, position: str, top: float = 0, bottom: float = 0, center: float = 0):
-        if top:
-            append = f".top({top})"
-        elif bottom:
-            append = f".bottom({bottom})"
-        elif center:
-            append = f".center()"
-        else:
-            append = ".top(0)"
-        self.invoke(f"location = {labware_nickname}['{position}']{append}")
+    def set_max_speed(self, axis: str, speed: float):
+        # axis examples: 'X', 'Y', 'Z', 'A'
+        self.invoke(f"protocol.max_speeds[{self._py_repr(axis)}] = {speed}")
 
-    def get_location_absolute(self, x: float, y: float, z: float, reference: str = None):
-        self.invoke(f"location = Location(Point({x},{y},{z}), '{str(reference)}')")
-
-    def move_to_pip(self, pip_name: str):
-        self.invoke(f"{pip_name}.move_to(location = location)")
-
-    def pick_up_tip(self, pip_name: str):
-        self.invoke(f"{pip_name}.pick_up_tip(location = location)")
-
-    def return_tip(self, pip_name: str):
-        self.invoke(f"{pip_name}.return_tip()")
-
-    def drop_tip(self, pip_name: str):
-        self.invoke(f"{pip_name}.drop_tip()")
-
-    def prepare_aspirate(self, pip_name: str):
-        self.invoke(f"{pip_name}.prepare_to_aspirate()")
-
-    def aspirate(self, pip_name: str, volume: float, *, flow_rate: float = None):
-        # flow_rate (µL/s) is optional; when omitted the pipette keeps its
-        # protocol-API default, so the invoke is byte-for-byte unchanged.
-        if flow_rate is not None:
-            self.invoke(f"{pip_name}.flow_rate.aspirate = {flow_rate}")
-        self.invoke(f"{pip_name}.aspirate(volume = {volume}, location = location)")
-
-    def dispense(self, pip_name: str, volume: float, push_out: float = None, *, flow_rate: float = None):
-        if flow_rate is not None:
-            self.invoke(f"{pip_name}.flow_rate.dispense = {flow_rate}")
-        self.invoke(f"{pip_name}.dispense(volume = {volume}, location = location, push_out = {str(push_out)})")
-
-    def touch_tip(self, pip_name: str, labware_nickname: str, position: str, radius: float = 1.0, v_offset: float = -1.0):
-        self.invoke(f"{pip_name}.touch_tip('{labware_nickname}['{position}']', radius = {radius}, v_offset = {v_offset})")
-
-    def blow_out(self, pip_name: str):
-        self.invoke(f"{pip_name}.blow_out(location = location)")
-
-    def set_speed(self, pip_name: str, speed: float):
-        self.invoke(f"{pip_name}.default_speed = {speed}")
+    def clear_max_speed(self, axis: str):
+        self.invoke(f"protocol.max_speeds[{self._py_repr(axis)}] = None")
 
     def delay(self, seconds: float = 0, minutes: float = 0):
         self.invoke(f"protocol.delay(seconds={seconds}, minutes = {minutes})")
@@ -189,6 +210,214 @@ class OT2Control:
 
     def pause(self):
         self.invoke("protocol.pause()")
+
+    # ---- labware geometry readbacks -------------------------------------------
+
+    def well_diameter(self, labware_nickname: str, position: str) -> float:
+        return self._invoke_float(f"{labware_nickname}['{position}'].diameter")
+
+    def well_depth(self, labware_nickname: str, position: str) -> float:
+        return self._invoke_float(f"{labware_nickname}['{position}'].depth")
+
+    def tip_length(self, labware_nickname: str, position: str) -> Optional[float]:
+        rtn = self._invoke_lines(f"{labware_nickname}['{position}'].length")
+        if len(rtn) == 3:
+            return float(rtn[-2])
+        return None
+
+    # ---- locations -------------------------------------------------------------
+
+    def get_location_from_labware(self, labware_nickname: str, position: str, top: float = 0, bottom: float = 0, center: float = 0):
+        if top:
+            append = f".top({top})"
+        elif bottom:
+            append = f".bottom({bottom})"
+        elif center:
+            append = ".center()"
+        else:
+            append = ".top(0)"
+        self.invoke(f"location = {labware_nickname}['{position}']{append}")
+
+    def get_location_absolute(self, x: float, y: float, z: float, reference: str = None):
+        self.invoke(f"location = Location(Point({x},{y},{z}), '{str(reference)}')")
+
+    def move_to_pip(
+        self,
+        pip_name: str,
+        *,
+        speed: Optional[float] = None,
+        force_direct: Optional[bool] = None,
+        minimum_z_height: Optional[float] = None,
+    ):
+        kwargs = self._format_kwargs(
+            location=_RAW_LOCATION,
+            speed=speed,
+            force_direct=force_direct,
+            minimum_z_height=minimum_z_height,
+        )
+        self.invoke(f"{pip_name}.move_to({kwargs})")
+
+    # ---- tips --------------------------------------------------------------------
+
+    def pick_up_tip(
+        self,
+        pip_name: str,
+        *,
+        presses: Optional[int] = None,
+        increment: Optional[float] = None,
+        prep_after: Optional[bool] = None,
+    ):
+        kwargs = self._format_kwargs(
+            location=_RAW_LOCATION,
+            presses=presses,
+            increment=increment,
+            prep_after=prep_after,
+        )
+        self.invoke(f"{pip_name}.pick_up_tip({kwargs})")
+
+    def return_tip(self, pip_name: str, *, home_after: Optional[bool] = None):
+        kwargs = self._format_kwargs(home_after=home_after)
+        self.invoke(f"{pip_name}.return_tip({kwargs})")
+
+    def drop_tip(self, pip_name: str, *, home_after: Optional[bool] = None):
+        kwargs = self._format_kwargs(home_after=home_after)
+        self.invoke(f"{pip_name}.drop_tip({kwargs})")
+
+    def has_tip(self, pip_name: str) -> bool:
+        return self._invoke_bool(f"{pip_name}.has_tip")
+
+    def set_starting_tip(self, pip_name: str, tiprack_nickname: str, position: str):
+        self.invoke(f"{pip_name}.starting_tip = {tiprack_nickname}['{position}']")
+
+    def reset_tipracks(self, pip_name: str):
+        self.invoke(f"{pip_name}.reset_tipracks()")
+
+    # ---- liquid handling ------------------------------------------------------------
+
+    def prepare_aspirate(self, pip_name: str):
+        self.invoke(f"{pip_name}.prepare_to_aspirate()")
+
+    def aspirate(
+        self,
+        pip_name: str,
+        volume: float,
+        *,
+        rate: Optional[float] = None,
+        flow_rate: float = None,
+    ):
+        # flow_rate (µL/s) is optional; when omitted the pipette keeps its
+        # protocol-API default, so the invoke is byte-for-byte unchanged.
+        # rate is the protocol-API multiplier on that flow rate.
+        if flow_rate is not None:
+            self.invoke(f"{pip_name}.flow_rate.aspirate = {flow_rate}")
+        kwargs = self._format_kwargs(volume=volume, location=_RAW_LOCATION, rate=rate)
+        self.invoke(f"{pip_name}.aspirate({kwargs})")
+
+    def dispense(
+        self,
+        pip_name: str,
+        volume: float,
+        push_out: float = None,
+        *,
+        rate: Optional[float] = None,
+        flow_rate: float = None,
+    ):
+        if flow_rate is not None:
+            self.invoke(f"{pip_name}.flow_rate.dispense = {flow_rate}")
+        kwargs = self._format_kwargs(
+            volume=volume, location=_RAW_LOCATION, rate=rate, push_out=push_out
+        )
+        self.invoke(f"{pip_name}.dispense({kwargs})")
+
+    def mix(
+        self,
+        pip_name: str,
+        repetitions: int,
+        volume: Optional[float] = None,
+        rate: Optional[float] = None,
+    ):
+        kwargs = self._format_kwargs(
+            repetitions=repetitions, volume=volume, location=_RAW_LOCATION, rate=rate
+        )
+        self.invoke(f"{pip_name}.mix({kwargs})")
+
+    def air_gap(self, pip_name: str, volume: float, height: Optional[float] = None):
+        kwargs = self._format_kwargs(volume=volume, height=height)
+        self.invoke(f"{pip_name}.air_gap({kwargs})")
+
+    def touch_tip(
+        self,
+        pip_name: str,
+        labware_nickname: str,
+        position: str,
+        radius: float = 1.0,
+        v_offset: float = -1.0,
+        speed: float = 60.0,
+    ):
+        self.invoke(
+            f"{pip_name}.touch_tip({labware_nickname}['{position}'], "
+            f"radius = {radius}, v_offset = {v_offset}, speed = {speed})"
+        )
+
+    def blow_out(self, pip_name: str):
+        self.invoke(f"{pip_name}.blow_out(location = location)")
+
+    def blow_out_in_place(self, pip_name: str):
+        self.invoke(f"{pip_name}.blow_out()")
+
+    # ---- pipette configuration ---------------------------------------------------------
+
+    def set_speed(self, pip_name: str, speed: float):
+        self.invoke(f"{pip_name}.default_speed = {speed}")
+
+    def set_flow_rate(
+        self,
+        pip_name: str,
+        aspirate: Optional[float] = None,
+        dispense: Optional[float] = None,
+        blow_out: Optional[float] = None,
+    ):
+        if aspirate is not None:
+            self.invoke(f"{pip_name}.flow_rate.aspirate = {aspirate}")
+        if dispense is not None:
+            self.invoke(f"{pip_name}.flow_rate.dispense = {dispense}")
+        if blow_out is not None:
+            self.invoke(f"{pip_name}.flow_rate.blow_out = {blow_out}")
+
+    def get_flow_rate(self, pip_name: str) -> Dict[str, float]:
+        return {
+            "aspirate": self._invoke_float(f"{pip_name}.flow_rate.aspirate"),
+            "dispense": self._invoke_float(f"{pip_name}.flow_rate.dispense"),
+            "blow_out": self._invoke_float(f"{pip_name}.flow_rate.blow_out"),
+        }
+
+    def set_well_bottom_clearance(
+        self,
+        pip_name: str,
+        aspirate: Optional[float] = None,
+        dispense: Optional[float] = None,
+    ):
+        if aspirate is not None:
+            self.invoke(f"{pip_name}.well_bottom_clearance.aspirate = {aspirate}")
+        if dispense is not None:
+            self.invoke(f"{pip_name}.well_bottom_clearance.dispense = {dispense}")
+
+    def get_well_bottom_clearance(self, pip_name: str) -> Dict[str, float]:
+        return {
+            "aspirate": self._invoke_float(f"{pip_name}.well_bottom_clearance.aspirate"),
+            "dispense": self._invoke_float(f"{pip_name}.well_bottom_clearance.dispense"),
+        }
+
+    def current_volume(self, pip_name: str) -> float:
+        return self._invoke_float(f"{pip_name}.current_volume")
+
+    def home_pipette(self, pip_name: str):
+        self.invoke(f"{pip_name}.home()")
+
+    def home_plunger(self, pip_name: str):
+        self.invoke(f"{pip_name}.home_plunger()")
+
+    # ---- labware movement -------------------------------------------------------------
 
     def move_labware_w_gripper(self, labware_nickname: str, new_location: str):
         if new_location == "OFF_DECK":
@@ -202,39 +431,125 @@ class OT2Control:
         """Move labware using the robot gripper when available."""
         self.move_labware_w_gripper(labware_nickname, new_location)
 
+    # ---- heater-shaker module ----------------------------------------------------------
+
     def hs_latch_open(self, nickname: str):
         self.invoke(f"{nickname}.open_labware_latch()")
 
     def hs_latch_close(self, nickname: str):
         self.invoke(f"{nickname}.close_labware_latch()")
 
+    def hs_set_and_wait_shake_speed(self, nickname: str, rpm: int):
+        self.invoke(f"{nickname}.set_and_wait_for_shake_speed(rpm = {rpm})")
+
+    def hs_deactivate_shaker(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate_shaker()")
+
+    def hs_set_and_wait_temperature(self, nickname: str, celsius: float):
+        self.invoke(f"{nickname}.set_and_wait_for_temperature(celsius = {celsius})")
+
+    def hs_set_target_temperature(self, nickname: str, celsius: float):
+        self.invoke(f"{nickname}.set_target_temperature(celsius = {celsius})")
+
+    def hs_wait_for_temperature(self, nickname: str):
+        self.invoke(f"{nickname}.wait_for_temperature()")
+
+    def hs_deactivate_heater(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate_heater()")
+
+    def hs_deactivate(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate()")
+
     def set_rpm(self, nickname: str, rpm: int):
-        if rpm in range(200, 3000):
-            self.invoke(f"{nickname}.set_and_wait_for_shake_speed(rpm={rpm})")
+        """Set-and-wait shake speed; out-of-band values deactivate the shaker."""
+        if 200 <= rpm <= 3000:
+            self.hs_set_and_wait_shake_speed(nickname, rpm)
         else:
-            self.invoke(f"{nickname}.deactivate_shaker()")
+            self.hs_deactivate_shaker(nickname)
 
     def set_temp(self, nickname: str, temp: float):
-        if temp in range(27, 95):
-            self.invoke(f"{nickname}.set_and_wait_for_temperature(temp={temp})")
+        """Set-and-wait heater temperature; out-of-band values deactivate it."""
+        if 27 <= temp <= 95:
+            self.hs_set_and_wait_temperature(nickname, temp)
         else:
-            self.invoke(f"{nickname}.deactivate_heater()")
+            self.hs_deactivate_heater(nickname)
 
-    def get_rpm(self, nickname: str):
-        return self.invoke(f"{nickname}.current_speed")
+    def get_rpm(self, nickname: str) -> float:
+        return self._invoke_float(f"{nickname}.current_speed")
 
-    def get_temp(self, nickname: str):
-        return self.invoke(f"{nickname}.current_temperature")
+    def get_temp(self, nickname: str) -> float:
+        return self._invoke_float(f"{nickname}.current_temperature")
 
-    def remove_labware(self, labware_nickname: str):
-        self.invoke(f"deck_pos = {labware_nickname}.parent")
-        self.invoke(f"del protocol.deck[deck_pos]")
+    # ---- temperature module -----------------------------------------------------------
 
-    def home_pipette(self, pip_name: str):
-        self.invoke(f"{pip_name}.home()")
+    def tempmod_set_temperature(self, nickname: str, celsius: float):
+        self.invoke(f"{nickname}.set_temperature(celsius = {celsius})")
 
-    def home_plunger(self, pip_name: str):
-        self.invoke(f"{pip_name}.home_plunger()")
+    def tempmod_await_temperature(self, nickname: str):
+        self.invoke(f"{nickname}.await_temperature()")
+
+    def tempmod_deactivate(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate()")
+
+    # ---- magnetic module --------------------------------------------------------------
+
+    def magmod_engage(
+        self,
+        nickname: str,
+        height_from_base: Optional[float] = None,
+        offset: Optional[float] = None,
+    ):
+        kwargs = self._format_kwargs(height_from_base=height_from_base, offset=offset)
+        self.invoke(f"{nickname}.engage({kwargs})")
+
+    def magmod_disengage(self, nickname: str):
+        self.invoke(f"{nickname}.disengage()")
+
+    # ---- thermocycler module ------------------------------------------------------------
+
+    def thermocycler_open_lid(self, nickname: str):
+        self.invoke(f"{nickname}.open_lid()")
+
+    def thermocycler_close_lid(self, nickname: str):
+        self.invoke(f"{nickname}.close_lid()")
+
+    def thermocycler_open_labware_latch(self, nickname: str):
+        self.invoke(f"{nickname}.open_labware_latch()")
+
+    def thermocycler_close_labware_latch(self, nickname: str):
+        self.invoke(f"{nickname}.close_labware_latch()")
+
+    def thermocycler_set_block_temperature(
+        self,
+        nickname: str,
+        temperature: float,
+        hold_time_seconds: Optional[float] = None,
+        hold_time_minutes: Optional[float] = None,
+        block_max_volume: Optional[float] = None,
+        ramp_rate: Optional[float] = None,
+    ):
+        kwargs = self._format_kwargs(
+            temperature=temperature,
+            hold_time_seconds=hold_time_seconds,
+            hold_time_minutes=hold_time_minutes,
+            block_max_volume=block_max_volume,
+            ramp_rate=ramp_rate,
+        )
+        self.invoke(f"{nickname}.set_block_temperature({kwargs})")
+
+    def thermocycler_set_lid_temperature(self, nickname: str, temperature: float):
+        self.invoke(f"{nickname}.set_lid_temperature(temperature = {temperature})")
+
+    def thermocycler_deactivate_block(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate_block()")
+
+    def thermocycler_deactivate_lid(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate_lid()")
+
+    def thermocycler_deactivate(self, nickname: str):
+        self.invoke(f"{nickname}.deactivate()")
+
+    # ---- session ---------------------------------------------------------------------
 
     def close_session(self):
         self.home()

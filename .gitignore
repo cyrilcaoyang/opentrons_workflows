@@ -173,3 +173,5 @@ ot2_state.json.tmp
 # Persisted operator-declared deck layout (per-device, never committed)
 ot2_deck_state.json
 ot2_deck_state.json.tmp
+ot2_tip_state.json
+ot2_tip_state.json.tmp

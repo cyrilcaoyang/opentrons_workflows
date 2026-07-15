@@ -30,12 +30,15 @@ from .models import (
     PROTOCOL_VERSION,
     ProtocolSetupRequest,
     StartupRequest,
+    TipRackState,
     TipRequest,
+    TipsResetRequest,
     WellSample,
     WellUpdateRequest,
 )
 from .plate_state import PlateStateStore
 from .service import OT2Service, UnknownOutcomeError
+from .tip_state import TipStateStore, TipUnavailable
 
 
 class ClaimHTTPError(Exception):
@@ -68,6 +71,9 @@ def create_app(
         ),
         decks=DeckDeclarationStore(
             state_path=os.environ.get("OT2_DECK_STATE_PATH", "./ot2_deck_state.json")
+        ),
+        tips=TipStateStore(
+            state_path=os.environ.get("OT2_TIP_STATE_PATH", "./ot2_tip_state.json")
         ),
     )
 
@@ -273,6 +279,21 @@ def create_app(
         service.clear_deck()
         return service._build_deck_state()
 
+    @app.post("/control/tips/reset", response_model=TipRackState, tags=["control"])
+    def tips_reset(request: TipsResetRequest, _claim: None = Depends(require_claim)) -> TipRackState:
+        """(Re)register a tip rack with every tip fresh — a physical rack swap.
+
+        Racks named in ``/control/setup`` labware register automatically (keeping
+        used-tip statuses across restarts); this endpoint is for swapping in a
+        fresh rack or tracking one loaded out-of-band. Metadata only — no robot
+        motion — so, like ``plate.*``, it works in any state including dry-run.
+        """
+
+        try:
+            return service.reset_tip_rack(request.nickname, wells=request.wells)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     @app.post("/control/lights", response_model=CommandResponse, tags=["control"])
     def lights(request: LightsRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
         try:
@@ -296,6 +317,10 @@ def create_app(
         try:
             func()
             return CommandResponse(message=success_message, state=service.state.value)
+        except TipUnavailable as exc:
+            # Precondition refusal (STATUS_SPEC §6.1): structured body, top-level
+            # fields — never wrapped in {"detail": ...} — and no last_error.
+            raise ClaimHTTPError(status_code=412, payload=exc.body)
         except UnknownOutcomeError as exc:
             raise HTTPException(status_code=409, detail=f"unknown outcome: {exc}")
         except Exception as exc:

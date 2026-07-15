@@ -36,6 +36,7 @@ from .models import (
     WellSample,
 )
 from .plate_state import PlateStateStore
+from .tip_state import EMPTY, TipStateStore
 
 # Snapshot is run on the OT-2's Python REPL in two invokes. The OT-2 runs
 # only the official Opentrons SDK — `opentrons_server` is NOT installed
@@ -118,6 +119,7 @@ class OT2Service:
         simulation: bool = False,
         plates: Optional[PlateStateStore] = None,
         decks: Optional[DeckDeclarationStore] = None,
+        tips: Optional[TipStateStore] = None,
         transport: Optional[str] = None,
     ) -> None:
         self.equipment_id = equipment_id
@@ -141,6 +143,16 @@ class OT2Service:
         self.decks = (
             decks if decks is not None else DeckDeclarationStore(state_path="./ot2_deck_state.json")
         )
+        # Per-tiprack tip lifecycle (fresh / sample-touched / empty), persisted
+        # across restarts. Racks register on /control/setup; picks are validated
+        # against it; aspirate/dispense/drop mutate it. Transport-agnostic: the
+        # hooks live here, above OT2Control / OT2HttpControl.
+        self.tips = (
+            tips if tips is not None else TipStateStore(state_path="./ot2_tip_state.json")
+        )
+        # pipette -> {rack, well, last_sample, origin_status} for the currently
+        # mounted (tracked) tip. In-memory session state, like session_recipe.
+        self._mounted_tips: Dict[str, Dict[str, Any]] = {}
         self._refresh_stop = threading.Event()
         self.started_at = time.monotonic()
         self.state = OT2ServiceState.DRY_RUN if dry_run else OT2ServiceState.REQUIRES_INIT
@@ -247,6 +259,23 @@ class OT2Service:
             self.control.setup_protocol(**self.session_recipe)
 
         self._run_action("setup", _setup, idempotent=True)
+        # Track every tiprack in the realized recipe. Non-destructive: a rack
+        # already known (e.g. re-setup after a gateway restart) keeps its
+        # partially-used statuses; /control/tips/reset marks a physical swap.
+        for lw in self.session_recipe.get("labware", []) or []:
+            nickname = lw.get("nickname")
+            if nickname and self._labware_is_tiprack(lw):
+                self.tips.register_rack(str(nickname))
+
+    @staticmethod
+    def _labware_is_tiprack(lw: Dict[str, Any]) -> bool:
+        config = lw.get("config") or {}
+        if isinstance(config, dict):
+            params = config.get("parameters") or {}
+            if isinstance(params, dict) and params.get("isTiprack"):
+                return True
+        loadname = str(lw.get("loadname") or lw.get("load_name") or "").lower()
+        return "tiprack" in loadname
 
     def home(self) -> None:
         self._run_action("home", lambda: self._require_control().home(), idempotent=True)
@@ -278,6 +307,9 @@ class OT2Service:
             )
 
         self._run_action("aspirate", _aspirate, idempotent=False)
+        self._mark_tip_used(
+            request.pipette, request.location.labware_nickname, request.location.position
+        )
 
     def dispense(self, request: Any) -> None:
         flow_rate = getattr(request, "flow_rate", None)
@@ -289,17 +321,40 @@ class OT2Service:
             )
 
         self._run_action("dispense", _dispense, idempotent=False)
+        self._mark_tip_used(
+            request.pipette, request.location.labware_nickname, request.location.position
+        )
 
     def pick_up_tip(self, request: Any) -> None:
+        rack = request.labware_nickname
+        well = request.position
+        sample_id = getattr(request, "sample_id", None)
+        force = bool(getattr(request, "force", False))
+        tracked = bool(rack) and self.tips.has_rack(rack)
+
+        # Contamination guard + auto-pick, both only for tracked racks. Raises
+        # TipUnavailable (HTTP 412 at the API layer) before any hardware motion.
+        if tracked and not well:
+            well = self.tips.next_available(rack, sample_id=sample_id)
+        prior_status: Optional[str] = None
+        if tracked and well:
+            prior_status = self.tips.validate_pick(
+                rack, well, sample_id=sample_id, force=force
+            )
+
         def _pick_up_tip() -> None:
-            if request.labware_nickname and request.position:
-                self._require_control().get_location_from_labware(
-                    request.labware_nickname,
-                    request.position,
-                )
+            if rack and well:
+                self._require_control().get_location_from_labware(rack, well)
             self._require_control().pick_up_tip(request.pipette)
 
         self._run_action("pick_up_tip", _pick_up_tip, idempotent=False)
+        if tracked and well:
+            self._mounted_tips[request.pipette] = {
+                "rack": rack,
+                "well": well,
+                "last_sample": sample_id or prior_status,
+                "origin_status": prior_status,
+            }
 
     def drop_tip(self, request: Any) -> None:
         def _drop_tip() -> None:
@@ -314,6 +369,38 @@ class OT2Service:
             self._require_control().drop_tip(request.pipette)
 
         self._run_action("drop_tip", _drop_tip, idempotent=False)
+        mounted = self._mounted_tips.pop(request.pipette, None)
+        if mounted is not None and self.tips.has_rack(mounted["rack"]):
+            self.tips.set_status(mounted["rack"], mounted["well"], EMPTY)
+
+    def _mark_tip_used(self, pipette: str, labware_nickname: str, position: str) -> None:
+        """Record what the mounted tip touched, after a successful liquid step.
+
+        Touching a tracked tiprack is not a sample contact; anything else stamps
+        the tip's origin well with a sample id — the tracked plate's real
+        ``sample_id`` when the target well has one, else ``<labware>_<well>``.
+        """
+
+        mounted = self._mounted_tips.get(pipette)
+        if mounted is None or self.tips.has_rack(labware_nickname):
+            return
+        sample = self._resolve_sample_id(labware_nickname, position)
+        mounted["last_sample"] = sample
+        if self.tips.has_rack(mounted["rack"]):
+            self.tips.set_status(mounted["rack"], mounted["well"], sample)
+
+    def _resolve_sample_id(self, labware_nickname: str, position: str) -> str:
+        plate = self.plates.get()
+        if plate is not None and plate.plate_id == labware_nickname:
+            for w in plate.wells:
+                if w.well == position and w.sample_id:
+                    return w.sample_id
+        return f"{labware_nickname}_{position}"
+
+    def reset_tip_rack(self, nickname: str, *, wells: Optional[list[str]] = None):
+        """(Re)register a rack with all tips fresh — a physical rack swap."""
+
+        return self.tips.reset_rack(nickname, wells=wells)
 
     def move_labware(self, request: Any) -> None:
         self._run_action(
@@ -732,6 +819,10 @@ class OT2Service:
         }
         loaded_plate = self.plates.get()
         details["loaded_plate"] = loaded_plate.model_dump(mode="json") if loaded_plate else None
+        details["tip_racks"] = self.tips.summary()
+        details["mounted_tips"] = {
+            pip: dict(info) for pip, info in self._mounted_tips.items()
+        }
         if self._last_probe:
             details["robot"] = self._last_probe
         claimed_by = self.claims.current()
@@ -846,6 +937,7 @@ class OT2Service:
                 "plate.load",
                 "plate.unload",
                 "well.update",
+                "tips.reset",
             ]
         if self.state == OT2ServiceState.PAUSED:
             return ["resume", "shutdown"]
@@ -863,6 +955,7 @@ class OT2Service:
                 "plate.load",
                 "plate.unload",
                 "well.update",
+                "tips.reset",
             ]
         if self.state == OT2ServiceState.BUSY:
             return ["pause"]

@@ -540,11 +540,17 @@ Useful control endpoints:
 - `POST /control/home`
 - `POST /control/pause`
 - `POST /control/resume`
-- `POST /control/pick-up-tip`
+- `POST /control/pick-up-tip` — on a tracked tip rack, omitting `position`
+  auto-picks the next available tip; `sample_id` / `force` drive the
+  contamination guard (see *State and Labware Tracking*). Refusals are
+  HTTP 412 with a structured body.
 - `POST /control/aspirate`
 - `POST /control/dispense`
 - `POST /control/drop-tip`
 - `POST /control/move-labware`
+- `POST /control/tips/reset` — body `{"nickname": str, "wells"?: [str]}`;
+  (re)registers a tip rack with every tip fresh (a physical rack swap).
+  Metadata-only, works in any state including dry-run.
 - `POST /control/lights` — body `{"on": bool}`; toggles the deck (rail) lights
   by proxying to the robot's own `POST /robot/lights`. A convenience control:
   `lights.set` appears in `allowed_actions` and `components.lights`
@@ -612,6 +618,28 @@ The `labware` package provides stable models for plate/tip-rack identity and
 event tracking. These models are intentionally separate from the device gateway:
 the gateway can summarize current deck/pipette state, while full sample
 provenance should live in workflow state or a future inventory service.
+
+### Tip lifecycle tracking
+
+The gateway persists per-tiprack tip status (`gateway/tip_state.py`,
+`./ot2_tip_state.json`, override with `OT2_TIP_STATE_PATH`) alongside the plate
+and deck stores. Each tip well is `"new"`, `"empty"` (dropped), or a sample id
+it has touched. The lifecycle is driven automatically and works on both
+transports:
+
+- `/control/setup` registers every tiprack in the recipe (non-destructive:
+  a re-setup after a restart keeps used-tip statuses).
+- `/control/pick-up-tip` validates the pick: fresh tips are free; a
+  sample-touched tip is reusable only for the same `sample_id` (or with
+  `force: true`); an `"empty"` well is always refused. Violations return
+  HTTP 412 with `{detail, rack, well, tip_status, requested_sample_id}`
+  before any hardware motion. Omitting `position` auto-picks the next
+  available tip (column-major, matching protocol-API order).
+- Aspirate/dispense stamp the mounted tip with what it touched — the tracked
+  plate's real `sample_id` when the target well has one, else
+  `<labware>_<well>`. Drop marks the origin well `"empty"`.
+- `/status` surfaces `details.tip_racks` (per-rack counts + non-fresh wells)
+  and `details.mounted_tips` (per-pipette rack/well/last sample).
 
 ## Workflows
 

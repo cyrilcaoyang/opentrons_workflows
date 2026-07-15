@@ -151,6 +151,27 @@ class TipRequest(BaseModel):
     pipette: str
     labware_nickname: Optional[str] = None
     position: Optional[str] = None
+    # Tip-tracking fields; meaningful only when labware_nickname names a
+    # registered (tracked) tip rack. Omitting `position` on such a rack
+    # auto-picks the next available tip. `sample_id` allows same-sample tip
+    # reuse; `force` overrides the contamination guard (never an empty well).
+    sample_id: Optional[str] = None
+    force: bool = False
+
+
+class TipsResetRequest(BaseModel):
+    """(Re)register a tip rack with every tip fresh — a physical rack swap."""
+
+    nickname: str = Field(..., min_length=1)
+    wells: Optional[List[str]] = None  # defaults to the 96-tip column-major grid
+
+
+class TipRackState(BaseModel):
+    """Tracked tip statuses for one rack: well -> "new" | "empty" | sample id."""
+
+    nickname: str
+    tips: Dict[str, str]
+    registered_at: datetime
 
 
 class MoveLabwareRequest(BaseModel):
