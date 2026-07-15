@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Union
 
 import paramiko
 import requests
@@ -32,6 +32,7 @@ from .models import (
     ErrorInfo,
     LoadedPlate,
     SlotLabware,
+    SlotModule,
     WellSample,
 )
 from .plate_state import PlateStateStore
@@ -750,16 +751,17 @@ class OT2Service:
             now=datetime.now(timezone.utc),
         )
 
-    def _declared_slots(self) -> Dict[str, SlotLabware]:
+    def _declared_slots(self) -> Dict[str, Union[SlotLabware, SlotModule]]:
         """Merge the standalone operator declaration with the realized setup recipe.
 
         Two declared sub-sources: the persisted :class:`DeckDeclarationStore` (the
         stopgap replacement — set when there is no session) and ``session_recipe``
         (what ``/control/setup`` actually loaded). The setup recipe overlays the
         standalone declaration per slot, since it reflects what the gateway loaded.
+        Declared entries may be labware or a sticky module (temperature module, …).
         """
 
-        declared: Dict[str, SlotLabware] = dict(self.decks.get())
+        declared: Dict[str, Union[SlotLabware, SlotModule]] = dict(self.decks.get())
         for lw in self.session_recipe.get("labware", []) or []:
             loadname = lw.get("loadname") or lw.get("load_name")
             location = lw.get("location")
