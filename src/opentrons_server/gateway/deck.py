@@ -237,7 +237,7 @@ def build_deck(
     *,
     run: Optional[Dict[str, SlotLabware]] = None,
     repl: Optional[Dict[str, Union[SlotLabware, SlotModule]]] = None,
-    declared: Optional[Dict[str, SlotLabware]] = None,
+    declared: Optional[Dict[str, Union[SlotLabware, SlotModule]]] = None,
     loaded_plate: Optional[LoadedPlate] = None,
     nickname_to_slot: Optional[Dict[str, str]] = None,
     busy: bool = False,
@@ -260,7 +260,7 @@ def build_deck(
 
     # Fold the tracked plate into an effective declared map so its wells travel with
     # the slot regardless of which source ultimately wins.
-    effective_declared: Dict[str, SlotLabware] = dict(declared)
+    effective_declared: Dict[str, Union[SlotLabware, SlotModule]] = dict(declared)
     plate_slot: Optional[str] = None
     if loaded_plate is not None:
         plate_slot = nickname_to_slot.get(loaded_plate.plate_id)
@@ -278,6 +278,7 @@ def build_deck(
         observed: Optional[SlotLabware] = None
         observed_source: Optional[DeckSource] = None
         module: Optional[SlotModule] = None
+        module_source: Optional[DeckSource] = None
 
         if slot in run:
             observed = run[slot]
@@ -286,13 +287,22 @@ def build_deck(
             item = repl[slot]
             if isinstance(item, SlotModule):
                 module = item
+                module_source = "repl"
             else:
                 observed = item
                 observed_source = "repl"
 
-        decl = effective_declared.get(slot)
+        decl_raw = effective_declared.get(slot)
+        declared_labware = decl_raw if isinstance(decl_raw, SlotLabware) else None
+        # A declared (sticky) module surfaces only when nothing live occupies the
+        # slot — a live run/REPL source always wins over operator intent.
+        if module is None and observed is None and isinstance(decl_raw, SlotModule):
+            module = decl_raw
+            module_source = "declared"
 
-        deck_slot = _resolve_slot(observed, observed_source, module, decl, busy)
+        deck_slot = _resolve_slot(
+            observed, observed_source, module, module_source, declared_labware, busy
+        )
         slots[slot] = deck_slot
         if deck_slot.source != "empty":
             contributing.add(deck_slot.source)
@@ -310,6 +320,7 @@ def _resolve_slot(
     observed: Optional[SlotLabware],
     observed_source: Optional[DeckSource],
     module: Optional[SlotModule],
+    module_source: Optional[DeckSource],
     declared: Optional[SlotLabware],
     busy: bool,
 ) -> DeckSlot:
@@ -338,8 +349,11 @@ def _resolve_slot(
         )
 
     if module is not None:
-        # Module present, no labware observed on it.
-        return DeckSlot(module=module, slot_state=occupied_state, source="repl")
+        # Module present, no labware observed on it. A declared (sticky) module is
+        # operator intent -> slot_state "declared"; a live module is occupied.
+        if module_source == "declared":
+            return DeckSlot(module=module, slot_state="declared", source="declared")
+        return DeckSlot(module=module, slot_state=occupied_state, source=module_source or "repl")
 
     if declared is not None:
         # Declared-only: either operator intent or an orchestrator-loaded plate that
@@ -429,27 +443,32 @@ class DeckDeclarationStore:
     def __init__(self, *, state_path: Union[str, Path]) -> None:
         self._path = _resolve_state_path(state_path)
         self._lock = threading.Lock()
-        self._slots: Dict[str, SlotLabware] = {}
+        # A declared slot is a persistent operator-declared fixture: labware OR a
+        # module (e.g. a temperature module bolted at a slot). Movable modules are
+        # NOT declared — they flow through the live run/REPL deck instead.
+        self._slots: Dict[str, Union[SlotLabware, SlotModule]] = {}
         self._load_from_disk()
 
     @property
     def state_path(self) -> Path:
         return self._path
 
-    def get(self) -> Dict[str, SlotLabware]:
+    def get(self) -> Dict[str, Union[SlotLabware, SlotModule]]:
         with self._lock:
-            return {s: lw.model_copy(deep=True) for s, lw in self._slots.items()}
+            return {s: item.model_copy(deep=True) for s, item in self._slots.items()}
 
     def declare(
         self, mapping: Dict[str, Optional[Union[str, Dict[str, Any]]]]
-    ) -> Dict[str, SlotLabware]:
+    ) -> Dict[str, Union[SlotLabware, SlotModule]]:
         """Replace the declaration with ``mapping`` (a full-layout PUT).
 
-        An empty ``mapping`` clears everything. A ``None`` value clears that slot.
-        Unknown slot ids (outside 1..12) raise :class:`ValueError`.
+        A value may be labware (load_name / kind) or a module (a module kind
+        string, or a dict with ``module_name``). An empty ``mapping`` clears
+        everything. A ``None`` value clears that slot. Unknown slot ids
+        (outside 1..12) raise :class:`ValueError`.
         """
 
-        resolved: Dict[str, SlotLabware] = {}
+        resolved: Dict[str, Union[SlotLabware, SlotModule]] = {}
         for slot, value in mapping.items():
             slot = str(slot)
             if slot not in SLOTS:
@@ -460,7 +479,7 @@ class DeckDeclarationStore:
         with self._lock:
             self._slots = resolved
             self._persist_locked()
-        return {s: lw.model_copy(deep=True) for s, lw in resolved.items()}
+        return {s: item.model_copy(deep=True) for s, item in resolved.items()}
 
     def clear(self) -> None:
         with self._lock:
@@ -478,12 +497,17 @@ class DeckDeclarationStore:
             logger.exception("deck declaration at %s is unreadable; ignoring", self._path)
             return
         slots_raw = raw.get("slots") or {}
-        parsed: Dict[str, SlotLabware] = {}
-        for slot, lw_raw in slots_raw.items():
+        parsed: Dict[str, Union[SlotLabware, SlotModule]] = {}
+        for slot, item_raw in slots_raw.items():
             if str(slot) not in SLOTS:
                 continue
             try:
-                parsed[str(slot)] = SlotLabware.model_validate(lw_raw)
+                # A persisted module carries `module_name`; labware carries
+                # `load_name`/`kind`. Round-trips model_dump() from either type.
+                if isinstance(item_raw, dict) and "module_name" in item_raw:
+                    parsed[str(slot)] = SlotModule.model_validate(item_raw)
+                else:
+                    parsed[str(slot)] = SlotLabware.model_validate(item_raw)
             except Exception:
                 logger.exception("deck declaration slot %s is malformed; ignoring", slot)
         self._slots = parsed
@@ -499,17 +523,43 @@ class DeckDeclarationStore:
             logger.exception("Failed to persist deck declaration to %s", self._path)
 
 
-def _coerce_declaration(value: Union[str, Dict[str, Any]]) -> SlotLabware:
-    """Turn one declared slot value into a normalized :class:`SlotLabware`."""
+# Module-kind shorthands the deck picker can send -> a human-readable
+# `module_name` matching what run/REPL-sourced modules report, so a declared
+# module and the same module seen live render identically.
+_MODULE_KINDS: Dict[str, str] = {
+    "temperature_module": "temperature module gen2",
+    "magnetic_module": "magnetic module gen2",
+    "heater_shaker_module": "heater-shaker module gen1",
+    "thermocycler_module": "thermocycler module gen2",
+}
+
+
+def _coerce_declaration(value: Union[str, Dict[str, Any]]) -> Union[SlotLabware, SlotModule]:
+    """Turn one declared slot value into a :class:`SlotLabware` or :class:`SlotModule`.
+
+    Modules are declared either as a known module-kind string (e.g.
+    ``"temperature_module"``) or a dict carrying ``module_name``.
+    """
 
     if isinstance(value, str):
+        if value in _MODULE_KINDS:
+            return SlotModule(module_name=_MODULE_KINDS[value])
         return _from_load_name_or_kind(value)
     if isinstance(value, dict):
+        if value.get("module_name"):
+            return SlotModule(
+                module_name=value["module_name"],
+                status=value.get("status"),
+                serial_number=value.get("serial_number"),
+            )
+        kind = value.get("kind")
+        if isinstance(kind, str) and kind in _MODULE_KINDS:
+            return SlotModule(module_name=_MODULE_KINDS[kind])
         if value.get("load_name"):
             return make_slot_labware(value["load_name"], display_name=value.get("display_name"))
-        if value.get("kind"):
-            return _kind_only(value["kind"], display_name=value.get("display_name"))
-        raise ValueError("declaration object needs 'load_name' or 'kind'")
+        if kind:
+            return _kind_only(kind, display_name=value.get("display_name"))
+        raise ValueError("declaration object needs 'load_name', 'kind', or 'module_name'")
     raise ValueError(f"unsupported declaration value: {value!r}")
 
 

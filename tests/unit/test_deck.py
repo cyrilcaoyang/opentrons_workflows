@@ -209,6 +209,29 @@ def test_build_deck_module_only_slot_is_occupied():
     assert deck.slots["7"].labware is None
 
 
+def test_build_deck_declared_module_renders_as_declared():
+    # A sticky declared module (no live source) shows as the slot's module with
+    # slot_state/source "declared".
+    deck = build_deck(declared={"11": SlotModule(module_name="temperature module gen2")}, now=_NOW)
+    assert deck.slots["11"].slot_state == "declared"
+    assert deck.slots["11"].source == "declared"
+    assert deck.slots["11"].module.module_name == "temperature module gen2"
+    assert deck.slots["11"].labware is None
+    assert deck.source == "declared"
+
+
+def test_build_deck_declared_module_yields_to_live_labware():
+    # A run/REPL source at the same slot wins over the declared (sticky) module.
+    deck = build_deck(
+        repl={"11": _plate()},
+        declared={"11": SlotModule(module_name="temperature module gen2")},
+        now=_NOW,
+    )
+    assert deck.slots["11"].source == "repl"
+    assert deck.slots["11"].labware is not None
+    assert deck.slots["11"].module is None
+
+
 def test_build_deck_legacy_kind_declared_agrees_with_observed_load_name():
     # Declared via a legacy kind string ("96-well"); observed via a real load_name.
     declared = SlotLabware(kind="96-well", load_name="")
@@ -294,6 +317,39 @@ def test_declare_legacy_kind_strings(tmp_path):
     assert (result["2"].rows, result["2"].columns) == (8, 12)
     assert result["10"].kind == "24-well"
     assert result["12"].kind == "trash"  # "waste" alias
+
+
+def test_declare_module_kind_string_and_persist(tmp_path):
+    store = _store(tmp_path)
+    result = store.declare({"11": "temperature_module"})
+    assert isinstance(result["11"], SlotModule)
+    assert result["11"].module_name == "temperature module gen2"
+
+    # Survives a restart as a module (not misparsed as labware).
+    reborn = DeckDeclarationStore(state_path=store.state_path)
+    revived = reborn.get()["11"]
+    assert isinstance(revived, SlotModule)
+    assert revived.module_name == "temperature module gen2"
+
+
+def test_declare_module_dict_carries_status_and_serial(tmp_path):
+    store = _store(tmp_path)
+    result = store.declare(
+        {"11": {"module_name": "temperatureModuleV2", "status": "idle", "serial_number": "TDV20"}}
+    )
+    assert isinstance(result["11"], SlotModule)
+    assert (result["11"].module_name, result["11"].status, result["11"].serial_number) == (
+        "temperatureModuleV2",
+        "idle",
+        "TDV20",
+    )
+
+
+def test_declare_mixed_labware_and_module(tmp_path):
+    store = _store(tmp_path)
+    result = store.declare({"2": "corning_96_wellplate_360ul_flat", "11": "temperature_module"})
+    assert result["2"].kind == "96-well"
+    assert isinstance(result["11"], SlotModule)
 
 
 def test_declare_none_value_clears_that_slot(tmp_path):

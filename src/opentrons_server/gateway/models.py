@@ -285,8 +285,11 @@ class DeckDeclareRequest(BaseModel):
     """Operator/recipe-declared layout (Phase 2 endpoint payload).
 
     Each slot value is a labware ``load_name`` (preferred, full fidelity), a
-    bare ``kind`` string (legacy dashboard compat), or ``null`` to clear that
-    slot. An empty ``slots`` map clears the whole declaration.
+    bare ``kind`` string (legacy dashboard compat), a **module** (a module-kind
+    string like ``"temperature_module"`` or a dict with ``module_name``), or
+    ``null`` to clear that slot. An empty ``slots`` map clears the whole
+    declaration. Declared modules are sticky fixtures; movable modules flow
+    through the live run instead.
     """
 
     slots: Dict[str, Optional[Union[str, Dict[str, Any]]]] = Field(default_factory=dict)
