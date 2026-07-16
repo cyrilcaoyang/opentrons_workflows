@@ -121,6 +121,7 @@ class OT2Service:
         decks: Optional[DeckDeclarationStore] = None,
         tips: Optional[TipStateStore] = None,
         transport: Optional[str] = None,
+        http_run_state_path: Optional[str] = None,
     ) -> None:
         self.equipment_id = equipment_id
         self.equipment_name = equipment_name
