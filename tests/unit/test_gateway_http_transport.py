@@ -195,6 +195,47 @@ def test_http_snapshot_populates_deck_parity_from_run(fake_http):
     # and the raw passthrough carries the run's labware list
     assert service.last_snapshot["run_id"] == "run-1"
     assert len(service.last_snapshot["labwares"]) == len(run_doc["labware"])
+    # container-shape parity with the SSH snapshot: slot-keyed dicts, not lists
+    assert isinstance(service.last_snapshot["labwares"], dict)
+    assert isinstance(service.last_snapshot["pipettes"], dict)
+    assert isinstance(service.last_snapshot["modules"], dict)
+
+
+def test_http_snapshot_keys_entries_by_slot_with_id_fallback(fake_http):
+    fake_http.get_run = lambda: {
+        "id": "run-1",
+        "pipettes": [{"id": "p300", "mount": "right", "pipetteName": "p300_single_gen2"}],
+        "labware": [
+            {"id": "tips", "location": {"slotName": "1"}},
+            {"id": "plate", "location": "offDeck"},  # slotless -> keyed by id
+        ],
+        "modules": [],
+    }
+
+    service = OT2Service(dry_run=False, transport="http")
+    service.startup()
+    service.refresh_snapshot()
+
+    snapshot = service.last_snapshot
+    assert snapshot["pipettes"]["right"]["pipetteName"] == "p300_single_gen2"
+    assert snapshot["labwares"]["1"]["id"] == "tips"
+    assert snapshot["labwares"]["plate"]["location"] == "offDeck"
+
+
+def test_http_transport_ssh_component_message_names_run_engine(fake_http):
+    service = OT2Service(dry_run=False, transport="http")
+    service.startup()
+
+    components = service.get_status().components
+    assert components["ssh"].connected is True
+    assert "run engine" in (components["ssh"].message or "")
+    assert "no SSH session" in components["ssh"].message
+
+
+def test_ssh_transport_ssh_component_message_names_repl():
+    service = OT2Service(dry_run=False)  # default transport: ssh
+    components = service.get_status().components
+    assert "SSH REPL" in (components["ssh"].message or "")
 
 
 def test_http_shutdown_stops_and_closes(fake_http):

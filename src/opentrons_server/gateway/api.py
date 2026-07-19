@@ -25,6 +25,7 @@ from .models import (
     LiquidMoveRequest,
     LoadedPlate,
     MoveLabwareRequest,
+    MoveToRequest,
     PlateLoadRequest,
     ProbeResponse,
     PROTOCOL_VERSION,
@@ -204,6 +205,22 @@ def create_app(
     def resume(_claim: None = Depends(require_claim)) -> CommandResponse:
         service.resume()
         return CommandResponse(message="OT-2 resumed", state=service.state.value)
+
+    @app.post("/control/move-to", response_model=CommandResponse, tags=["control"])
+    def move_to(request: MoveToRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        """Move a pipette to a well or absolute deck coordinates (no liquid).
+
+        Body: ``{"pipette": str, "location": WellLocation}`` or
+        ``{"pipette": str, "coordinates": {"x","y","z"}}`` (exactly one),
+        plus optional ``speed`` (mm/s), ``force_direct``, ``minimum_z_height``.
+        Idempotent — a transport loss mid-move records an error, not
+        ``unknown_outcome``, and the move can simply be re-issued.
+        """
+        try:
+            service.move_to(request)
+            return CommandResponse(message="Move complete", state=service.state.value)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.post("/control/pick-up-tip", response_model=CommandResponse, tags=["control"])
     def pick_up_tip(request: TipRequest, _claim: None = Depends(require_claim)) -> CommandResponse:

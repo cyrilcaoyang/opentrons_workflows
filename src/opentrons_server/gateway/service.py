@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import paramiko
 import requests
@@ -130,7 +130,7 @@ class OT2Service:
         self.dry_run = dry_run
         self.simulation = simulation
         # Control-plane transport: "ssh" (default, the SSH REPL) or "http" (the
-        # robot-server run engine, docs/HTTP_DRIVE_PLAN.md). Opt-in and fully
+        # robot-server run engine, docs/HTTP_TRANSPORT.md). Opt-in and fully
         # reversible: unset OT2_TRANSPORT (or pass transport="ssh") to restore the
         # SSH path with zero behaviour change. HTTP is not yet robot-validated.
         self.transport = (transport or os.getenv("OT2_TRANSPORT") or "ssh").lower()
@@ -297,6 +297,31 @@ class OT2Service:
             bottom=request.location.bottom or 0,
             center=1 if request.location.center else 0,
         )
+
+    def move_to(self, request: Any) -> None:
+        """Move a pipette to a well or to absolute deck coordinates (no liquid).
+
+        Idempotent: re-issuing the same move is safe (no tip/liquid state at
+        risk), so a transport loss mid-move records an error rather than
+        ``unknown_outcome`` — same policy as ``home``.
+        """
+
+        def _move_to() -> None:
+            if request.location is not None:
+                self.set_location_from_well(request)
+            else:
+                coords = request.coordinates
+                self._require_control().get_location_absolute(coords.x, coords.y, coords.z)
+            self._require_control().move_to_pip(
+                request.pipette,
+                speed=request.speed,
+                # False -> None keeps the SSH invoke minimal (kwargs formatter
+                # skips None); the protocol-API default is False anyway.
+                force_direct=request.force_direct or None,
+                minimum_z_height=request.minimum_z_height,
+            )
+
+        self._run_action("move_to", _move_to, idempotent=True)
 
     def aspirate(self, request: Any) -> None:
         flow_rate = getattr(request, "flow_rate", None)
@@ -739,25 +764,52 @@ class OT2Service:
         precedence (run > repl > declared) with no bespoke parser. There is no
         REPL deck in HTTP mode, so ``last_snapshot`` carries no ``deck`` key and
         the repl source stays empty. Never crashes the side-effect-free path.
+
+        Container-shape parity with the SSH snapshot: ``pipettes`` is a dict
+        keyed by mount and ``labwares``/``modules`` dicts keyed by deck slot
+        (falling back to the engine id for off-deck/keyless entries), matching
+        ``state_readers.get_all_states``. The *values* remain raw run-engine
+        entries — the per-item schemas differ per transport by design (see
+        HTTP_SSH_PARITY.md). ``run_id`` is HTTP-only.
         """
         try:
             run = self.control.run_snapshot()
             labware = run.get("labware") or []
             modules = run.get("modules") or []
+            pipettes = run.get("pipettes") or []
             # Same {labware, modules} shape probe_run_labware yields; drives the
             # `run` deck source via normalize_run_slots.
             self._last_run_labware = {"labware": labware, "modules": modules}
             self._last_run_labware_at = time.monotonic()
-            # Raw passthrough for the details panel (run-engine list shape).
             self.last_snapshot = {
                 "run_id": run.get("id"),
-                "pipettes": run.get("pipettes") or [],
-                "labwares": labware,
-                "modules": modules,
+                "pipettes": {
+                    (entry.get("mount") or entry.get("id") or f"pipette_{i}"): entry
+                    for i, entry in enumerate(pipettes)
+                },
+                "labwares": self._key_run_entries_by_slot(labware),
+                "modules": self._key_run_entries_by_slot(modules),
             }
         except Exception as exc:
             self._set_error("snapshot_failed", str(exc), severity="warning")
         return self.last_snapshot
+
+    @staticmethod
+    def _key_run_entries_by_slot(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Key run-engine labware/module entries by deck slot, mirroring the SSH
+        snapshot's slot-keyed dicts. Off-deck / slotless entries (and slot
+        collisions, e.g. mid-move) fall back to the engine id so nothing is
+        silently dropped."""
+        keyed: Dict[str, Any] = {}
+        for i, entry in enumerate(entries):
+            location = entry.get("location")
+            key = None
+            if isinstance(location, dict) and location.get("slotName"):
+                key = str(location["slotName"])
+            if key is None or key in keyed:
+                key = str(entry.get("id") or f"entry_{i}")
+            keyed[key] = entry
+        return keyed
 
     @staticmethod
     def _parse_remote_snapshot(output: str) -> Dict[str, Any]:
@@ -948,6 +1000,7 @@ class OT2Service:
                 "home",
                 "setup",
                 "pause",
+                "move_to",
                 "pick_up_tip",
                 "aspirate",
                 "dispense",
@@ -1065,10 +1118,20 @@ class OT2Service:
 
     def _components(self, lights: ComponentStatus) -> Dict[str, ComponentStatus]:
         connected = self.control is not None or self.dry_run
+        # The "ssh" component key predates the HTTP transport and means "control
+        # backend session" — renaming it would break dashboards (STATUS_SPEC #14),
+        # so the message carries the actual transport instead.
+        if self.dry_run:
+            transport_note = "dry run (no robot connection)"
+        elif self.transport == "http":
+            transport_note = "control via HTTP run engine (no SSH session)"
+        else:
+            transport_note = "control via SSH REPL"
         components: Dict[str, ComponentStatus] = {
             "ssh": ComponentStatus(
                 connected=connected,
                 state="connected" if connected else "disconnected",
+                message=transport_note,
             ),
             "protocol": ComponentStatus(
                 connected=self.state

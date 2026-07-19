@@ -14,7 +14,7 @@ Phase 0 (this module): pure, hardware-free building blocks only —
   :class:`PlateStateStore`).
 
 Wiring these into ``OT2Service.get_status`` (side-effect-free, cached inputs only) is
-Phase 1+. See ``docs/DECK_STATE_PLAN.md``.
+Phase 1+. See ``docs/DECK_STATE.md``.
 
 The Opentrons labware definition already carries everything the normalized model needs
 (``parameters.loadName``, ``metadata.displayName``, ``ordering`` for the grid), so this
@@ -246,7 +246,7 @@ def build_deck(
     """Merge deck sources into a normalized :class:`DeckState`.
 
     Precedence **run > repl > declared > empty**. Per-slot lifecycle follows the
-    decision table in ``docs/DECK_STATE_PLAN.md`` §2.4. The orchestrator-tracked plate
+    decision table in ``docs/DECK_STATE.md`` §2.4. The orchestrator-tracked plate
     (``loaded_plate``) is folded in as a declared entry on its slot (resolved via
     ``nickname_to_slot``), so its wells attach to whichever labware wins that slot.
     Pure: no I/O, no clocks other than the injected ``now``.
