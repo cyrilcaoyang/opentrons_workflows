@@ -188,7 +188,7 @@ def test_lights_endpoint_dry_run_toggles_and_reflects_in_status():
     assert "lights.set" in status["allowed_actions"]
 
 
-def test_lights_component_reads_robot_http(monkeypatch):
+def test_background_refresh_reads_robot_lights_http(monkeypatch):
     service = _ready_service_with_control()
     captured: dict = {}
 
@@ -199,6 +199,8 @@ def test_lights_component_reads_robot_http(monkeypatch):
 
     monkeypatch.setattr("opentrons_server.gateway.service.requests.get", fake_get)
 
+    # The off-request-path refresh does the HTTP read and populates the cache.
+    service._refresh_lights()
     status = service.get_status()
 
     assert captured["url"] == "http://ot2.local:31950/robot/lights"
@@ -209,6 +211,29 @@ def test_lights_component_reads_robot_http(monkeypatch):
     assert "lights.set" in status.allowed_actions
 
 
+def test_status_issues_no_http(monkeypatch):
+    """/status must never issue a blocking HTTP read (the flap root cause).
+
+    get_status serves the deck-light state from cache; any requests.get/post
+    from within the handler is a regression that reintroduces the per-poll
+    robot dependency that dropped the socket under contention.
+    """
+
+    service = _ready_service_with_control()
+    service._last_lights = True  # seeded as the background refresh would
+
+    def fail(*args, **kwargs):
+        raise AssertionError("get_status issued a blocking HTTP request")
+
+    monkeypatch.setattr("opentrons_server.gateway.service.requests.get", fail)
+    monkeypatch.setattr("opentrons_server.gateway.service.requests.post", fail)
+
+    status = service.get_status()
+
+    assert status.equipment_status == "ready"
+    assert status.components["lights"].state == "on"
+
+
 def test_lights_unreachable_reported_as_unknown(monkeypatch):
     service = _ready_service_with_control()
 
@@ -217,6 +242,9 @@ def test_lights_unreachable_reported_as_unknown(monkeypatch):
 
     monkeypatch.setattr("opentrons_server.gateway.service.requests.get", boom)
 
+    # A failed refresh resets the cache to None; /status then reports unknown
+    # without itself touching the network.
+    service._refresh_lights()
     status = service.get_status()
 
     assert status.components["lights"].connected is False

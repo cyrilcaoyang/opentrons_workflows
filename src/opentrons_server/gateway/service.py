@@ -163,6 +163,13 @@ class OT2Service:
         self.claims = ClaimManager()
         self.last_error: Optional[ErrorInfo] = None
         self._dry_run_lights_on = False
+        # Cached deck-light state. Refreshed off the request path (background
+        # refresh loop, startup) so /status never issues a blocking HTTP read
+        # to the robot — see _refresh_lights / _lights_component. None => the
+        # state is not yet known (reported as "unknown"). In dry-run there is
+        # no background loop, so seed it from the simulated in-memory state and
+        # let set_lights keep it current.
+        self._last_lights: Optional[bool] = self._dry_run_lights_on if dry_run else None
         self.equipment_version: Optional[str] = None
         self._last_probe: Dict[str, Any] = {}
         # Cached labware of an active *external* robot-server run (EXTERNAL_CONTROL).
@@ -499,6 +506,7 @@ class OT2Service:
 
         if self.dry_run:
             self._dry_run_lights_on = on
+            self._last_lights = on
             return on
         url = self._robot_lights_url()
         if url is None:
@@ -507,19 +515,37 @@ class OT2Service:
             url, json={"on": on}, headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT
         )
         response.raise_for_status()
-        return bool(response.json().get("on", on))
+        result = bool(response.json().get("on", on))
+        # Reflect the new state immediately so the next /status doesn't lag a
+        # background-refresh interval behind an operator toggle.
+        self._last_lights = result
+        return result
 
-    def _lights_component(self) -> ComponentStatus:
-        """Build the ``lights`` component, tolerating an unreachable robot.
+    def _refresh_lights(self) -> None:
+        """Refresh the cached deck-light state from a best-effort read.
 
-        Never raises: a failed read is reported as ``unknown``/disconnected so
-        ``/status`` stays side-effect-free and always returns 200.
+        Runs only *off* the request path — the background refresh loop and
+        ``startup`` — so ``/status`` itself never issues the blocking HTTP read
+        that would otherwise stall a poll (and, under contention, drop the
+        socket before replying). Never raises; an unreachable robot resets the
+        cache to ``None`` so the component honestly reports ``unknown``.
         """
 
         try:
-            on = self.get_lights()
+            self._last_lights = self.get_lights()
         except Exception:
-            on = None
+            self._last_lights = None
+
+    def _lights_component(self) -> ComponentStatus:
+        """Build the ``lights`` component from the cached state (no I/O).
+
+        Reads only ``self._last_lights`` (maintained by ``_refresh_lights`` and
+        ``set_lights``), so ``/status`` stays side-effect-free and always
+        returns 200. ``None`` (state not yet known / robot unreachable at the
+        last refresh) is reported as ``unknown``/disconnected.
+        """
+
+        on = self._last_lights
         if on is None:
             return ComponentStatus(connected=False, state="unknown")
         return ComponentStatus(connected=True, state="on" if on else "off")
@@ -684,6 +710,9 @@ class OT2Service:
             if probe.get("api_version"):
                 self.equipment_version = probe["api_version"]
         self._refresh_run_labware(force=True)
+        # Fold the deck-light read into the same off-request-path refresh so
+        # /status can serve it from cache instead of blocking on robot HTTP.
+        self._refresh_lights()
 
     def boot_reconnect(self) -> None:
         """Guarded one-shot reconnect at process start.
