@@ -1,6 +1,6 @@
 # HTTP-Drive Validation — Runbook & Results
 
-**Branch:** `develop-http-drive` · **Companion:** `docs/HTTP_DRIVE_PLAN.md`
+**Branch:** `develop-http-drive` · **Companion:** `docs/HTTP_TRANSPORT.md`
 **Goal:** validate the opt-in HTTP (run-engine) transport against the real robot
 (`ot2cytation`, Opentrons 8.7.0) for one full plate-in → aspirate/dispense →
 plate-out cycle, and close each flagged gap with a real observation.

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `opentrons_states.py` module provides **simple, direct access** to the robot's official state tracking functionality. All functions return **simple Python data structures** (dictionaries and lists) that are perfect for UIs, real-time monitoring, and JSON serialization.
+The state-readers module (`src/opentrons_server/control/state_readers.py`, formerly `opentrons_states.py`) provides **simple, direct access** to the robot's official state tracking functionality. All functions return **simple Python data structures** (dictionaries and lists) that are perfect for UIs, real-time monitoring, and JSON serialization. The gateway ships this module's *source* over the SSH REPL for each snapshot (see the repo README), so it deliberately has no `opentrons_server` imports of its own; the functions are re-exported from the package root as shown below.
 
 ## Key Design Principles
 
@@ -158,10 +158,10 @@ for slot in range(1, 13):
 Everything works perfectly in simulation mode:
 
 ```python
-from opentrons import execute
+from opentrons import simulate
 
-# Simulation mode (default)
-protocol = execute.get_protocol_api('2.18')
+# Simulation mode (no hardware motion; `execute` is the real-hardware path)
+protocol = simulate.get_protocol_api('2.21')
 
 # All state tracking works identically
 deck = get_deck_state(protocol)  # ✅ Works

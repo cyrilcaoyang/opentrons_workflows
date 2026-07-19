@@ -35,6 +35,25 @@ opentrons-server/
 `demo/` and `backup/` are intentionally preserved and are not part of the new
 runtime layout.
 
+## Documentation
+
+Feature docs describe what is built and how it behaves; records capture what
+happened on the bench; trackers hold open work. Completed plan docs are
+retired into feature docs (history stays in git).
+
+| Doc | Kind | What's in it |
+|---|---|---|
+| [`docs/HTTP_TRANSPORT.md`](docs/HTTP_TRANSPORT.md) | feature | The HTTP run-engine transport: plain-language operator story, driving model (never-played setup run), enable/revert, plate-handoff safety spec, confirmed v8.7.0 command reference |
+| [`docs/HTTP_SSH_PARITY.md`](docs/HTTP_SSH_PARITY.md) | feature | SSH ↔ HTTP method-by-method parity table, `/status` snapshot shapes per transport, bench-verification status |
+| [`docs/TRANSPORT_TRADEOFFS.md`](docs/TRANSPORT_TRADEOFFS.md) | feature | Pros/cons of the two transports + current default and recommendation |
+| [`docs/DECK_STATE.md`](docs/DECK_STATE.md) | feature | Normalized deck/labware state: model, run>repl>declared merge, mismatch flagging, declare endpoints |
+| [`docs/HTTP_DRIVE_VALIDATION.md`](docs/HTTP_DRIVE_VALIDATION.md) | record | 2026-07-14 hardware validation of the HTTP transport |
+| [`docs/DEVICE_BRINGUP.md`](docs/DEVICE_BRINGUP.md) | runbook + records | Parameterized bring-up for any additional Opentrons gateway (install → verify → motion test → dashboard registration), plus the completed per-robot sign-offs |
+| [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md) | tracker | Open work items |
+| [`users/readme_ssh_commands.md`](users/readme_ssh_commands.md) | user guide | `SSHClient` batch execution, timeouts, variable persistence |
+| [`users/readme_opentrons_states.md`](users/readme_opentrons_states.md) | user guide | The state-readers functions (`get_deck_state`, …) and their dict shapes |
+| [`workflows/README.md`](workflows/README.md) | user guide | Prefect workflow examples layout |
+
 ## Install
 
 For the gateway/core package:
@@ -540,6 +559,12 @@ Useful control endpoints:
 - `POST /control/home`
 - `POST /control/pause`
 - `POST /control/resume`
+- `POST /control/move-to` — move a pipette without liquid handling. Body takes
+  exactly one of `location` (labware nickname + well, same shape as
+  aspirate/dispense) or `coordinates` (`{"x","y","z"}` absolute deck frame,
+  mm), plus optional `speed` (mm/s), `force_direct`, `minimum_z_height`.
+  Idempotent: a transport loss mid-move records an error (re-issue is safe),
+  never `unknown_outcome`.
 - `POST /control/pick-up-tip` — on a tracked tip rack, omitting `position`
   auto-picks the next available tip; `sample_id` / `force` drive the
   contamination guard (see *State and Labware Tracking*). Refusals are
@@ -688,5 +713,9 @@ python -m compileall src workflows tests/unit
 
 - This repo's OT-2 gateway conforms to the AC lab equipment status contract
   shape for `liquid_handler` devices.
+- The HTTP run-engine transport (`OT2_TRANSPORT=http`) mirrors the full
+  `OT2Control` (SSH) method surface — see `docs/HTTP_SSH_PARITY.md` for the
+  method-by-method parity table and bench-verification status, and
+  `docs/TRANSPORT_TRADEOFFS.md` for the pros and cons of each transport.
 - `requirements_api.txt` is intended for gateway/API runtime dependencies.
 - Prefect is optional and belongs to workflow development, not gateway startup.

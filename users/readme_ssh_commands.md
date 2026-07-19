@@ -26,7 +26,7 @@ client.execute_python_batch([
 # Batch 3: Complex objects persist too
 client.execute_python_batch([
     ("Import execute", "from opentrons import execute"),  # 120s timeout!
-    ("Create protocol", "protocol = execute.get_protocol_api('2.18')"),
+    ("Create protocol", "protocol = execute.get_protocol_api('2.21')"),
 ])
 
 # Batch 4: Protocol from Batch 3 is still available
@@ -160,7 +160,7 @@ results = client.execute_python_batch(
 
 # Regular protocol operations - 60-90 seconds
 protocol_commands = [
-    ("Create protocol", "protocol = execute.get_protocol_api('2.18')"),
+    ("Create protocol", "protocol = execute.get_protocol_api('2.21')"),
     ("Home robot", "protocol.home()"),
     ("Load labware", "plate = protocol.load_labware(...)"),
 ]
@@ -267,7 +267,7 @@ results1 = client.execute_python_batch(import_commands, timeout=120)
 
 # Step 2: Setup protocol (separate batch, uses import from Step 1)
 setup_commands = [
-    ("Create protocol", "protocol = execute.get_protocol_api('2.18')"),
+    ("Create protocol", "protocol = execute.get_protocol_api('2.21')"),
     ("Home robot", "protocol.home()"),
 ]
 results2 = client.execute_python_batch(setup_commands, timeout=90)
@@ -296,7 +296,7 @@ results4 = client.execute_python_batch(operation_commands, timeout=45)
 ```python
 setup_commands = [
     ("Import execute", "from opentrons import execute"),
-    ("Create protocol", "protocol = execute.get_protocol_api('2.18')"),
+    ("Create protocol", "protocol = execute.get_protocol_api('2.21')"),
     ("Home robot", "protocol.home()"),
 ]
 
@@ -317,13 +317,13 @@ results = client.execute_python_batch(
 
 ### Loading Complex Modules
 ```python
-# Load opentrons_states module
-with open('opentrons_states.py', 'r') as f:
+# Load the state-readers module (this is exactly how the gateway ships it)
+with open('src/opentrons_server/control/state_readers.py', 'r') as f:
     module_code = f.read()
 
 result = client.send_code_block(
     module_code,
-    "opentrons_states module", 
+    "state_readers module",
     timeout=60
 )
 
@@ -346,8 +346,8 @@ When `show_progress=True` (default):
          ✅ Success
 
 [ 2/5] Create protocol context
-         → protocol = execute.get_protocol_api('2.18')
-       ✅ API Version 2.18
+         → protocol = execute.get_protocol_api('2.21')
+       ✅ API Version 2.21
 
 [ 3/5] Home all axes
        → protocol.home()

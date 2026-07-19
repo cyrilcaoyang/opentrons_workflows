@@ -1,8 +1,12 @@
-# Next Steps — `develop-http-drive`
+# Next Steps — OT-2 gateway work tracker
 
-Snapshot as of 2026-07-14. Tracks the remaining work on the opt-in HTTP
-run-engine transport and the standalone complexation bring-up. Companion to
-`HTTP_DRIVE_PLAN.md`, `HTTP_DRIVE_VALIDATION.md`, and `COMPLEXATION_BRINGUP.md`.
+Snapshot as of 2026-07-19 (originally the `develop-http-drive` tracker; that
+branch merged to `main`, and the 2026-07-18/19 items land on
+`feature-http-ssh-parity`). Tracks the remaining work on the HTTP run-engine
+transport and the complexation bring-up. Companion to `HTTP_TRANSPORT.md`
+and `DECK_STATE.md` (the feature docs that absorbed the retired
+`HTTP_DRIVE_PLAN.md` / `DECK_STATE_PLAN.md`), `HTTP_SSH_PARITY.md`,
+`HTTP_DRIVE_VALIDATION.md`, and `DEVICE_BRINGUP.md`.
 
 ## Done (on this branch)
 
@@ -14,7 +18,7 @@ run-engine transport and the standalone complexation bring-up. Companion to
 - HTTP deck-snapshot parity via `_last_run_labware` → `normalize_run_slots`.
 - Test-isolation fix for the repo-root-anchored state stores.
 - Complexation kit: `demo/complexation_dispense_test.py`,
-  `deploy/ot2_complexation.env.example`, `docs/COMPLEXATION_BRINGUP.md`.
+  `deploy/ot2_complexation.env.example`, `docs/DEVICE_BRINGUP.md`.
 - Full offline suite green (`178 passed`); `--mode plan` validated offline.
 
 **HTTP transport VALIDATED on real hardware (2026-07-14, `ot2cytation`)** — full
@@ -46,9 +50,19 @@ See `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
   and dispense/blow-out unchanged.
 - ◐ **`drop_tip` → trash — mechanism done** (`e0566bf`): `/control/drop-tip` now
   honors an explicit `labware_nickname`+`position`, so HTTP drops into a named
-  loaded trash; no location → `dropTipInPlace` (SSH already auto-trashes). **Left:**
-  auto-load the OT-2 fixed trash + default the HTTP path to it (bench-unverified),
-  and update the complexation test to drop-to-trash.
+  loaded trash; no location → `dropTipInPlace` (SSH already auto-trashes).
+  **Update (2026-07-18, `feature-http-ssh-parity`):** `OT2HttpControl.load_trash_bin()`
+  now registers the OT-2 fixed trash (slot 12) and tokenless `drop_tip` defaults to
+  it when registered (still bench-unverified). **Left:** update the complexation
+  test to drop-to-trash and verify on the bench.
+- ✅ **Full SSH↔HTTP control parity** (2026-07-18, branch `feature-http-ssh-parity`):
+  `OT2HttpControl` now mirrors the entire `OT2Control` method surface — protocol
+  controls (comment/delay/lights), absolute-coordinate liquid handling
+  (`moveToCoordinates` + `*InPlace`), emulated `mix`/`air_gap`/`return_tip`,
+  module verbs (heater-shaker, tempmod, magmod, thermocycler) with live
+  `GET /modules` readbacks, definition-derived well geometry, and explicit
+  `NotImplementedError`s for REPL-only methods. Method-by-method table +
+  bench-verification status: [`HTTP_SSH_PARITY.md`](HTTP_SSH_PARITY.md).
 - ✅ **Multi-channel addressing** — no code change needed: the complexation test
   already uses row-A column addressing for the p20 multi; the `A1→B1` hazard was
   runbook-only and is fixed there. (New finding from the 2026-07-14 run.)
@@ -56,12 +70,15 @@ See `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
   but has no `/control/blow-out` route and no request field. If a complexation
   step needs it, add the route + a `flow_rate` field (mirroring
   aspirate/dispense) and a SkillDef.
-- **OT-2 protocol-action SkillDefs** (`ac-organic-lab` roadmap item): typed
-  labware args for `setup`/`home`/`aspirate`/`dispense`/`pick_up_tip`/
-  `drop_tip`/`move_labware` so `lab.skills()` covers the OT-2 surface.
-- **Modules-before-labware** ordering + `loadModule` adapter support — only if
-  the complexation protocol uses a temperature / heater-shaker module (flagged
-  in `http_control.py`; not handled today).
+- ✅ **OT-2 protocol-action SkillDefs** — shipped in `ac-organic-lab`
+  2026-07-12 (16 SkillDefs with typed args); `move_to` added 2026-07-18
+  alongside the gateway's `POST /control/move-to` (18 SkillDefs total).
+- ◐ **`loadModule` adapter support — done** (2026-07-18, parity work):
+  `OT2HttpControl.load_module` loads a configured adapter onto the module via
+  `loadLabware` and registers it as `<nickname>_adapter`. **Left:**
+  modules-before-labware ordering stays a caller responsibility (labware on a
+  module needs the module loaded first); bench-unverified like the rest of
+  the parity surface.
 - **Test-script enhancements** (`demo/complexation_dispense_test.py`):
   source-refill handling for the wet run (the p300 depletes column 12),
   CLI/JSON-driven volume maps instead of hard-coded `PIPETTES`, and an optional
@@ -71,8 +88,11 @@ See `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
 
 ## Housekeeping
 
-- Keep the branch rebased on `main` as other OT-2 work lands.
-- Once robot-validated (both items above signed off), open the
-  `develop-http-drive → main` PR; paste the validation observations into it.
+- ✅ `develop-http-drive` merged to `main` (PR #1). Current work rides
+  `feature-http-ssh-parity` (full SSH parity, `/control/move-to`,
+  transport-honest `/status`, docs consolidation).
+- Plan docs retired into feature docs once complete: `HTTP_DRIVE_PLAN.md` →
+  `HTTP_TRANSPORT.md` (2026-07-18), `DECK_STATE_PLAN.md` → `DECK_STATE.md`
+  (2026-07-19). Apply the same treatment to future plan docs.
 - The `lab-status-contract` shared-package extraction and MCP milestone (v0.4)
   are `ac-organic-lab` concerns, tracked in that repo's `ROADMAP.md` — not here.
