@@ -117,6 +117,48 @@ first `>>>` prompt it sees.
 Result: bumping the gateway's package version never requires touching the
 OT-2 itself.
 
+## Gateway UI (`/ui`)
+
+The gateway serves its own operator web UI at `http://<host>:<port>/ui` — the
+full OT-2 control page (deck view with declared-vs-observed state, mismatch
+flags, module telemetry, tip tracking, deck-declare picker, session controls,
+lights) with **no dashboard, no auth stack, and no node tooling required**:
+the prebuilt static bundle ships inside the package (`src/opentrons_server/ui_dist/`).
+
+- **Enable/disable:** served whenever the build output exists; set `OT2_UI=off`
+  to run headless (or `create_app(ui=False)`).
+- **Claims:** the UI is claim-native. "Take control" acquires a cooperative
+  claim (STATUS_SPEC v1.1) and heartbeats it in the background; every control
+  button attaches `X-Claim-Token` and unlocks only while the claim is held.
+  Releasing (or closing the tab) frees the device for workflows/the dashboard.
+- **Labware catalog:** the deck-declare picker merges the authored catalog with
+  `GET /labware`, a read-only summary of the official Opentrons definitions.
+  That endpoint is populated when the optional extra is installed:
+
+  ```bash
+  pip install -e ".[labware]"   # opentrons-shared-data
+  ```
+
+  Without it the endpoint returns an empty catalog and the picker still works
+  from its authored entries + free-text load names.
+
+### Developing the UI
+
+The source lives in `ui/` (Vite + React + TypeScript + Tailwind). The build
+output is committed so installs need no node:
+
+```bash
+# One-time
+cd ui && npm install
+
+# Dev loop against a local dry-run gateway (proxies /status, /control, /labware)
+OT2_DRY_RUN=true uv run uvicorn opentrons_server.gateway.api:app --port 8020
+cd ui && npm run dev
+
+# Rebuild the committed bundle after changes
+cd ui && npm run build   # writes src/opentrons_server/ui_dist/
+```
+
 ## Basic Python Control
 
 ```python

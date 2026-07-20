@@ -13,7 +13,7 @@ authors = [
 ]
 description = "A package to control Opentrons OT-2 robots via SSH, with Prefect integration."
 readme = "README.md"                      # Assumes you have a README.md file
-requires-python = ">=3.8.1"               # Minimum Python version compatibility (adjust if needed)
+requires-python = ">=3.10"                # opentrons-shared-data (labware extra) needs >=3.10; deployed venvs run 3.13
 license = { text = "MIT" }                # Specify your license (e.g., MIT, Apache-2.0). Add a LICENSE file.
 classifiers = [                           # Standard classifiers for PyPI
     "Programming Language :: Python :: 3",
@@ -37,6 +37,12 @@ dependencies = [                          # List runtime dependencies
 workflows = [
     "prefect>=2.14.0",
 ]
+labware = [
+    # Official Opentrons labware definitions for the gateway UI's GET /labware
+    # catalog. Optional: without it the endpoint serves an empty catalog and
+    # the UI's deck-declare picker falls back to its authored entries.
+    "opentrons-shared-data>=8.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
@@ -56,6 +62,11 @@ dev = [
 # --- Configuration for setuptools ---
 [tool.setuptools.packages.find]
 where = ["src"]  # Look for packages in the 'src' directory
+
+# Ship the prebuilt gateway UI (ui/ -> npm run build -> ui_dist/) inside the
+# wheel so `pip install` delivers the /ui page without any node tooling.
+[tool.setuptools.package-data]
+"opentrons_server" = ["ui_dist/*", "ui_dist/assets/*"]
 
 # If you want to include non-code files (e.g., data files) within your package:
 # [tool.setuptools.package-data]

@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import os
 import threading
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 
 from .claims import ClaimConflict, UnknownClaim
 from .deck import DeckDeclarationStore
+from .labware import standard_summaries
 from .models import (
     ClaimRejection,
     ClaimRequest,
@@ -42,6 +46,22 @@ from .service import OT2Service, UnknownOutcomeError
 from .tip_state import TipStateStore, TipUnavailable
 
 
+UI_DIST_DIR = Path(__file__).resolve().parent.parent / "ui_dist"
+
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles that serves index.html for unknown non-file paths, so the
+    single-page UI survives a hard refresh on any sub-path."""
+
+    async def get_response(self, path: str, scope: Any) -> Any:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
+
 class ClaimHTTPError(Exception):
     def __init__(self, status_code: int, payload: dict[str, Any], headers: Optional[dict[str, str]] = None) -> None:
         super().__init__(payload.get("detail", "claim error"))
@@ -55,11 +75,14 @@ def create_app(
     dry_run: Optional[bool] = None,
     enforce_claims: bool = True,
     auto_reconnect: Optional[bool] = None,
+    ui: Optional[bool] = None,
 ) -> FastAPI:
     if dry_run is None:
         dry_run = os.environ.get("OT2_DRY_RUN", "false").lower() in {"1", "true", "yes"}
     if auto_reconnect is None:
         auto_reconnect = os.environ.get("OT2_AUTO_RECONNECT", "true").lower() in {"1", "true", "yes"}
+    if ui is None:
+        ui = os.environ.get("OT2_UI", "true").lower() not in {"0", "false", "no", "off"}
 
     service = OT2Service(
         equipment_id=os.environ.get("OT2_EQUIPMENT_ID", "ot2"),
@@ -129,6 +152,13 @@ def create_app(
     @app.get("/status", response_model=EquipmentStatus, tags=["spec"])
     def status() -> EquipmentStatus:
         return service.get_status()
+
+    @app.get("/labware", tags=["ui"])
+    def labware() -> dict[str, Any]:
+        """Read-only catalog of official Opentrons labware definitions
+        (grid summaries), for the UI's deck-declare picker. Empty when
+        ``opentrons-shared-data`` is not installed."""
+        return {"definitions": list(standard_summaries())}
 
     @app.post(
         "/control/claim",
@@ -342,6 +372,12 @@ def create_app(
             raise HTTPException(status_code=409, detail=f"unknown outcome: {exc}")
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+
+    # Optional gateway-served operator UI (prebuilt SPA under ui_dist/,
+    # committed by `npm run build` in ui/). Off when OT2_UI is falsy or the
+    # assets were never built — the gateway is then byte-for-byte headless.
+    if ui and (UI_DIST_DIR / "index.html").is_file():
+        app.mount("/ui", SPAStaticFiles(directory=UI_DIST_DIR, html=True), name="ui")
 
     app.state.service = service
 

@@ -175,3 +175,5 @@ ot2_deck_state.json
 ot2_deck_state.json.tmp
 ot2_tip_state.json
 ot2_tip_state.json.tmp
+# Gateway UI (ui/ is the Vite source; ui_dist is committed build output)
+ui/node_modules/
