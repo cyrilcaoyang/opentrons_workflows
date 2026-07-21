@@ -61,6 +61,82 @@ def test_labware_endpoint_always_answers():
         assert summary["source"] == "standard"
 
 
+def test_edge_mode_requires_secret():
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        create_app(dry_run=True, ui_mode="edge")
+
+
+def test_edge_mode_gates_ui_and_labware():
+    client = _client(ui_mode="edge", edge_secret="s3cret")
+    # Direct hits: the UI surface does not exist.
+    assert client.get("/ui/").status_code == 404
+    assert client.get("/labware").status_code == 404
+    assert client.get("/ui/", headers={"X-Edge-Key": "wrong"}).status_code == 404
+    # Through the edge: served normally.
+    assert client.get("/labware", headers={"X-Edge-Key": "s3cret"}).status_code == 200
+    if UI_BUILT:
+        resp = client.get("/ui/", headers={"X-Edge-Key": "s3cret"})
+        assert resp.status_code == 200
+        assert "<div id=\"root\">" in resp.text
+    # Spec surfaces stay open to the aggregator.
+    assert client.get("/").status_code == 200
+    assert client.get("/status").status_code == 200
+
+
+def test_edge_mode_stamps_claim_owner_from_auth_header(tmp_path, monkeypatch):
+    monkeypatch.setenv("OT2_PLATE_STATE_PATH", str(tmp_path / "plate.json"))
+    monkeypatch.setenv("OT2_DECK_STATE_PATH", str(tmp_path / "deck.json"))
+    monkeypatch.setenv("OT2_TIP_STATE_PATH", str(tmp_path / "tips.json"))
+    client = _client(ui_mode="edge", edge_secret="s3cret")
+
+    claim = client.post(
+        "/control/claim",
+        headers={"X-Edge-Key": "s3cret", "X-Auth-User": "cyril@lab"},
+        json={"owner": "ot2-gateway-ui", "session_id": "edge-test", "ttl_s": 30},
+    )
+    assert claim.status_code == 200
+    token = claim.json()["claim_token"]
+    status = client.get("/status").json()
+    assert status["details"]["claimed_by"]["owner"] == "cyril@lab"
+    assert status["details"]["ui_mode"] == "edge"
+    assert client.post("/control/release", headers={"X-Claim-Token": token}).status_code == 204
+
+
+def test_identity_header_ignored_without_edge_key(tmp_path, monkeypatch):
+    """X-Auth-User must never be trusted on a request that did not prove it
+    came through the edge — otherwise direct curl could forge attribution."""
+    monkeypatch.setenv("OT2_PLATE_STATE_PATH", str(tmp_path / "plate.json"))
+    monkeypatch.setenv("OT2_DECK_STATE_PATH", str(tmp_path / "deck.json"))
+    monkeypatch.setenv("OT2_TIP_STATE_PATH", str(tmp_path / "tips.json"))
+    client = _client(ui_mode="edge", edge_secret="s3cret")
+
+    claim = client.post(
+        "/control/claim",
+        headers={"X-Auth-User": "mallory@lab"},  # no X-Edge-Key
+        json={"owner": "honest-owner", "session_id": "spoof-test", "ttl_s": 30},
+    )
+    assert claim.status_code == 200
+    token = claim.json()["claim_token"]
+    status = client.get("/status").json()
+    assert status["details"]["claimed_by"]["owner"] == "honest-owner"
+    assert client.post("/control/release", headers={"X-Claim-Token": token}).status_code == 204
+
+
+def test_open_mode_reports_itself_on_status():
+    client = _client(ui_mode="open")
+    assert client.get("/status").json()["details"]["ui_mode"] == "open"
+
+
+def test_ui_mode_env_is_read(monkeypatch):
+    monkeypatch.setenv("OT2_UI_MODE", "edge")
+    monkeypatch.setenv("OT2_EDGE_SECRET", "s3cret")
+    client = TestClient(create_app(dry_run=True))
+    assert client.get("/labware").status_code == 404
+    assert client.get("/labware", headers={"X-Edge-Key": "s3cret"}).status_code == 200
+
+
 def test_ui_claim_sequence_matches_use_claim_hook(tmp_path, monkeypatch):
     """The exact call sequence the UI's useClaim + control client makes:
     tokenless control refused, claim, heartbeat, control with token, release."""

@@ -125,8 +125,22 @@ flags, module telemetry, tip tracking, deck-declare picker, session controls,
 lights) with **no dashboard, no auth stack, and no node tooling required**:
 the prebuilt static bundle ships inside the package (`src/opentrons_server/ui_dist/`).
 
-- **Enable/disable:** served whenever the build output exists; set `OT2_UI=off`
-  to run headless (or `create_app(ui=False)`).
+- **Exposure mode (`OT2_UI_MODE`):** `edge` | `open` | `off`.
+  - `edge` (production): `/ui` and `/labware` answer **only** requests
+    forwarded by the lab's auth edge — the edge injects `X-Edge-Key`
+    (must match `OT2_EDGE_SECRET`, required in this mode) and
+    `X-Auth-User` (the logged-in identity, stamped into the claim's
+    `owner` so `details.claimed_by` names a person). Direct hits get 404.
+    Identity headers without a valid `X-Edge-Key` are ignored, so
+    attribution can't be forged by direct `curl`.
+  - `open` (dev bypass): UI served to anyone who can reach the port, no
+    identity trusted. Startup logs a warning. This is the default for a
+    plain checkout; **do not run production this way**.
+  - `off`: UI not mounted; the gateway is headless.
+  The active mode is visible at `/status` → `details.ui_mode`. Legacy
+  `OT2_UI=off` / `create_app(ui=False)` still map to `off`. Spec surfaces
+  (`/`, `/health`, `/status`, `/control/*`) are never gated — the
+  aggregator and SDK reach them directly as before.
 - **Claims:** the UI is claim-native. "Take control" acquires a cooperative
   claim (STATUS_SPEC v1.1) and heartbeats it in the background; every control
   button attaches `X-Claim-Token` and unlocks only while the claim is held.

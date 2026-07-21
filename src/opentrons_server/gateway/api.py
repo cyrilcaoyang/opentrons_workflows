@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hmac
+import logging
 import os
 import threading
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -48,6 +50,8 @@ from .tip_state import TipStateStore, TipUnavailable
 
 UI_DIST_DIR = Path(__file__).resolve().parent.parent / "ui_dist"
 
+logger = logging.getLogger("opentrons_server.gateway")
+
 
 class SPAStaticFiles(StaticFiles):
     """StaticFiles that serves index.html for unknown non-file paths, so the
@@ -76,13 +80,44 @@ def create_app(
     enforce_claims: bool = True,
     auto_reconnect: Optional[bool] = None,
     ui: Optional[bool] = None,
+    ui_mode: Optional[str] = None,
+    edge_secret: Optional[str] = None,
 ) -> FastAPI:
     if dry_run is None:
         dry_run = os.environ.get("OT2_DRY_RUN", "false").lower() in {"1", "true", "yes"}
     if auto_reconnect is None:
         auto_reconnect = os.environ.get("OT2_AUTO_RECONNECT", "true").lower() in {"1", "true", "yes"}
-    if ui is None:
-        ui = os.environ.get("OT2_UI", "true").lower() not in {"0", "false", "no", "off"}
+
+    # Operator-UI exposure mode (an §6.5-style override knob):
+    #   edge — /ui and /labware answer only requests forwarded by the auth
+    #          edge (X-Edge-Key must match OT2_EDGE_SECRET); the edge-asserted
+    #          X-Auth-User is stamped into claim owners. Direct hits get 404.
+    #   open — dev bypass ("blind trust"): UI served to anyone who can reach
+    #          the port; identity headers are never trusted.
+    #   off  — UI not mounted; the gateway is headless.
+    # Resolution order: ui_mode kwarg > OT2_UI_MODE env > legacy ui kwarg >
+    # legacy OT2_UI env (on/off -> open/off).
+    if ui_mode is None:
+        env_mode = os.environ.get("OT2_UI_MODE")
+        if env_mode is not None:
+            ui_mode = env_mode
+        elif ui is not None:
+            ui_mode = "open" if ui else "off"
+        else:
+            legacy_off = os.environ.get("OT2_UI", "true").lower() in {"0", "false", "no", "off"}
+            ui_mode = "off" if legacy_off else "open"
+    ui_mode = ui_mode.lower()
+    if ui_mode not in {"edge", "open", "off"}:
+        raise ValueError(f"OT2_UI_MODE must be edge|open|off, got {ui_mode!r}")
+    if edge_secret is None:
+        edge_secret = os.environ.get("OT2_EDGE_SECRET") or None
+    if ui_mode == "edge" and not edge_secret:
+        raise RuntimeError("OT2_UI_MODE=edge requires OT2_EDGE_SECRET to be set")
+    if ui_mode == "open":
+        logger.warning(
+            "OT2_UI_MODE=open: operator UI is served without the auth edge "
+            "(dev bypass — use OT2_UI_MODE=edge in production)"
+        )
 
     service = OT2Service(
         equipment_id=os.environ.get("OT2_EQUIPMENT_ID", "ot2"),
@@ -113,6 +148,28 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    def _from_edge(request: Request) -> bool:
+        """True iff the request provably came through the auth edge: it
+        carries X-Edge-Key matching the configured shared secret. Never true
+        when no secret is configured, so identity headers on direct requests
+        are always ignored."""
+        if not edge_secret:
+            return False
+        supplied = request.headers.get("X-Edge-Key")
+        return supplied is not None and hmac.compare_digest(supplied, edge_secret)
+
+    if ui_mode == "edge":
+
+        @app.middleware("http")
+        async def _edge_gate(request: Request, call_next: Any) -> Any:
+            path = request.url.path
+            gated = path == "/ui" or path.startswith("/ui/") or path == "/labware"
+            if gated and not _from_edge(request):
+                # 404 (not 401/403): the UI surface simply does not exist for
+                # anyone who is not the edge.
+                return JSONResponse(status_code=404, content={"detail": "Not Found"})
+            return await call_next(request)
 
     @app.exception_handler(ClaimHTTPError)
     async def claim_error_handler(request: Any, exc: ClaimHTTPError) -> JSONResponse:  # noqa: ARG001
@@ -151,7 +208,9 @@ def create_app(
 
     @app.get("/status", response_model=EquipmentStatus, tags=["spec"])
     def status() -> EquipmentStatus:
-        return service.get_status()
+        snapshot = service.get_status()
+        snapshot.details["ui_mode"] = ui_mode
+        return snapshot
 
     @app.get("/labware", tags=["ui"])
     def labware() -> dict[str, Any]:
@@ -166,7 +225,14 @@ def create_app(
         responses={409: {"model": ClaimRejection}},
         tags=["claim"],
     )
-    def claim(request: ClaimRequest) -> ClaimResponse:
+    def claim(request: ClaimRequest, http_request: Request) -> ClaimResponse:
+        # Edge-asserted identity: when the request provably came through the
+        # auth edge, the logged-in user overrides the body's owner so
+        # details.claimed_by names a person, not a UI constant.
+        if _from_edge(http_request):
+            edge_user = http_request.headers.get("X-Auth-User")
+            if edge_user:
+                request = request.model_copy(update={"owner": edge_user})
         try:
             return service.claims.acquire(request)
         except ClaimConflict as exc:
@@ -374,9 +440,11 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc))
 
     # Optional gateway-served operator UI (prebuilt SPA under ui_dist/,
-    # committed by `npm run build` in ui/). Off when OT2_UI is falsy or the
+    # committed by `npm run build` in ui/). Off when ui_mode is "off" or the
     # assets were never built — the gateway is then byte-for-byte headless.
-    if ui and (UI_DIST_DIR / "index.html").is_file():
+    # In "edge" mode the mount exists but the middleware above 404s any
+    # request that did not come through the auth edge.
+    if ui_mode != "off" and (UI_DIST_DIR / "index.html").is_file():
         app.mount("/ui", SPAStaticFiles(directory=UI_DIST_DIR, html=True), name="ui")
 
     app.state.service = service
