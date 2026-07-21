@@ -80,44 +80,44 @@ def create_app(
     enforce_claims: bool = True,
     auto_reconnect: Optional[bool] = None,
     ui: Optional[bool] = None,
-    ui_mode: Optional[str] = None,
+    trust_local_ui: Optional[bool] = None,
     edge_secret: Optional[str] = None,
 ) -> FastAPI:
     if dry_run is None:
         dry_run = os.environ.get("OT2_DRY_RUN", "false").lower() in {"1", "true", "yes"}
     if auto_reconnect is None:
         auto_reconnect = os.environ.get("OT2_AUTO_RECONNECT", "true").lower() in {"1", "true", "yes"}
+    if ui is None:
+        ui = os.environ.get("OT2_UI", "true").lower() not in {"0", "false", "no", "off"}
 
-    # Operator-UI exposure mode (an §6.5-style override knob):
-    #   edge — /ui and /labware answer only requests forwarded by the auth
-    #          edge (X-Edge-Key must match OT2_EDGE_SECRET); the edge-asserted
-    #          X-Auth-User is stamped into claim owners. Direct hits get 404.
-    #   open — dev bypass ("blind trust"): UI served to anyone who can reach
-    #          the port; identity headers are never trusted.
-    #   off  — UI not mounted; the gateway is headless.
-    # Resolution order: ui_mode kwarg > OT2_UI_MODE env > legacy ui kwarg >
-    # legacy OT2_UI env (on/off -> open/off).
-    if ui_mode is None:
-        env_mode = os.environ.get("OT2_UI_MODE")
-        if env_mode is not None:
-            ui_mode = env_mode
-        elif ui is not None:
-            ui_mode = "open" if ui else "off"
-        else:
-            legacy_off = os.environ.get("OT2_UI", "true").lower() in {"0", "false", "no", "off"}
-            ui_mode = "off" if legacy_off else "open"
-    ui_mode = ui_mode.lower()
-    if ui_mode not in {"edge", "open", "off"}:
-        raise ValueError(f"OT2_UI_MODE must be edge|open|off, got {ui_mode!r}")
+    # Open/close switch for the operator UI's auth bypass (an §6.5-style
+    # override flag — exists for dev, never for production):
+    #   OT2_TRUST_LOCAL_UI=true  — "blind trust": /ui and /labware are served
+    #       to anyone who can reach the port; no identity is trusted. Default
+    #       for a bare checkout so dev just works; logs loudly at startup.
+    #   OT2_TRUST_LOCAL_UI=false — edge-only: /ui and /labware answer only
+    #       requests forwarded by the auth edge (X-Edge-Key must match
+    #       OT2_EDGE_SECRET, which becomes required); the edge-asserted
+    #       X-Auth-User is stamped into claim owners. Direct hits get 404.
+    # OT2_UI=off unmounts the UI entirely (headless gateway).
+    if trust_local_ui is None:
+        trust_local_ui = os.environ.get("OT2_TRUST_LOCAL_UI", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
     if edge_secret is None:
         edge_secret = os.environ.get("OT2_EDGE_SECRET") or None
-    if ui_mode == "edge" and not edge_secret:
-        raise RuntimeError("OT2_UI_MODE=edge requires OT2_EDGE_SECRET to be set")
-    if ui_mode == "open":
+    if ui and not trust_local_ui and not edge_secret:
+        raise RuntimeError("OT2_TRUST_LOCAL_UI=false requires OT2_EDGE_SECRET to be set")
+    if ui and trust_local_ui:
         logger.warning(
-            "OT2_UI_MODE=open: operator UI is served without the auth edge "
-            "(dev bypass — use OT2_UI_MODE=edge in production)"
+            "OT2_TRUST_LOCAL_UI=true: operator UI is served without the auth "
+            "edge (dev bypass — set OT2_TRUST_LOCAL_UI=false in production)"
         )
+    # Compact summary surfaced at /status details.ui_mode.
+    ui_mode = "off" if not ui else ("open" if trust_local_ui else "edge")
 
     service = OT2Service(
         equipment_id=os.environ.get("OT2_EQUIPMENT_ID", "ot2"),
@@ -159,7 +159,7 @@ def create_app(
         supplied = request.headers.get("X-Edge-Key")
         return supplied is not None and hmac.compare_digest(supplied, edge_secret)
 
-    if ui_mode == "edge":
+    if ui and not trust_local_ui:
 
         @app.middleware("http")
         async def _edge_gate(request: Request, call_next: Any) -> Any:
@@ -440,11 +440,11 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc))
 
     # Optional gateway-served operator UI (prebuilt SPA under ui_dist/,
-    # committed by `npm run build` in ui/). Off when ui_mode is "off" or the
+    # committed by `npm run build` in ui/). Off when OT2_UI is falsy or the
     # assets were never built — the gateway is then byte-for-byte headless.
-    # In "edge" mode the mount exists but the middleware above 404s any
-    # request that did not come through the auth edge.
-    if ui_mode != "off" and (UI_DIST_DIR / "index.html").is_file():
+    # With OT2_TRUST_LOCAL_UI=false the mount exists but the middleware above
+    # 404s any request that did not come through the auth edge.
+    if ui and (UI_DIST_DIR / "index.html").is_file():
         app.mount("/ui", SPAStaticFiles(directory=UI_DIST_DIR, html=True), name="ui")
 
     app.state.service = service

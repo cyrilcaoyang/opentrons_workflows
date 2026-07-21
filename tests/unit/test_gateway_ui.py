@@ -65,11 +65,11 @@ def test_edge_mode_requires_secret():
     import pytest
 
     with pytest.raises(RuntimeError):
-        create_app(dry_run=True, ui_mode="edge")
+        create_app(dry_run=True, ui=True, trust_local_ui=False)
 
 
 def test_edge_mode_gates_ui_and_labware():
-    client = _client(ui_mode="edge", edge_secret="s3cret")
+    client = _client(ui=True, trust_local_ui=False, edge_secret="s3cret")
     # Direct hits: the UI surface does not exist.
     assert client.get("/ui/").status_code == 404
     assert client.get("/labware").status_code == 404
@@ -89,7 +89,7 @@ def test_edge_mode_stamps_claim_owner_from_auth_header(tmp_path, monkeypatch):
     monkeypatch.setenv("OT2_PLATE_STATE_PATH", str(tmp_path / "plate.json"))
     monkeypatch.setenv("OT2_DECK_STATE_PATH", str(tmp_path / "deck.json"))
     monkeypatch.setenv("OT2_TIP_STATE_PATH", str(tmp_path / "tips.json"))
-    client = _client(ui_mode="edge", edge_secret="s3cret")
+    client = _client(ui=True, trust_local_ui=False, edge_secret="s3cret")
 
     claim = client.post(
         "/control/claim",
@@ -110,7 +110,7 @@ def test_identity_header_ignored_without_edge_key(tmp_path, monkeypatch):
     monkeypatch.setenv("OT2_PLATE_STATE_PATH", str(tmp_path / "plate.json"))
     monkeypatch.setenv("OT2_DECK_STATE_PATH", str(tmp_path / "deck.json"))
     monkeypatch.setenv("OT2_TIP_STATE_PATH", str(tmp_path / "tips.json"))
-    client = _client(ui_mode="edge", edge_secret="s3cret")
+    client = _client(ui=True, trust_local_ui=False, edge_secret="s3cret")
 
     claim = client.post(
         "/control/claim",
@@ -125,12 +125,12 @@ def test_identity_header_ignored_without_edge_key(tmp_path, monkeypatch):
 
 
 def test_open_mode_reports_itself_on_status():
-    client = _client(ui_mode="open")
+    client = _client(ui=True, trust_local_ui=True)
     assert client.get("/status").json()["details"]["ui_mode"] == "open"
 
 
-def test_ui_mode_env_is_read(monkeypatch):
-    monkeypatch.setenv("OT2_UI_MODE", "edge")
+def test_trust_switch_env_is_read(monkeypatch):
+    monkeypatch.setenv("OT2_TRUST_LOCAL_UI", "false")
     monkeypatch.setenv("OT2_EDGE_SECRET", "s3cret")
     client = TestClient(create_app(dry_run=True))
     assert client.get("/labware").status_code == 404

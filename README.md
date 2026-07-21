@@ -125,20 +125,22 @@ flags, module telemetry, tip tracking, deck-declare picker, session controls,
 lights) with **no dashboard, no auth stack, and no node tooling required**:
 the prebuilt static bundle ships inside the package (`src/opentrons_server/ui_dist/`).
 
-- **Exposure mode (`OT2_UI_MODE`):** `edge` | `open` | `off`.
-  - `edge` (production): `/ui` and `/labware` answer **only** requests
+- **Enable/disable (`OT2_UI`):** served whenever the build output exists;
+  set `OT2_UI=off` (or `create_app(ui=False)`) to run headless.
+- **The trust switch (`OT2_TRUST_LOCAL_UI`):** who may reach the UI.
+  - `false` (**production**): `/ui` and `/labware` answer **only** requests
     forwarded by the lab's auth edge — the edge injects `X-Edge-Key`
     (must match `OT2_EDGE_SECRET`, required in this mode) and
     `X-Auth-User` (the logged-in identity, stamped into the claim's
-    `owner` so `details.claimed_by` names a person). Direct hits get 404.
-    Identity headers without a valid `X-Edge-Key` are ignored, so
-    attribution can't be forged by direct `curl`.
-  - `open` (dev bypass): UI served to anyone who can reach the port, no
-    identity trusted. Startup logs a warning. This is the default for a
-    plain checkout; **do not run production this way**.
-  - `off`: UI not mounted; the gateway is headless.
-  The active mode is visible at `/status` → `details.ui_mode`. Legacy
-  `OT2_UI=off` / `create_app(ui=False)` still map to `off`. Spec surfaces
+    `owner` so `details.claimed_by` names a person). Direct hits — from
+    localhost, the tailnet, anywhere — get 404. Identity headers without
+    a valid `X-Edge-Key` are ignored, so attribution can't be forged by
+    direct `curl`.
+  - `true` (**dev bypass, the default for a bare checkout**): UI served to
+    anyone who can reach the port; no identity trusted. Startup logs a
+    warning. Flip to `false` before any deployment that faces the lab.
+  The effective state is visible at `/status` → `details.ui_mode`
+  (`edge` = gated, `open` = trusted/dev, `off` = headless). Spec surfaces
   (`/`, `/health`, `/status`, `/control/*`) are never gated — the
   aggregator and SDK reach them directly as before.
 - **Claims:** the UI is claim-native. "Take control" acquires a cooperative
