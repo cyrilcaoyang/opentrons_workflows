@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OT-2 Gateway</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <!-- Shared signed-in-user banner, served by the authenticated Caddy edge.
+         Absolute path on purpose: it resolves at the edge origin, not from
+         this bundle — 404s harmlessly in dev / open mode. -->
+    <script defer src="/auth/banner.js"></script>
+  </body>
+</html>

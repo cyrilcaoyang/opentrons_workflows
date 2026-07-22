@@ -3,7 +3,7 @@
 This is the HTTP replacement for the SSH REPL transport (``OT2Control`` /
 ``SSHClient``). It speaks the Opentrons robot-server run engine on ``:31950``:
 create a run, post commands one at a time, register custom labware, read run
-state. See ``docs/HTTP_DRIVE_PLAN.md`` for the full migration design.
+state. See ``docs/HTTP_TRANSPORT.md`` for the full migration design.
 
 Driving model (confirmed against Opentrons v8.7.0 source):
 
@@ -351,6 +351,230 @@ class RunEngineCommands:
             params["axes"] = axes
         return "home", params
 
+    # -- protocol-level ------------------------------------------------------
+
+    @staticmethod
+    def comment(message: str) -> Command:
+        return "comment", {"message": str(message)}
+
+    @staticmethod
+    def wait_for_duration(seconds: float) -> Command:
+        return "waitForDuration", {"seconds": float(seconds)}
+
+    @staticmethod
+    def prepare_to_aspirate(pipette_id: str) -> Command:
+        return "prepareToAspirate", {"pipetteId": pipette_id}
+
+    # -- motion --------------------------------------------------------------
+
+    @staticmethod
+    def move_to_well(
+        pipette_id: str,
+        labware_id: str,
+        well_name: str,
+        *,
+        origin: Optional[str] = None,
+        offset: Optional[Dict[str, float]] = None,
+        speed: Optional[float] = None,
+        force_direct: Optional[bool] = None,
+        minimum_z_height: Optional[float] = None,
+    ) -> Command:
+        params: Dict[str, Any] = {
+            "pipetteId": pipette_id,
+            "labwareId": labware_id,
+            "wellName": well_name,
+        }
+        well = _well_location(origin, offset)
+        if well is not None:
+            params["wellLocation"] = well
+        if speed is not None:
+            params["speed"] = float(speed)
+        if force_direct is not None:
+            params["forceDirect"] = bool(force_direct)
+        if minimum_z_height is not None:
+            params["minimumZHeight"] = float(minimum_z_height)
+        return "moveToWell", params
+
+    @staticmethod
+    def move_to_coordinates(
+        pipette_id: str,
+        coordinates: Dict[str, float],
+        *,
+        speed: Optional[float] = None,
+        force_direct: Optional[bool] = None,
+        minimum_z_height: Optional[float] = None,
+    ) -> Command:
+        params: Dict[str, Any] = {
+            "pipetteId": pipette_id,
+            "coordinates": {k: float(coordinates[k]) for k in ("x", "y", "z")},
+        }
+        if speed is not None:
+            params["speed"] = float(speed)
+        if force_direct is not None:
+            params["forceDirect"] = bool(force_direct)
+        if minimum_z_height is not None:
+            params["minimumZHeight"] = float(minimum_z_height)
+        return "moveToCoordinates", params
+
+    # -- in-place liquid handling (after an explicit move) --------------------
+
+    @staticmethod
+    def aspirate_in_place(pipette_id: str, volume: float, flow_rate: float) -> Command:
+        return "aspirateInPlace", {
+            "pipetteId": pipette_id,
+            "volume": float(volume),
+            "flowRate": float(flow_rate),
+        }
+
+    @staticmethod
+    def dispense_in_place(
+        pipette_id: str,
+        volume: float,
+        flow_rate: float,
+        *,
+        push_out: Optional[float] = None,
+    ) -> Command:
+        params: Dict[str, Any] = {
+            "pipetteId": pipette_id,
+            "volume": float(volume),
+            "flowRate": float(flow_rate),
+        }
+        if push_out is not None:
+            params["pushOut"] = float(push_out)
+        return "dispenseInPlace", params
+
+    @staticmethod
+    def blow_out_in_place(pipette_id: str, flow_rate: float) -> Command:
+        return "blowOutInPlace", {"pipetteId": pipette_id, "flowRate": float(flow_rate)}
+
+    @staticmethod
+    def touch_tip(
+        pipette_id: str,
+        labware_id: str,
+        well_name: str,
+        *,
+        radius: Optional[float] = None,
+        v_offset: Optional[float] = None,
+        speed: Optional[float] = None,
+    ) -> Command:
+        """``touchTip``. ``v_offset`` is mm relative to the well top (negative =
+        below the rim), matching the protocol API's ``touch_tip(v_offset=...)``."""
+        params: Dict[str, Any] = {
+            "pipetteId": pipette_id,
+            "labwareId": labware_id,
+            "wellName": well_name,
+        }
+        if radius is not None:
+            params["radius"] = float(radius)
+        if speed is not None:
+            params["speed"] = float(speed)
+        if v_offset is not None:
+            params["wellLocation"] = {
+                "origin": "top",
+                "offset": {"x": 0, "y": 0, "z": float(v_offset)},
+            }
+        return "touchTip", params
+
+    # -- heater-shaker module --------------------------------------------------
+
+    @staticmethod
+    def hs_open_labware_latch(module_id: str) -> Command:
+        return "heaterShaker/openLabwareLatch", {"moduleId": module_id}
+
+    @staticmethod
+    def hs_close_labware_latch(module_id: str) -> Command:
+        return "heaterShaker/closeLabwareLatch", {"moduleId": module_id}
+
+    @staticmethod
+    def hs_set_and_wait_shake_speed(module_id: str, rpm: float) -> Command:
+        return "heaterShaker/setAndWaitForShakeSpeed", {"moduleId": module_id, "rpm": float(rpm)}
+
+    @staticmethod
+    def hs_deactivate_shaker(module_id: str) -> Command:
+        return "heaterShaker/deactivateShaker", {"moduleId": module_id}
+
+    @staticmethod
+    def hs_set_target_temperature(module_id: str, celsius: float) -> Command:
+        return "heaterShaker/setTargetTemperature", {"moduleId": module_id, "celsius": float(celsius)}
+
+    @staticmethod
+    def hs_wait_for_temperature(module_id: str) -> Command:
+        return "heaterShaker/waitForTemperature", {"moduleId": module_id}
+
+    @staticmethod
+    def hs_deactivate_heater(module_id: str) -> Command:
+        return "heaterShaker/deactivateHeater", {"moduleId": module_id}
+
+    # -- temperature module -----------------------------------------------------
+
+    @staticmethod
+    def temp_set_target(module_id: str, celsius: float) -> Command:
+        return "temperatureModule/setTargetTemperature", {"moduleId": module_id, "celsius": float(celsius)}
+
+    @staticmethod
+    def temp_wait(module_id: str) -> Command:
+        return "temperatureModule/waitForTemperature", {"moduleId": module_id}
+
+    @staticmethod
+    def temp_deactivate(module_id: str) -> Command:
+        return "temperatureModule/deactivate", {"moduleId": module_id}
+
+    # -- magnetic module ----------------------------------------------------------
+
+    @staticmethod
+    def mag_engage(module_id: str, height: float) -> Command:
+        """``height`` is mm above the labware base (the run engine's only form)."""
+        return "magneticModule/engage", {"moduleId": module_id, "height": float(height)}
+
+    @staticmethod
+    def mag_disengage(module_id: str) -> Command:
+        return "magneticModule/disengage", {"moduleId": module_id}
+
+    # -- thermocycler module ---------------------------------------------------------
+
+    @staticmethod
+    def tc_open_lid(module_id: str) -> Command:
+        return "thermocycler/openLid", {"moduleId": module_id}
+
+    @staticmethod
+    def tc_close_lid(module_id: str) -> Command:
+        return "thermocycler/closeLid", {"moduleId": module_id}
+
+    @staticmethod
+    def tc_set_target_block_temperature(
+        module_id: str,
+        celsius: float,
+        *,
+        hold_time_seconds: Optional[float] = None,
+        block_max_volume_ul: Optional[float] = None,
+    ) -> Command:
+        params: Dict[str, Any] = {"moduleId": module_id, "celsius": float(celsius)}
+        if hold_time_seconds is not None:
+            params["holdTimeSeconds"] = float(hold_time_seconds)
+        if block_max_volume_ul is not None:
+            params["blockMaxVolumeUl"] = float(block_max_volume_ul)
+        return "thermocycler/setTargetBlockTemperature", params
+
+    @staticmethod
+    def tc_wait_for_block_temperature(module_id: str) -> Command:
+        return "thermocycler/waitForBlockTemperature", {"moduleId": module_id}
+
+    @staticmethod
+    def tc_set_target_lid_temperature(module_id: str, celsius: float) -> Command:
+        return "thermocycler/setTargetLidTemperature", {"moduleId": module_id, "celsius": float(celsius)}
+
+    @staticmethod
+    def tc_wait_for_lid_temperature(module_id: str) -> Command:
+        return "thermocycler/waitForLidTemperature", {"moduleId": module_id}
+
+    @staticmethod
+    def tc_deactivate_block(module_id: str) -> Command:
+        return "thermocycler/deactivateBlock", {"moduleId": module_id}
+
+    @staticmethod
+    def tc_deactivate_lid(module_id: str) -> Command:
+        return "thermocycler/deactivateLid", {"moduleId": module_id}
+
 
 # ---------------------------------------------------------------------------
 # Transport client
@@ -478,6 +702,43 @@ class RunEngineClient:
             raise RunEngineError("no active run")
         return self._request("GET", f"/runs/{self.run_id}", timeout=self.request_timeout_s)
 
+    def get_loaded_labware_definitions(self) -> List[Dict[str, Any]]:
+        """Full schema-2 definitions of every labware loaded in the run.
+
+        Backs the client-side geometry readbacks (well diameter/depth, tip
+        length) that the SSH transport reads live from the protocol object.
+        """
+        if self.run_id is None:
+            raise RunEngineError("no active run")
+        data = self._request(
+            "GET",
+            f"/runs/{self.run_id}/loaded_labware_definitions",
+            timeout=self.request_timeout_s,
+        )
+        return data if isinstance(data, list) else []
+
+    def get_modules(self) -> List[Dict[str, Any]]:
+        """Live attached-module telemetry (``GET /modules``): serial, model, and
+        a ``data`` blob with current/target speed and temperature."""
+        data = self._request("GET", "/modules", timeout=self.request_timeout_s)
+        return data if isinstance(data, list) else []
+
+    # -- robot-level (non-run) endpoints ------------------------------------
+
+    def get_lights(self) -> bool:
+        """Rail-light state via ``GET /robot/lights`` (no ``data`` envelope)."""
+        payload = self._request_raw("GET", "/robot/lights", timeout=self.request_timeout_s)
+        return bool(payload.get("on"))
+
+    def set_lights(self, on: bool) -> None:
+        """Set rail lights via ``POST /robot/lights`` (no ``data`` envelope)."""
+        self._request_raw(
+            "POST",
+            "/robot/lights",
+            json_body={"on": bool(on)},
+            timeout=self.request_timeout_s,
+        )
+
     def add_labware_definition(self, definition: Dict[str, Any]) -> str:
         """Register a custom labware definition on the run; return its uri.
 
@@ -507,11 +768,28 @@ class RunEngineClient:
         json_body: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
         timeout: float,
-    ) -> Dict[str, Any]:
-        """Issue one request, unwrap the ``{"data": ...}`` envelope.
+    ) -> Any:
+        """Issue one request and unwrap the ``{"data": ...}`` envelope."""
+        payload = self._request_raw(
+            method, path, json_body=json_body, params=params, timeout=timeout
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        return data if data is not None else {}
 
-        Maps transport failures to :class:`RunEngineUnreachable` and non-2xx to
-        :class:`RunEngineHTTPError`.
+    def _request_raw(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        timeout: float,
+    ) -> Any:
+        """Issue one request and return the parsed JSON body verbatim.
+
+        For robot-level endpoints (e.g. ``/robot/lights``) that do not use the
+        ``{"data": ...}`` envelope. Maps transport failures to
+        :class:`RunEngineUnreachable` and non-2xx to :class:`RunEngineHTTPError`.
         """
         url = self.base_url + path
         try:
@@ -532,12 +810,9 @@ class RunEngineClient:
             raise RunEngineHTTPError(response.status_code, _error_detail(response), path=path)
 
         try:
-            payload = response.json()
+            return response.json()
         except ValueError as exc:
             raise RunEngineError(f"{method} {path}: non-JSON response") from exc
-
-        data = payload.get("data") if isinstance(payload, dict) else None
-        return data if data is not None else {}
 
 
 def _error_detail(response: requests.Response) -> str:

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import hmac
+import logging
 import os
 import threading
+from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 
 from .claims import ClaimConflict, UnknownClaim
 from .deck import DeckDeclarationStore
+from .labware import standard_summaries
 from .models import (
     ClaimRejection,
     ClaimRequest,
@@ -25,6 +31,7 @@ from .models import (
     LiquidMoveRequest,
     LoadedPlate,
     MoveLabwareRequest,
+    MoveToRequest,
     PlateLoadRequest,
     ProbeResponse,
     PROTOCOL_VERSION,
@@ -41,6 +48,24 @@ from .service import OT2Service, UnknownOutcomeError
 from .tip_state import TipStateStore, TipUnavailable
 
 
+UI_DIST_DIR = Path(__file__).resolve().parent.parent / "ui_dist"
+
+logger = logging.getLogger("opentrons_server.gateway")
+
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles that serves index.html for unknown non-file paths, so the
+    single-page UI survives a hard refresh on any sub-path."""
+
+    async def get_response(self, path: str, scope: Any) -> Any:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
+
 class ClaimHTTPError(Exception):
     def __init__(self, status_code: int, payload: dict[str, Any], headers: Optional[dict[str, str]] = None) -> None:
         super().__init__(payload.get("detail", "claim error"))
@@ -54,11 +79,45 @@ def create_app(
     dry_run: Optional[bool] = None,
     enforce_claims: bool = True,
     auto_reconnect: Optional[bool] = None,
+    ui: Optional[bool] = None,
+    trust_local_ui: Optional[bool] = None,
+    edge_secret: Optional[str] = None,
 ) -> FastAPI:
     if dry_run is None:
         dry_run = os.environ.get("OT2_DRY_RUN", "false").lower() in {"1", "true", "yes"}
     if auto_reconnect is None:
         auto_reconnect = os.environ.get("OT2_AUTO_RECONNECT", "true").lower() in {"1", "true", "yes"}
+    if ui is None:
+        ui = os.environ.get("OT2_UI", "true").lower() not in {"0", "false", "no", "off"}
+
+    # Open/close switch for the operator UI's auth bypass (an §6.5-style
+    # override flag — exists for dev, never for production):
+    #   OT2_TRUST_LOCAL_UI=true  — "blind trust": /ui and /labware are served
+    #       to anyone who can reach the port; no identity is trusted. Default
+    #       for a bare checkout so dev just works; logs loudly at startup.
+    #   OT2_TRUST_LOCAL_UI=false — edge-only: /ui and /labware answer only
+    #       requests forwarded by the auth edge (X-Edge-Key must match
+    #       OT2_EDGE_SECRET, which becomes required); the edge-asserted
+    #       X-Auth-User is stamped into claim owners. Direct hits get 404.
+    # OT2_UI=off unmounts the UI entirely (headless gateway).
+    if trust_local_ui is None:
+        trust_local_ui = os.environ.get("OT2_TRUST_LOCAL_UI", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    if edge_secret is None:
+        edge_secret = os.environ.get("OT2_EDGE_SECRET") or None
+    if ui and not trust_local_ui and not edge_secret:
+        raise RuntimeError("OT2_TRUST_LOCAL_UI=false requires OT2_EDGE_SECRET to be set")
+    if ui and trust_local_ui:
+        logger.warning(
+            "OT2_TRUST_LOCAL_UI=true: operator UI is served without the auth "
+            "edge (dev bypass — set OT2_TRUST_LOCAL_UI=false in production)"
+        )
+    # Compact summary surfaced at /status details.ui_mode.
+    ui_mode = "off" if not ui else ("open" if trust_local_ui else "edge")
 
     service = OT2Service(
         equipment_id=os.environ.get("OT2_EQUIPMENT_ID", "ot2"),
@@ -89,6 +148,28 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    def _from_edge(request: Request) -> bool:
+        """True iff the request provably came through the auth edge: it
+        carries X-Edge-Key matching the configured shared secret. Never true
+        when no secret is configured, so identity headers on direct requests
+        are always ignored."""
+        if not edge_secret:
+            return False
+        supplied = request.headers.get("X-Edge-Key")
+        return supplied is not None and hmac.compare_digest(supplied, edge_secret)
+
+    if ui and not trust_local_ui:
+
+        @app.middleware("http")
+        async def _edge_gate(request: Request, call_next: Any) -> Any:
+            path = request.url.path
+            gated = path == "/ui" or path.startswith("/ui/") or path == "/labware"
+            if gated and not _from_edge(request):
+                # 404 (not 401/403): the UI surface simply does not exist for
+                # anyone who is not the edge.
+                return JSONResponse(status_code=404, content={"detail": "Not Found"})
+            return await call_next(request)
 
     @app.exception_handler(ClaimHTTPError)
     async def claim_error_handler(request: Any, exc: ClaimHTTPError) -> JSONResponse:  # noqa: ARG001
@@ -127,7 +208,16 @@ def create_app(
 
     @app.get("/status", response_model=EquipmentStatus, tags=["spec"])
     def status() -> EquipmentStatus:
-        return service.get_status()
+        snapshot = service.get_status()
+        snapshot.details["ui_mode"] = ui_mode
+        return snapshot
+
+    @app.get("/labware", tags=["ui"])
+    def labware() -> dict[str, Any]:
+        """Read-only catalog of official Opentrons labware definitions
+        (grid summaries), for the UI's deck-declare picker. Empty when
+        ``opentrons-shared-data`` is not installed."""
+        return {"definitions": list(standard_summaries())}
 
     @app.post(
         "/control/claim",
@@ -135,7 +225,14 @@ def create_app(
         responses={409: {"model": ClaimRejection}},
         tags=["claim"],
     )
-    def claim(request: ClaimRequest) -> ClaimResponse:
+    def claim(request: ClaimRequest, http_request: Request) -> ClaimResponse:
+        # Edge-asserted identity: when the request provably came through the
+        # auth edge, the logged-in user overrides the body's owner so
+        # details.claimed_by names a person, not a UI constant.
+        if _from_edge(http_request):
+            edge_user = http_request.headers.get("X-Auth-User")
+            if edge_user:
+                request = request.model_copy(update={"owner": edge_user})
         try:
             return service.claims.acquire(request)
         except ClaimConflict as exc:
@@ -204,6 +301,22 @@ def create_app(
     def resume(_claim: None = Depends(require_claim)) -> CommandResponse:
         service.resume()
         return CommandResponse(message="OT-2 resumed", state=service.state.value)
+
+    @app.post("/control/move-to", response_model=CommandResponse, tags=["control"])
+    def move_to(request: MoveToRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
+        """Move a pipette to a well or absolute deck coordinates (no liquid).
+
+        Body: ``{"pipette": str, "location": WellLocation}`` or
+        ``{"pipette": str, "coordinates": {"x","y","z"}}`` (exactly one),
+        plus optional ``speed`` (mm/s), ``force_direct``, ``minimum_z_height``.
+        Idempotent — a transport loss mid-move records an error, not
+        ``unknown_outcome``, and the move can simply be re-issued.
+        """
+        try:
+            service.move_to(request)
+            return CommandResponse(message="Move complete", state=service.state.value)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.post("/control/pick-up-tip", response_model=CommandResponse, tags=["control"])
     def pick_up_tip(request: TipRequest, _claim: None = Depends(require_claim)) -> CommandResponse:
@@ -325,6 +438,14 @@ def create_app(
             raise HTTPException(status_code=409, detail=f"unknown outcome: {exc}")
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+
+    # Optional gateway-served operator UI (prebuilt SPA under ui_dist/,
+    # committed by `npm run build` in ui/). Off when OT2_UI is falsy or the
+    # assets were never built — the gateway is then byte-for-byte headless.
+    # With OT2_TRUST_LOCAL_UI=false the mount exists but the middleware above
+    # 404s any request that did not come through the auth edge.
+    if ui and (UI_DIST_DIR / "index.html").is_file():
+        app.mount("/ui", SPAStaticFiles(directory=UI_DIST_DIR, html=True), name="ui")
 
     app.state.service = service
 

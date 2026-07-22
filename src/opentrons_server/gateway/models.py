@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 PROTOCOL_VERSION = "1.1"
@@ -137,6 +137,39 @@ class WellLocation(BaseModel):
     center: bool = False
 
 
+class CoordinateLocation(BaseModel):
+    """Absolute deck coordinates in mm (the robot's deck reference frame)."""
+
+    x: float
+    y: float
+    z: float
+
+
+class MoveToRequest(BaseModel):
+    """Move a pipette to a well or to absolute deck coordinates (no liquid).
+
+    Exactly one of ``location`` (well-addressed, same shape as aspirate/dispense)
+    or ``coordinates`` (absolute deck frame, mm) must be provided.
+    """
+
+    pipette: str
+    location: Optional[WellLocation] = None
+    coordinates: Optional[CoordinateLocation] = None
+    # Straight-line speed for this move in mm/s; omit for the robot default.
+    speed: Optional[float] = Field(default=None, gt=0.0)
+    # Move in a straight line instead of the arced safe path. The caller owns
+    # collision avoidance when set.
+    force_direct: bool = False
+    # Minimum Z height (mm) for the arced path.
+    minimum_z_height: Optional[float] = Field(default=None, ge=0.0)
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "MoveToRequest":
+        if (self.location is None) == (self.coordinates is None):
+            raise ValueError("provide exactly one of 'location' or 'coordinates'")
+        return self
+
+
 class LiquidMoveRequest(BaseModel):
     pipette: str
     volume_ul: float
@@ -230,7 +263,7 @@ class PlateLoadRequest(BaseModel):
 
 # ---------------------------------------------------------------------------
 # Deck / labware state (Phase 0: model only — normalizers + merge live in
-# gateway/deck.py; wiring into /status is Phase 1+). See docs/DECK_STATE_PLAN.md.
+# gateway/deck.py; wiring into /status is Phase 1+). See docs/DECK_STATE.md.
 #
 # The normalized deck is the single, provenance-tagged view of "what is on each
 # of the 12 OT-2 slots", merged from up to three sources (run > repl > declared).
@@ -254,7 +287,7 @@ LabwareKind = Literal[
     "unknown",
 ]
 
-# Per-slot lifecycle. See docs/DECK_STATE_PLAN.md §2.4 for the decision table.
+# Per-slot lifecycle. See docs/DECK_STATE.md (slot-state decision table) for the decision table.
 SlotState = Literal["empty", "declared", "occupied", "in_use", "mismatch"]
 
 # Which source won a slot / the deck as a whole.

@@ -3,7 +3,7 @@
 Covers:
 - classify_labware: load_name -> (kind, rows, columns), incl. the 12-count ambiguity
 - normalize_repl_slots / normalize_run_slots from raw fixtures
-- build_deck merge: one case per row of docs/DECK_STATE_PLAN.md §2.4 decision table,
+- build_deck merge: one case per row of docs/DECK_STATE.md decision table,
   precedence run > repl > declared > empty, plate-well attachment
 - DeckDeclarationStore: declare/clear/reload-on-restart/corrupt-file-tolerant, legacy
   kind-string compat

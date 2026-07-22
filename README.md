@@ -35,6 +35,25 @@ opentrons-server/
 `demo/` and `backup/` are intentionally preserved and are not part of the new
 runtime layout.
 
+## Documentation
+
+Feature docs describe what is built and how it behaves; records capture what
+happened on the bench; trackers hold open work. Completed plan docs are
+retired into feature docs (history stays in git).
+
+| Doc | Kind | What's in it |
+|---|---|---|
+| [`docs/HTTP_TRANSPORT.md`](docs/HTTP_TRANSPORT.md) | feature | The HTTP run-engine transport: plain-language operator story, driving model (never-played setup run), enable/revert, plate-handoff safety spec, confirmed v8.7.0 command reference |
+| [`docs/HTTP_SSH_PARITY.md`](docs/HTTP_SSH_PARITY.md) | feature | SSH ↔ HTTP method-by-method parity table, `/status` snapshot shapes per transport, bench-verification status |
+| [`docs/TRANSPORT_TRADEOFFS.md`](docs/TRANSPORT_TRADEOFFS.md) | feature | Pros/cons of the two transports + current default and recommendation |
+| [`docs/DECK_STATE.md`](docs/DECK_STATE.md) | feature | Normalized deck/labware state: model, run>repl>declared merge, mismatch flagging, declare endpoints |
+| [`docs/HTTP_DRIVE_VALIDATION.md`](docs/HTTP_DRIVE_VALIDATION.md) | record | 2026-07-14 hardware validation of the HTTP transport |
+| [`docs/DEVICE_BRINGUP.md`](docs/DEVICE_BRINGUP.md) | runbook + records | Parameterized bring-up for any additional Opentrons gateway (install → verify → motion test → dashboard registration), plus the completed per-robot sign-offs |
+| [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md) | tracker | Open work items |
+| [`users/readme_ssh_commands.md`](users/readme_ssh_commands.md) | user guide | `SSHClient` batch execution, timeouts, variable persistence |
+| [`users/readme_opentrons_states.md`](users/readme_opentrons_states.md) | user guide | The state-readers functions (`get_deck_state`, …) and their dict shapes |
+| [`workflows/README.md`](workflows/README.md) | user guide | Prefect workflow examples layout |
+
 ## Install
 
 For the gateway/core package:
@@ -97,6 +116,64 @@ first `>>>` prompt it sees.
 
 Result: bumping the gateway's package version never requires touching the
 OT-2 itself.
+
+## Gateway UI (`/ui`)
+
+The gateway serves its own operator web UI at `http://<host>:<port>/ui` — the
+full OT-2 control page (deck view with declared-vs-observed state, mismatch
+flags, module telemetry, tip tracking, deck-declare picker, session controls,
+lights) with **no dashboard, no auth stack, and no node tooling required**:
+the prebuilt static bundle ships inside the package (`src/opentrons_server/ui_dist/`).
+
+- **Enable/disable (`OT2_UI`):** served whenever the build output exists;
+  set `OT2_UI=off` (or `create_app(ui=False)`) to run headless.
+- **The trust switch (`OT2_TRUST_LOCAL_UI`):** who may reach the UI.
+  - `false` (**production**): `/ui` and `/labware` answer **only** requests
+    forwarded by the lab's auth edge — the edge injects `X-Edge-Key`
+    (must match `OT2_EDGE_SECRET`, required in this mode) and
+    `X-Auth-User` (the logged-in identity, stamped into the claim's
+    `owner` so `details.claimed_by` names a person). Direct hits — from
+    localhost, the tailnet, anywhere — get 404. Identity headers without
+    a valid `X-Edge-Key` are ignored, so attribution can't be forged by
+    direct `curl`.
+  - `true` (**dev bypass, the default for a bare checkout**): UI served to
+    anyone who can reach the port; no identity trusted. Startup logs a
+    warning. Flip to `false` before any deployment that faces the lab.
+  The effective state is visible at `/status` → `details.ui_mode`
+  (`edge` = gated, `open` = trusted/dev, `off` = headless). Spec surfaces
+  (`/`, `/health`, `/status`, `/control/*`) are never gated — the
+  aggregator and SDK reach them directly as before.
+- **Claims:** the UI is claim-native. "Take control" acquires a cooperative
+  claim (STATUS_SPEC v1.1) and heartbeats it in the background; every control
+  button attaches `X-Claim-Token` and unlocks only while the claim is held.
+  Releasing (or closing the tab) frees the device for workflows/the dashboard.
+- **Labware catalog:** the deck-declare picker merges the authored catalog with
+  `GET /labware`, a read-only summary of the official Opentrons definitions.
+  That endpoint is populated when the optional extra is installed:
+
+  ```bash
+  pip install -e ".[labware]"   # opentrons-shared-data
+  ```
+
+  Without it the endpoint returns an empty catalog and the picker still works
+  from its authored entries + free-text load names.
+
+### Developing the UI
+
+The source lives in `ui/` (Vite + React + TypeScript + Tailwind). The build
+output is committed so installs need no node:
+
+```bash
+# One-time
+cd ui && npm install
+
+# Dev loop against a local dry-run gateway (proxies /status, /control, /labware)
+OT2_DRY_RUN=true uv run uvicorn opentrons_server.gateway.api:app --port 8020
+cd ui && npm run dev
+
+# Rebuild the committed bundle after changes
+cd ui && npm run build   # writes src/opentrons_server/ui_dist/
+```
 
 ## Basic Python Control
 
@@ -540,6 +617,12 @@ Useful control endpoints:
 - `POST /control/home`
 - `POST /control/pause`
 - `POST /control/resume`
+- `POST /control/move-to` — move a pipette without liquid handling. Body takes
+  exactly one of `location` (labware nickname + well, same shape as
+  aspirate/dispense) or `coordinates` (`{"x","y","z"}` absolute deck frame,
+  mm), plus optional `speed` (mm/s), `force_direct`, `minimum_z_height`.
+  Idempotent: a transport loss mid-move records an error (re-issue is safe),
+  never `unknown_outcome`.
 - `POST /control/pick-up-tip` — on a tracked tip rack, omitting `position`
   auto-picks the next available tip; `sample_id` / `force` drive the
   contamination guard (see *State and Labware Tracking*). Refusals are
@@ -688,5 +771,9 @@ python -m compileall src workflows tests/unit
 
 - This repo's OT-2 gateway conforms to the AC lab equipment status contract
   shape for `liquid_handler` devices.
+- The HTTP run-engine transport (`OT2_TRANSPORT=http`) mirrors the full
+  `OT2Control` (SSH) method surface — see `docs/HTTP_SSH_PARITY.md` for the
+  method-by-method parity table and bench-verification status, and
+  `docs/TRANSPORT_TRADEOFFS.md` for the pros and cons of each transport.
 - `requirements_api.txt` is intended for gateway/API runtime dependencies.
 - Prefect is optional and belongs to workflow development, not gateway startup.

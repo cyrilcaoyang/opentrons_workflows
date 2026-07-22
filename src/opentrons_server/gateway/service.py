@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import paramiko
 import requests
@@ -130,7 +130,7 @@ class OT2Service:
         self.dry_run = dry_run
         self.simulation = simulation
         # Control-plane transport: "ssh" (default, the SSH REPL) or "http" (the
-        # robot-server run engine, docs/HTTP_DRIVE_PLAN.md). Opt-in and fully
+        # robot-server run engine, docs/HTTP_TRANSPORT.md). Opt-in and fully
         # reversible: unset OT2_TRANSPORT (or pass transport="ssh") to restore the
         # SSH path with zero behaviour change. HTTP is not yet robot-validated.
         self.transport = (transport or os.getenv("OT2_TRANSPORT") or "ssh").lower()
@@ -163,6 +163,13 @@ class OT2Service:
         self.claims = ClaimManager()
         self.last_error: Optional[ErrorInfo] = None
         self._dry_run_lights_on = False
+        # Cached deck-light state. Refreshed off the request path (background
+        # refresh loop, startup) so /status never issues a blocking HTTP read
+        # to the robot — see _refresh_lights / _lights_component. None => the
+        # state is not yet known (reported as "unknown"). In dry-run there is
+        # no background loop, so seed it from the simulated in-memory state and
+        # let set_lights keep it current.
+        self._last_lights: Optional[bool] = self._dry_run_lights_on if dry_run else None
         self.equipment_version: Optional[str] = None
         self._last_probe: Dict[str, Any] = {}
         # Cached labware of an active *external* robot-server run (EXTERNAL_CONTROL).
@@ -297,6 +304,31 @@ class OT2Service:
             bottom=request.location.bottom or 0,
             center=1 if request.location.center else 0,
         )
+
+    def move_to(self, request: Any) -> None:
+        """Move a pipette to a well or to absolute deck coordinates (no liquid).
+
+        Idempotent: re-issuing the same move is safe (no tip/liquid state at
+        risk), so a transport loss mid-move records an error rather than
+        ``unknown_outcome`` — same policy as ``home``.
+        """
+
+        def _move_to() -> None:
+            if request.location is not None:
+                self.set_location_from_well(request)
+            else:
+                coords = request.coordinates
+                self._require_control().get_location_absolute(coords.x, coords.y, coords.z)
+            self._require_control().move_to_pip(
+                request.pipette,
+                speed=request.speed,
+                # False -> None keeps the SSH invoke minimal (kwargs formatter
+                # skips None); the protocol-API default is False anyway.
+                force_direct=request.force_direct or None,
+                minimum_z_height=request.minimum_z_height,
+            )
+
+        self._run_action("move_to", _move_to, idempotent=True)
 
     def aspirate(self, request: Any) -> None:
         flow_rate = getattr(request, "flow_rate", None)
@@ -474,6 +506,7 @@ class OT2Service:
 
         if self.dry_run:
             self._dry_run_lights_on = on
+            self._last_lights = on
             return on
         url = self._robot_lights_url()
         if url is None:
@@ -482,19 +515,37 @@ class OT2Service:
             url, json={"on": on}, headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT
         )
         response.raise_for_status()
-        return bool(response.json().get("on", on))
+        result = bool(response.json().get("on", on))
+        # Reflect the new state immediately so the next /status doesn't lag a
+        # background-refresh interval behind an operator toggle.
+        self._last_lights = result
+        return result
 
-    def _lights_component(self) -> ComponentStatus:
-        """Build the ``lights`` component, tolerating an unreachable robot.
+    def _refresh_lights(self) -> None:
+        """Refresh the cached deck-light state from a best-effort read.
 
-        Never raises: a failed read is reported as ``unknown``/disconnected so
-        ``/status`` stays side-effect-free and always returns 200.
+        Runs only *off* the request path — the background refresh loop and
+        ``startup`` — so ``/status`` itself never issues the blocking HTTP read
+        that would otherwise stall a poll (and, under contention, drop the
+        socket before replying). Never raises; an unreachable robot resets the
+        cache to ``None`` so the component honestly reports ``unknown``.
         """
 
         try:
-            on = self.get_lights()
+            self._last_lights = self.get_lights()
         except Exception:
-            on = None
+            self._last_lights = None
+
+    def _lights_component(self) -> ComponentStatus:
+        """Build the ``lights`` component from the cached state (no I/O).
+
+        Reads only ``self._last_lights`` (maintained by ``_refresh_lights`` and
+        ``set_lights``), so ``/status`` stays side-effect-free and always
+        returns 200. ``None`` (state not yet known / robot unreachable at the
+        last refresh) is reported as ``unknown``/disconnected.
+        """
+
+        on = self._last_lights
         if on is None:
             return ComponentStatus(connected=False, state="unknown")
         return ComponentStatus(connected=True, state="on" if on else "off")
@@ -659,6 +710,42 @@ class OT2Service:
             if probe.get("api_version"):
                 self.equipment_version = probe["api_version"]
         self._refresh_run_labware(force=True)
+        # Fold the deck-light read into the same off-request-path refresh so
+        # /status can serve it from cache instead of blocking on robot HTTP.
+        self._refresh_lights()
+        # Self-heal from a boot-time stand-off: if we deferred to an external
+        # (app-driven) run at boot and that run has since finished, reclaim the
+        # control plane so the gateway returns to `ready` without a restart.
+        self._maybe_resume_from_external_control(probe)
+
+    def _maybe_resume_from_external_control(self, probe: Dict[str, Any]) -> None:
+        """Reclaim the REPL control plane once an external run has finished.
+
+        ``EXTERNAL_CONTROL`` is a boot-time stand-off: when the gateway starts
+        while the robot already has a run we must not seize (see
+        ``boot_reconnect``), it defers. Nothing else transitioned out of it, so
+        before this the gateway reported ``busy`` until a manual restart even
+        after the external run completed. The background refresh watches the
+        live probe and, once the robot is reachable AND no longer running,
+        (re)establishes our own session so the gateway self-heals to ``ready``.
+        Mirrors the idle branch of ``boot_reconnect``. Best-effort; never raises.
+
+        ``probe`` must be a freshly-read ``probe_robot()`` result — not the
+        possibly-stale ``_last_probe`` (which is only updated while reachable) —
+        so a robot that has gone unreachable never triggers a reclaim.
+        """
+
+        if self.dry_run or self.state != OT2ServiceState.EXTERNAL_CONTROL:
+            return
+        if not probe.get("reachable") or probe.get("run_active"):
+            return
+        # Reachable and idle: safe to take the REPL control plane.
+        self._status_note = None
+        try:
+            self.startup()
+        except Exception:  # pragma: no cover - startup records its own error/state
+            # startup() already recorded last_error and flipped to ERROR.
+            pass
 
     def boot_reconnect(self) -> None:
         """Guarded one-shot reconnect at process start.
@@ -739,25 +826,52 @@ class OT2Service:
         precedence (run > repl > declared) with no bespoke parser. There is no
         REPL deck in HTTP mode, so ``last_snapshot`` carries no ``deck`` key and
         the repl source stays empty. Never crashes the side-effect-free path.
+
+        Container-shape parity with the SSH snapshot: ``pipettes`` is a dict
+        keyed by mount and ``labwares``/``modules`` dicts keyed by deck slot
+        (falling back to the engine id for off-deck/keyless entries), matching
+        ``state_readers.get_all_states``. The *values* remain raw run-engine
+        entries — the per-item schemas differ per transport by design (see
+        HTTP_SSH_PARITY.md). ``run_id`` is HTTP-only.
         """
         try:
             run = self.control.run_snapshot()
             labware = run.get("labware") or []
             modules = run.get("modules") or []
+            pipettes = run.get("pipettes") or []
             # Same {labware, modules} shape probe_run_labware yields; drives the
             # `run` deck source via normalize_run_slots.
             self._last_run_labware = {"labware": labware, "modules": modules}
             self._last_run_labware_at = time.monotonic()
-            # Raw passthrough for the details panel (run-engine list shape).
             self.last_snapshot = {
                 "run_id": run.get("id"),
-                "pipettes": run.get("pipettes") or [],
-                "labwares": labware,
-                "modules": modules,
+                "pipettes": {
+                    (entry.get("mount") or entry.get("id") or f"pipette_{i}"): entry
+                    for i, entry in enumerate(pipettes)
+                },
+                "labwares": self._key_run_entries_by_slot(labware),
+                "modules": self._key_run_entries_by_slot(modules),
             }
         except Exception as exc:
             self._set_error("snapshot_failed", str(exc), severity="warning")
         return self.last_snapshot
+
+    @staticmethod
+    def _key_run_entries_by_slot(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Key run-engine labware/module entries by deck slot, mirroring the SSH
+        snapshot's slot-keyed dicts. Off-deck / slotless entries (and slot
+        collisions, e.g. mid-move) fall back to the engine id so nothing is
+        silently dropped."""
+        keyed: Dict[str, Any] = {}
+        for i, entry in enumerate(entries):
+            location = entry.get("location")
+            key = None
+            if isinstance(location, dict) and location.get("slotName"):
+                key = str(location["slotName"])
+            if key is None or key in keyed:
+                key = str(entry.get("id") or f"entry_{i}")
+            keyed[key] = entry
+        return keyed
 
     @staticmethod
     def _parse_remote_snapshot(output: str) -> Dict[str, Any]:
@@ -948,6 +1062,7 @@ class OT2Service:
                 "home",
                 "setup",
                 "pause",
+                "move_to",
                 "pick_up_tip",
                 "aspirate",
                 "dispense",
@@ -1065,10 +1180,20 @@ class OT2Service:
 
     def _components(self, lights: ComponentStatus) -> Dict[str, ComponentStatus]:
         connected = self.control is not None or self.dry_run
+        # The "ssh" component key predates the HTTP transport and means "control
+        # backend session" — renaming it would break dashboards (STATUS_SPEC #14),
+        # so the message carries the actual transport instead.
+        if self.dry_run:
+            transport_note = "dry run (no robot connection)"
+        elif self.transport == "http":
+            transport_note = "control via HTTP run engine (no SSH session)"
+        else:
+            transport_note = "control via SSH REPL"
         components: Dict[str, ComponentStatus] = {
             "ssh": ComponentStatus(
                 connected=connected,
                 state="connected" if connected else "disconnected",
+                message=transport_note,
             ),
             "protocol": ComponentStatus(
                 connected=self.state

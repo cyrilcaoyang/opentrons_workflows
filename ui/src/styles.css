@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+/* Aliases matching the ac-organic-lab dashboard's design tokens, so ported
+   components keep their class names verbatim. Values are slate-900/600/500
+   and white from the shared palette. */
+@theme {
+  --color-ink: #0f172a;
+  --color-ink-muted: #475569;
+  --color-ink-subtle: #64748b;
+  --color-surface-raised: #ffffff;
+}
+
+body {
+  @apply bg-slate-50 text-ink antialiased dark:bg-slate-950 dark:text-slate-100;
+}
