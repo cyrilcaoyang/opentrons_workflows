@@ -449,6 +449,79 @@ def test_boot_reconnect_active_run_stands_off(monkeypatch):
     assert "external" in status.message.lower()
 
 
+def test_external_control_self_heals_when_run_finishes(monkeypatch):
+    """Once a boot-time external run completes, the background refresh reclaims
+    the control plane and the gateway returns to ready without a restart."""
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.OT2Control", lambda **kwargs: Mock()
+    )
+
+    # Boot while an app-driven run is active: the gateway stands off.
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=True)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9", password="pw")
+    service.boot_reconnect()
+    assert service.state == OT2ServiceState.EXTERNAL_CONTROL
+
+    # Run finishes: the next background refresh sees a reachable, idle robot.
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=False)
+    )
+    service._refresh_identity()
+
+    assert service.state == OT2ServiceState.READY
+    assert service.control is not None
+    status = service.get_status()
+    assert status.equipment_status == "ready"
+    assert "home" in status.allowed_actions
+
+
+def test_external_control_holds_while_run_still_active(monkeypatch):
+    """The refresh must not seize the robot while the external run is ongoing."""
+
+    def must_not_connect(**kwargs):
+        raise AssertionError("must not open a session while a run is active")
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", must_not_connect)
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=True)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9")
+    service.boot_reconnect()
+    assert service.state == OT2ServiceState.EXTERNAL_CONTROL
+
+    service._refresh_identity()  # run still active
+
+    assert service.state == OT2ServiceState.EXTERNAL_CONTROL
+    assert service.control is None
+
+
+def test_external_control_does_not_reclaim_when_unreachable(monkeypatch):
+    """A robot that has gone unreachable must not trigger a reclaim (which would
+    fail and flip to error) — the gateway holds its boot-time stand-off."""
+
+    def must_not_connect(**kwargs):
+        raise AssertionError("must not open a session against an unreachable robot")
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", must_not_connect)
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=True)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9")
+    service.boot_reconnect()
+    assert service.state == OT2ServiceState.EXTERNAL_CONTROL
+
+    # Robot becomes unreachable before the run's completion is ever observed.
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(fail=True)
+    )
+    service._refresh_identity()
+
+    assert service.state == OT2ServiceState.EXTERNAL_CONTROL
+    assert service.control is None
+
+
 def test_boot_reconnect_unreachable_stays_requires_init(monkeypatch):
     monkeypatch.setattr(
         "opentrons_server.gateway.service.requests.get", _fake_probe_get(fail=True)

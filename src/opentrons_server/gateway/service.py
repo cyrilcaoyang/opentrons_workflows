@@ -713,6 +713,39 @@ class OT2Service:
         # Fold the deck-light read into the same off-request-path refresh so
         # /status can serve it from cache instead of blocking on robot HTTP.
         self._refresh_lights()
+        # Self-heal from a boot-time stand-off: if we deferred to an external
+        # (app-driven) run at boot and that run has since finished, reclaim the
+        # control plane so the gateway returns to `ready` without a restart.
+        self._maybe_resume_from_external_control(probe)
+
+    def _maybe_resume_from_external_control(self, probe: Dict[str, Any]) -> None:
+        """Reclaim the REPL control plane once an external run has finished.
+
+        ``EXTERNAL_CONTROL`` is a boot-time stand-off: when the gateway starts
+        while the robot already has a run we must not seize (see
+        ``boot_reconnect``), it defers. Nothing else transitioned out of it, so
+        before this the gateway reported ``busy`` until a manual restart even
+        after the external run completed. The background refresh watches the
+        live probe and, once the robot is reachable AND no longer running,
+        (re)establishes our own session so the gateway self-heals to ``ready``.
+        Mirrors the idle branch of ``boot_reconnect``. Best-effort; never raises.
+
+        ``probe`` must be a freshly-read ``probe_robot()`` result — not the
+        possibly-stale ``_last_probe`` (which is only updated while reachable) —
+        so a robot that has gone unreachable never triggers a reclaim.
+        """
+
+        if self.dry_run or self.state != OT2ServiceState.EXTERNAL_CONTROL:
+            return
+        if not probe.get("reachable") or probe.get("run_active"):
+            return
+        # Reachable and idle: safe to take the REPL control plane.
+        self._status_note = None
+        try:
+            self.startup()
+        except Exception:  # pragma: no cover - startup records its own error/state
+            # startup() already recorded last_error and flipped to ERROR.
+            pass
 
     def boot_reconnect(self) -> None:
         """Guarded one-shot reconnect at process start.
