@@ -4,10 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OT-2 Gateway</title>
-    <script type="module" crossorigin src="./assets/index-B_7CEzFS.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BcF2tFix.css">
+    <script type="module" crossorigin src="./assets/index-D7-MizyW.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BsabrZiZ.css">
   </head>
   <body>
     <div id="root"></div>
+    <!-- Shared signed-in-user banner, served by the authenticated Caddy edge.
+         Absolute path on purpose: it resolves at the edge origin, not from
+         this bundle — 404s harmlessly in dev / open mode. -->
+    <script defer src="/auth/banner.js"></script>
   </body>
 </html>

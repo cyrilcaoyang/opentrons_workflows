@@ -34,6 +34,17 @@ def test_ui_spa_fallback_serves_index_for_unknown_paths():
     assert "<div id=\"root\">" in resp.text
 
 
+def test_ui_includes_shared_edge_banner():
+    """Both the UI source page and the built bundle must load the shared
+    signed-in-user banner served by the authenticated Caddy edge."""
+    repo_root = UI_DIST_DIR.parent.parent.parent
+    source_index = repo_root / "ui" / "index.html"
+    assert '/auth/banner.js' in source_index.read_text(encoding="utf-8")
+    if UI_BUILT:
+        built_index = (UI_DIST_DIR / "index.html").read_text(encoding="utf-8")
+        assert '/auth/banner.js' in built_index
+
+
 def test_ui_disabled_is_headless():
     client = _client(ui=False)
     assert client.get("/ui").status_code == 404
