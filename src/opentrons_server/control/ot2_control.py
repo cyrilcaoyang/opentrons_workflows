@@ -47,7 +47,18 @@ class OT2Control:
             password=password,
             command_timeout=command_timeout,
         )
-        self.client.connect()
+        # SSHClient.connect() returns False after exhausting its retries rather
+        # than raising, so discarding the result let construction continue into
+        # _get_protocol(), where the first invoke() failed with the misleading
+        # "SSH client is not connected". Raise the real thing here instead; the
+        # per-attempt cause is logged by SSHClient.connect at WARNING.
+        if not self.client.connect():
+            raise ConnectionError(
+                f"SSH connect to {self.client.hostname!r} failed after "
+                f"{self.client.max_retries} attempts "
+                f"({self.client.connection_timeout}s timeout each); "
+                "see the gateway log for the per-attempt reason"
+            )
 
     def invoke(self, code: str) -> str:
         """Execute Python code on the robot via SSH."""
