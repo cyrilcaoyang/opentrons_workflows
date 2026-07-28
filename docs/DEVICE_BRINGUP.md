@@ -79,12 +79,15 @@ directory so state files and checkouts can't collide:
 cd C:\Users\sdl2\Projects
 git clone https://github.com/cyrilcaoyang/opentrons-server.git opentrons-server-<bench>
 cd opentrons-server-<bench>
-C:\SDL_Tools\uv.exe sync
+C:\SDL_Tools\uv.exe sync --extra labware
 
 New-Item -ItemType Directory -Force C:\SDL_State | Out-Null
 
+# --extra labware in AppParameters is load-bearing: `uv run` self-syncs the
+# project environment at every service start, and without the extra it prunes
+# opentrons-shared-data, silently emptying the UI's GET /labware catalog.
 nssm install <service> C:\SDL_Tools\uv.exe `
-    run uvicorn opentrons_server.gateway.api:app --host 0.0.0.0 --port <port>
+    run --extra labware uvicorn opentrons_server.gateway.api:app --host 0.0.0.0 --port <port>
 nssm set <service> AppDirectory   C:\Users\sdl2\Projects\opentrons-server-<bench>
 nssm set <service> DisplayName    "<name> gateway"
 nssm set <service> Start          SERVICE_AUTO_START
