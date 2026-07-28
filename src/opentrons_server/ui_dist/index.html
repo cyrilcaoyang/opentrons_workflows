@@ -4,8 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OT-2 Gateway</title>
-    <script type="module" crossorigin src="./assets/index-D7-MizyW.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BsabrZiZ.css">
+    <!-- Pre-apply the banner's stored theme before first paint; banner.js
+         loads deferred and its applyTheme is idempotent. -->
+    <script>
+      try {
+        var t = localStorage.getItem("theme");
+        var d = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.classList.toggle("dark", d);
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="./assets/index-Cam-DFm1.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-B9yK3b1d.css">
   </head>
   <body>
     <div id="root"></div>

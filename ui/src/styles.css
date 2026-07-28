@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Follow the shared auth banner's theme toggle, which sets/clears
+   class="dark" on <html> (ac_auth static/banner.js). Tailwind v4
+   defaults the dark: variant to prefers-color-scheme; this overrides
+   it to the class strategy the dashboard already uses. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Aliases matching the ac-organic-lab dashboard's design tokens, so ported
    components keep their class names verbatim. Values are slate-900/600/500
    and white from the shared palette. */
