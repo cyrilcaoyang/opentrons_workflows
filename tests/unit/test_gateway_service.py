@@ -543,3 +543,48 @@ def test_boot_reconnect_is_noop_in_dry_run(monkeypatch):
     service = OT2Service(dry_run=True)
     service.boot_reconnect()
     assert service.state == OT2ServiceState.DRY_RUN
+
+
+def test_connecting_reports_requires_init_not_busy():
+    """STATUS_SPEC §2.2: `connecting` is "service up, hardware not initialized",
+    not `busy`. Reporting busy made a slow-but-healthy boot (the REPL protocol
+    init routinely takes minutes) look like the robot was doing work, and §2.3's
+    invariant table pairs busy with an operation actually running."""
+
+    service = OT2Service(dry_run=False)
+    service.state = OT2ServiceState.CONNECTING
+
+    status = service.get_status()
+
+    assert status.equipment_status == "requires_init"
+    assert status.details["service_state"] == "connecting"
+    # startup is already in flight — don't tell an operator to POST it again.
+    assert status.required_actions == []
+    assert "startup" not in status.allowed_actions
+    assert "connecting" in status.message.lower()
+
+
+def test_ssh_connect_failure_raises_the_real_reason():
+    """SSHClient.connect() returns False after exhausting retries instead of
+    raising; discarding it let construction fall through to _get_protocol(),
+    which failed with the misleading "SSH client is not connected"."""
+
+    from unittest.mock import patch
+
+    from opentrons_server.control.ot2_control import OT2Control
+
+    with patch("opentrons_server.control.ot2_control.SSHClient") as ssh_cls:
+        client = ssh_cls.return_value
+        client.connect.return_value = False
+        client.hostname = "ot2cytation"
+        client.max_retries = 3
+        client.connection_timeout = 10
+
+        with pytest.raises(ConnectionError) as excinfo:
+            OT2Control(host_alias="ot2cytation")
+
+    message = str(excinfo.value)
+    assert "ot2cytation" in message
+    assert "3 attempts" in message
+    # The old, misleading message must not be what surfaces.
+    assert "SSH client is not connected" not in message

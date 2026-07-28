@@ -53,6 +53,33 @@ UI_DIST_DIR = Path(__file__).resolve().parent.parent / "ui_dist"
 logger = logging.getLogger("opentrons_server.gateway")
 
 
+def _configure_logging() -> None:
+    """Route this package's own loggers to stderr.
+
+    Under uvicorn nothing configures application loggers, so Python falls back
+    to ``logging.lastResort`` — WARNING and above only. Every INFO breadcrumb
+    from the SSH/REPL boot path (notably ``SSH connection established … in
+    SHELL mode``) was therefore dropped, which made a slow-but-healthy
+    ``connecting`` boot indistinguishable from a hang in the service logs.
+
+    Level is ``OT2_LOG_LEVEL`` (default INFO). Attaches to the package root so
+    ``opentrons_server.*`` module loggers all inherit it, and is idempotent —
+    ``create_app()`` runs more than once under tests.
+    """
+
+    pkg = logging.getLogger("opentrons_server")
+    level = os.getenv("OT2_LOG_LEVEL", "INFO").upper()
+    pkg.setLevel(getattr(logging, level, logging.INFO))
+    if any(getattr(h, "_ot2_gateway_handler", False) for h in pkg.handlers):
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    )
+    handler._ot2_gateway_handler = True  # type: ignore[attr-defined]
+    pkg.addHandler(handler)
+
+
 class SPAStaticFiles(StaticFiles):
     """StaticFiles that serves index.html for unknown non-file paths, so the
     single-page UI survives a hard refresh on any sub-path."""
@@ -83,6 +110,7 @@ def create_app(
     trust_local_ui: Optional[bool] = None,
     edge_secret: Optional[str] = None,
 ) -> FastAPI:
+    _configure_logging()
     if dry_run is None:
         dry_run = os.environ.get("OT2_DRY_RUN", "false").lower() in {"1", "true", "yes"}
     if auto_reconnect is None:

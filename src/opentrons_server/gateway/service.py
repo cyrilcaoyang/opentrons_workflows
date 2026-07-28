@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 import socket
 import threading
@@ -52,6 +53,8 @@ from .tip_state import EMPTY, TipStateStore
 # (Blank lines inside function bodies break a naïve paste of the source
 # directly into the REPL — interactive mode treats blank as end-of-compound
 # — so we route the source through compile()/exec() to bypass that quirk.)
+logger = logging.getLogger(__name__)
+
 _REMOTE_SNAPSHOT_DEFS = f"exec({inspect.getsource(_state_readers)!r})"
 _REMOTE_SNAPSHOT_CALL = "import json; print(json.dumps(get_all_states(protocol), default=str))"
 
@@ -774,21 +777,41 @@ class OT2Service:
             self._status_note = (
                 f"Robot unreachable at {self._probe_base_url() or 'unknown host'}; awaiting startup"
             )
+            logger.warning("boot_reconnect: %s", self._status_note)
             return
         if probe.get("run_active"):
             self.state = OT2ServiceState.EXTERNAL_CONTROL
             self._status_note = (
                 "Robot has an active run (external / official app); gateway is standing off"
             )
+            logger.info("boot_reconnect: %s", self._status_note)
             return
 
         # Reachable and idle: safe to take the REPL control plane.
         self._status_note = None
+        # Logged at both ends: the SSH session plus protocol-API init routinely
+        # takes minutes, and with no log line the gateway looked hung rather
+        # than working. The elapsed time also gives a baseline to compare
+        # against when a boot really does wedge.
+        logger.info(
+            "boot_reconnect: robot reachable and idle; starting %s session + protocol init "
+            "(this can take several minutes)",
+            self.transport,
+        )
+        started = time.monotonic()
         try:
             self.startup()
-        except Exception:
+        except Exception as exc:
             # startup() already recorded last_error and flipped to ERROR.
-            pass
+            logger.error(
+                "boot_reconnect: startup failed after %.1fs: %s",
+                time.monotonic() - started,
+                exc,
+            )
+        else:
+            logger.info(
+                "boot_reconnect: ready after %.1fs", time.monotonic() - started
+            )
 
     def refresh_snapshot(self) -> Dict[str, Any]:
         """Refresh cached state from the remote session when possible."""
@@ -1142,11 +1165,17 @@ class OT2Service:
             return "ready"
         if self.state in {
             OT2ServiceState.BUSY,
-            OT2ServiceState.CONNECTING,
             OT2ServiceState.EXTERNAL_CONTROL,
         }:
             return "busy"
-        if self.state == OT2ServiceState.REQUIRES_INIT:
+        # CONNECTING is "service up, hardware not initialized yet" — STATUS_SPEC
+        # §2.2's requires_init, not busy. `busy` means an operation is running
+        # (§2.3's invariant table pairs it with activity: running), so reporting
+        # it here made a slow-but-healthy boot indistinguishable from real work
+        # and hid the fact that nothing was driving the robot. The REPL protocol
+        # init legitimately takes minutes on an OT-2. required_actions stays
+        # empty (startup is already in flight — see _required_actions).
+        if self.state in {OT2ServiceState.REQUIRES_INIT, OT2ServiceState.CONNECTING}:
             return "requires_init"
         if self.state == OT2ServiceState.DRY_RUN:
             return "dry_run"
@@ -1163,6 +1192,11 @@ class OT2Service:
             return self._status_note or "Robot under external control; gateway is standing off"
         if self.state == OT2ServiceState.REQUIRES_INIT:
             return self._status_note or "Awaiting startup"
+        if self.state == OT2ServiceState.CONNECTING:
+            return (
+                "Connecting: SSH session + protocol-API init on the robot. "
+                "This legitimately takes minutes on an OT-2; no action needed."
+            )
         if self.state == OT2ServiceState.DRY_RUN:
             return "Dry-run mode - no hardware connected"
         if self.state == OT2ServiceState.UNKNOWN_OUTCOME:

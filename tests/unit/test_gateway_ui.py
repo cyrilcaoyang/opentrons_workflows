@@ -182,3 +182,26 @@ def test_ui_claim_sequence_matches_use_claim_hook(tmp_path, monkeypatch):
     assert declared.json()["slots"]["2"]["slot_state"] == "declared"
 
     assert client.post("/control/release", headers={"X-Claim-Token": token}).status_code == 204
+
+
+def test_configure_logging_is_idempotent_and_routes_package_loggers():
+    """Under uvicorn nothing configures app loggers, so logging.lastResort drops
+    everything below WARNING — including the SSH/REPL boot breadcrumbs that make
+    a slow `connecting` boot distinguishable from a hang."""
+
+    import logging
+
+    from opentrons_server.gateway.api import _configure_logging
+
+    pkg = logging.getLogger("opentrons_server")
+    for handler in [h for h in pkg.handlers if getattr(h, "_ot2_gateway_handler", False)]:
+        pkg.removeHandler(handler)
+
+    _configure_logging()
+    _configure_logging()
+
+    ours = [h for h in pkg.handlers if getattr(h, "_ot2_gateway_handler", False)]
+    assert len(ours) == 1, "repeated create_app() must not stack handlers"
+    # INFO from a submodule logger now reaches a handler rather than lastResort.
+    assert pkg.level <= logging.INFO
+    assert logging.getLogger("opentrons_server.transport.ssh_client").isEnabledFor(logging.INFO)
