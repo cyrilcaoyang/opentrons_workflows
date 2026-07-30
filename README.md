@@ -1,7 +1,12 @@
 # opentrons-server
 
 Python tools for controlling an Opentrons OT-2/Flex over SSH and exposing a
-STATUS_SPEC v1.1 REST gateway. The Python distribution is `opentrons_server`.
+STATUS_SPEC v1.2 REST gateway. The Python distribution is `opentrons_server`.
+
+This repo conforms to lab status spec v1.2. The wire types come from the
+shared [`sdl-lab-contract`](https://github.com/AccelerationConsortium/sdl-lab-contract)
+package (pinned to the tag matching the spec revision) rather than a vendored
+copy — see [Status envelope](#status-envelope-v12).
 
 ## What This Repo Contains
 
@@ -436,9 +441,52 @@ Before startup, `/status` should report:
   "equipment_id": "ot2",
   "equipment_kind": "liquid_handler",
   "equipment_status": "requires_init",
+  "activity": "idle",
   "required_actions": ["startup"]
 }
 ```
+
+### Status envelope (v1.2)
+
+`equipment_status` answers *is this robot healthy and fit for a run*;
+`activity` answers *is it working right now*. They are independent, and the
+gateway derives each from its own observation — never one from the other.
+
+**Primary operation.** For this liquid handler, the primary operation is **a
+protocol command in flight on the robot** — a motion, a liquid transfer, a tip
+pick-up or drop, a labware move, or the `setup` that loads them. `activity` is
+`running` for exactly the span of such a command, and for a robot-server run
+the gateway deferred to (see `external_control` below). `activity_since` is the
+instant the current span began, so a reader can recover a command's true
+elapsed time without timing its own polls.
+
+`metrics["cycles_total"]` counts the protocol commands this process has
+completed. It matters because most OT-2 commands are far shorter than the
+dashboard's 60 s poll: an `activity` series sampled at that cadence does not
+undercount them, it misses them outright (STATUS_SPEC §2.3.1). The poll-to-poll
+delta of this counter is the accountable number. It resets on gateway restart,
+by contract — a reader seeing it decrease treats that as a restart, not as
+negative usage.
+
+| Service state | `equipment_status` | `activity` | Notes |
+|---|---|---|---|
+| `requires_init` / `connecting` | `requires_init` | `idle` | REPL + protocol-API init legitimately takes minutes; nothing is driving the robot |
+| `ready` | `ready` | `idle` | Initialized, no command in flight |
+| `busy` | `busy` | `running` | One protocol command in flight (`_run_action` brackets it exactly) |
+| `paused` | `degraded` | `idle` | A paused protocol is not performing its operation; only `resume` / `shutdown` are offered |
+| `external_control` | `busy` | `running` | A run the gateway found on the robot-server at boot and deliberately did not seize |
+| `unknown_outcome` | `unknown` | `unknown` | Transport died mid-command — whether the robot is still moving is precisely what we cannot determine |
+| `error` | `error` | `idle` | |
+| `dry_run` | `dry_run` | `idle` | The simulation reports its real activity; readers exclude simulated devices from utilization |
+
+While `activity` is `running`, `allowed_actions` omits every action that would
+start a second concurrent command; `pause` and the bookkeeping verbs stay
+listed. `degraded` + `running` never occurs on this device, because its only
+degraded state is a paused protocol.
+
+An open run is deliberately *not* treated as activity on its own: the HTTP
+transport keeps a run open between commands (`docs/HTTP_TRANSPORT.md`), so an
+open run is not evidence of motion.
 
 ### Initialising the OT-2
 
@@ -651,7 +699,7 @@ In `ac-organic-lab/equipment.yaml`, configure the OT-2 as an HTTP device:
   platform: hte
   kind: liquid_handler
   adapter: http
-  protocol: "1.1"
+  protocol: "1.2"
   base_url: http://<gateway-host>:8020
   status_path: /status
   poll_timeout_seconds: 2.0

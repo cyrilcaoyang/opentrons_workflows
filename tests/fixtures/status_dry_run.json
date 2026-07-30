@@ -1,5 +1,5 @@
 {
-  "protocol_version": "1.1",
+  "protocol_version": "1.2",
   "equipment_id": "ot2",
   "equipment_name": "Opentrons OT-2",
   "equipment_kind": "liquid_handler",
@@ -16,6 +16,8 @@
     "lights.set",
     "deck.declare"
   ],
+  "activity": "idle",
+  "activity_since": "2026-05-08T22:49:44Z",
   "device_time": "2026-05-08T22:50:01Z",
   "uptime_seconds": 0.0,
   "components": {
@@ -38,7 +40,13 @@
       "last_event_at": null
     }
   },
-  "metrics": {},
+  "metrics": {
+    "cycles_total": {
+      "value": 0,
+      "unit": "count",
+      "timestamp": null
+    }
+  },
   "last_error": null,
   "details": {
     "service_state": "dry_run",

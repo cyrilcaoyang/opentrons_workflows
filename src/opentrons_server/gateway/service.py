@@ -28,10 +28,14 @@ from .deck import (
     normalize_run_slots,
 )
 from .models import (
+    EQUIPMENT_KIND,
+    PROTOCOL_VERSION,
+    Activity,
     ComponentStatus,
     EquipmentStatus,
     ErrorInfo,
     LoadedPlate,
+    MetricValue,
     SlotLabware,
     SlotModule,
     WellSample,
@@ -79,6 +83,26 @@ _OT2_DECK_PROBE_TTL = float(os.getenv("OT2_DECK_PROBE_TTL", "3.0"))
 # EXTERNAL_CONTROL deck stays fresh without the (side-effect-free) /status handler
 # ever issuing HTTP. Only runs when auto_reconnect is on and not in dry-run.
 _OT2_RUN_REFRESH_INTERVAL = float(os.getenv("OT2_RUN_REFRESH_INTERVAL", "5.0"))
+
+
+# Actions that drive a protocol command on the robot — this device's primary
+# operation. Withheld from `allowed_actions` while one is already in flight
+# (STATUS_SPEC §2.3). Everything else on the surface is either abort/stop
+# class (`pause`), lifecycle (`startup` / `shutdown`), or pure bookkeeping
+# (plate / tip / deck tracking), none of which start a second run.
+_RUN_STARTING_ACTIONS = frozenset(
+    {
+        "setup",
+        "home",
+        "move_to",
+        "pick_up_tip",
+        "aspirate",
+        "dispense",
+        "drop_tip",
+        "move_labware",
+        "resume",
+    }
+)
 
 
 class OT2ServiceState(str, Enum):
@@ -181,12 +205,28 @@ class OT2Service:
         self._last_run_labware_at: float = 0.0
         self._status_note: Optional[str] = None
         self._boot_started = False
+        # Activity span tracking (STATUS_SPEC v1.2 §2.3). `_activity` is the
+        # last observed value and `_activity_since` the instant it last
+        # changed — the start of the CURRENT span, not of the process or of
+        # the enclosing request. `_run_action` stamps the exact edges of a
+        # gateway-driven command; `get_status` only reconciles.
+        self._activity: Activity = "unknown"
+        self._activity_since: Optional[datetime] = None
+        # Reserved monotonic counter (§2.3.1). A protocol command is typically
+        # far shorter than the aggregator's 60 s poll, so a sampled `activity`
+        # series would miss whole commands outright; the poll-to-poll delta of
+        # this counter is what makes OT-2 utilization accountable. Counts
+        # commands this process completed — it resets on restart, by contract.
+        self._cycles_total = 0
         self.last_snapshot: Dict[str, Any] = self._empty_snapshot()
         self.session_recipe: Dict[str, Any] = {
             "labware": [],
             "instruments": [],
             "modules": [],
         }
+        # Stamp the opening span so `activity_since` is a real instant from the
+        # first poll on, rather than "unknown until someone asks".
+        self._sync_activity()
 
     def startup(
         self,
@@ -928,6 +968,10 @@ class OT2Service:
 
         now = datetime.now(timezone.utc)
         status = self._equipment_state()
+        # Health (§2.2) and activity (§2.3) are answered independently; this
+        # only reconciles the span for transitions no command edge stamped
+        # (a boot stand-off, a self-heal, an operator reconcile).
+        activity = self._sync_activity()
         lights = self._lights_component()
         # Lights are a convenience control, not gated on equipment_status, so
         # advertise lights.set whenever the robot answered the lights read.
@@ -968,17 +1012,24 @@ class OT2Service:
             details["claimed_by"] = claimed_by.model_dump(mode="json")
 
         return EquipmentStatus(
+            # Explicit: the shared model defaults to "1.0" (the honest reading
+            # of a device that does not state a version), so every envelope
+            # names the version this gateway actually speaks.
+            protocol_version=PROTOCOL_VERSION,
             equipment_id=self.equipment_id,
             equipment_name=self.equipment_name,
+            equipment_kind=EQUIPMENT_KIND,
             equipment_version=self.equipment_version,
             equipment_status=status,
+            activity=activity,
+            activity_since=self._activity_since,
             message=self._message(),
             required_actions=self._required_actions(),
             allowed_actions=actions,
             device_time=now,
             uptime_seconds=time.monotonic() - self.started_at,
             components=self._components(lights),
-            metrics={},
+            metrics={"cycles_total": MetricValue(value=self._cycles_total, unit="count")},
             last_error=self.last_error,
             details=details,
         )
@@ -1064,6 +1115,23 @@ class OT2Service:
         return out
 
     def allowed_actions(self) -> list[str]:
+        """What this gateway would honor right now (§6.2 / §2.3).
+
+        The state table below is the primary gate; the activity gate after it
+        is a belt-and-braces guarantee that no protocol command is ever
+        advertised while one is in flight, however the state table evolves.
+        """
+
+        return [a for a in self._allowed_for_state() if not self._blocked_by_activity(a)]
+
+    def _blocked_by_activity(self, action: str) -> bool:
+        """§2.3: while ``activity == "running"``, omit anything that would
+        start or enqueue a *second* concurrent command. Abort/stop-class
+        actions (``pause``) and pure bookkeeping stay available."""
+
+        return action in _RUN_STARTING_ACTIONS and self._observed_activity() == "running"
+
+    def _allowed_for_state(self) -> list[str]:
         if self.state in {OT2ServiceState.REQUIRES_INIT, OT2ServiceState.ERROR}:
             return ["startup"]
         if self.state == OT2ServiceState.DRY_RUN:
@@ -1122,10 +1190,12 @@ class OT2Service:
 
         previous_state = self.state
         self.state = OT2ServiceState.BUSY
+        self._sync_activity()  # exact span start (§2.3): the command is in flight
         try:
             func()
             self.state = OT2ServiceState.READY
             self.last_error = None
+            self._cycles_total += 1
             self.refresh_snapshot()
         except (socket.timeout, paramiko.SSHException, OSError) as exc:
             if idempotent:
@@ -1141,6 +1211,10 @@ class OT2Service:
         finally:
             if self.state == OT2ServiceState.BUSY:
                 self.state = previous_state
+            # Exact span end, whatever the outcome — including the
+            # UNKNOWN_OUTCOME path, where "still running?" is genuinely
+            # unanswerable until an operator reconciles.
+            self._sync_activity()
 
     def _require_control(self) -> OT2Control:
         if self.control is None:
@@ -1184,6 +1258,57 @@ class OT2Service:
         if self.state == OT2ServiceState.UNKNOWN_OUTCOME:
             return "unknown"
         return "error"
+
+    def _observed_activity(self) -> Activity:
+        """Is the robot performing its primary operation right now? (§2.3)
+
+        Primary operation for this liquid handler is **a protocol command in
+        flight on the robot** — a motion, a liquid transfer, a tip or labware
+        move, or the setup that loads them. Two observations, neither read off
+        ``equipment_status``:
+
+        * ``BUSY`` brackets exactly one in-flight command (``_run_action``
+          sets it around the blocking call to the control plane).
+        * ``EXTERNAL_CONTROL`` is entered from the robot-server's own run list
+          (``probe_robot``'s ``run_active``) and left only once a fresh probe
+          says that run has finished — so it is a live observation of a run
+          the gateway deliberately did not seize.
+
+        ``run_active`` is deliberately NOT consulted on its own: the HTTP
+        transport keeps a run open between commands (docs/HTTP_TRANSPORT.md),
+        so an open run is not evidence of motion. The two control planes are
+        mutually exclusive, so an external run cannot start underneath a
+        ``READY`` gateway — the ``EXTERNAL_CONTROL`` branch is the only case
+        where an outside run is observable.
+
+        ``UNKNOWN_OUTCOME`` is the honest ``unknown``: transport died during a
+        non-idempotent command, so whether the robot is still moving is
+        exactly what we do not know until an operator reconciles.
+        """
+
+        if self.state in {OT2ServiceState.BUSY, OT2ServiceState.EXTERNAL_CONTROL}:
+            return "running"
+        if self.state == OT2ServiceState.UNKNOWN_OUTCOME:
+            return "unknown"
+        # Dry run included: the simulation performs no operation between
+        # commands, and reporting its real (idle) activity is what keeps a
+        # simulated device exercisable end-to-end. Readers exclude simulated
+        # devices from utilization; devices do not self-censor.
+        return "idle"
+
+    def _note_activity(self, activity: Activity) -> None:
+        """Record an observed activity, stamping ``activity_since`` only when
+        the value actually changes (§2.3: the start of the CURRENT span)."""
+
+        if activity != self._activity:
+            self._activity = activity
+            self._activity_since = datetime.now(timezone.utc)
+
+    def _sync_activity(self) -> Activity:
+        """Reconcile the tracked span with what is observed right now."""
+
+        self._note_activity(self._observed_activity())
+        return self._activity
 
     def _message(self) -> str:
         if self.last_error is not None:

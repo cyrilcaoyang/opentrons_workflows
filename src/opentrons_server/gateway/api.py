@@ -166,8 +166,15 @@ def create_app(
 
     app = FastAPI(
         title="Opentrons OT-2 Gateway",
-        version="1.1.0",
-        description="AC-compatible REST gateway for an Opentrons OT-2 liquid handler.",
+        # Tracks the STATUS_SPEC revision this gateway speaks.
+        version="1.2.0",
+        description=(
+            "AC-compatible REST gateway for an Opentrons OT-2 liquid handler. "
+            "Conforms to lab status spec v1.2: this device's primary operation "
+            "(what `activity` reports) is a protocol command in flight on the "
+            "robot, and `metrics.cycles_total` counts the commands completed "
+            "since the gateway started."
+        ),
     )
     app.add_middleware(
         CORSMiddleware,
