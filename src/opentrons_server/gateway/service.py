@@ -84,6 +84,12 @@ _OT2_DECK_PROBE_TTL = float(os.getenv("OT2_DECK_PROBE_TTL", "3.0"))
 # ever issuing HTTP. Only runs when auto_reconnect is on and not in dry-run.
 _OT2_RUN_REFRESH_INTERVAL = float(os.getenv("OT2_RUN_REFRESH_INTERVAL", "5.0"))
 
+# Minimum spacing between *automatic* startup attempts when self-healing from a
+# boot-time stand-off. A REPL + protocol init takes ~2 minutes, so retrying at
+# the refresh cadence would keep a struggling robot permanently occupied and
+# bury the real failure in a restart loop.
+_OT2_SELF_HEAL_INTERVAL = float(os.getenv("OT2_SELF_HEAL_INTERVAL", "60.0"))
+
 
 # Actions that drive a protocol command on the robot — this device's primary
 # operation. Withheld from `allowed_actions` while one is already in flight
@@ -205,6 +211,12 @@ class OT2Service:
         self._last_run_labware_at: float = 0.0
         self._status_note: Optional[str] = None
         self._boot_started = False
+        # Set by an operator POST /control/shutdown. Suppresses the background
+        # self-heal so "shut it down" stays shut down: without it the refresh
+        # loop would re-take the REPL seconds later and make the endpoint a
+        # no-op. Cleared by an explicit POST /control/startup.
+        self._operator_shutdown = False
+        self._last_self_heal_at = 0.0
         # Activity span tracking (STATUS_SPEC v1.2 §2.3). `_activity` is the
         # last observed value and `_activity_since` the instant it last
         # changed — the start of the CURRENT span, not of the process or of
@@ -236,6 +248,10 @@ class OT2Service:
         simulation: Optional[bool] = None,
     ) -> None:
         """Connect and initialize the remote protocol session."""
+
+        # An explicit startup is the operator asking for the session back, so
+        # it re-arms the background self-heal.
+        self._operator_shutdown = False
 
         if self.dry_run:
             self.state = OT2ServiceState.DRY_RUN
@@ -287,8 +303,13 @@ class OT2Service:
         return control
 
     def shutdown(self) -> None:
-        """Close the robot session and return to requires-init."""
+        """Close the robot session and return to requires-init.
 
+        Latches ``_operator_shutdown`` so the background self-heal does not
+        immediately undo it — the gateway stays down until someone starts it.
+        """
+
+        self._operator_shutdown = True
         if self.control is not None:
             try:
                 self.control.shutdown()
@@ -752,14 +773,21 @@ class OT2Service:
             self._last_probe = probe
             if probe.get("api_version"):
                 self.equipment_version = probe["api_version"]
+            # The boot note ("Robot unreachable at …") outlives the condition
+            # it describes: it is set once at boot and nothing cleared it, so
+            # /status went on reporting a robot as unreachable long after it
+            # came back — the single most misleading thing on the tile. The
+            # only note reachable in `requires_init` is that one.
+            if self.state == OT2ServiceState.REQUIRES_INIT:
+                self._status_note = None
         self._refresh_run_labware(force=True)
         # Fold the deck-light read into the same off-request-path refresh so
         # /status can serve it from cache instead of blocking on robot HTTP.
         self._refresh_lights()
-        # Self-heal from a boot-time stand-off: if we deferred to an external
-        # (app-driven) run at boot and that run has since finished, reclaim the
-        # control plane so the gateway returns to `ready` without a restart.
+        # Self-heal from either boot-time stand-off: a robot that was busy with
+        # an external run, or one that was simply not there yet.
         self._maybe_resume_from_external_control(probe)
+        self._maybe_resume_from_unreachable_boot(probe)
 
     def _maybe_resume_from_external_control(self, probe: Dict[str, Any]) -> None:
         """Reclaim the REPL control plane once an external run has finished.
@@ -788,6 +816,66 @@ class OT2Service:
             self.startup()
         except Exception:  # pragma: no cover - startup records its own error/state
             # startup() already recorded last_error and flipped to ERROR.
+            pass
+
+    def _maybe_resume_from_unreachable_boot(self, probe: Dict[str, Any]) -> None:
+        """(Re)establish the session once a robot absent at boot comes back.
+
+        The sibling of :meth:`_maybe_resume_from_external_control`, for the
+        other boot-time stand-off. ``boot_reconnect`` leaves an unreachable
+        robot in ``requires_init`` and, until this existed, nothing ever
+        retried: a gateway that started while its OT-2 was off stayed down
+        until an operator noticed the tile and POSTed ``/control/startup`` —
+        which is exactly how both gateways spent a weekend idle.
+
+        The guards are what make this safe to run unattended:
+
+        * ``_operator_shutdown`` — a deliberate ``/control/shutdown`` is never
+          undone, or the endpoint would be a no-op.
+        * ``requires_init`` only — never from ``error`` (a failed startup
+          should surface, not loop) and never from a live session.
+        * ``run_active`` — a robot busy with an outside run is deferred to,
+          the same way ``boot_reconnect`` does, which hands it to the
+          external-control self-heal once that run ends.
+        * ``_OT2_SELF_HEAL_INTERVAL`` — bounds retries against a robot that is
+          reachable but cannot complete a protocol init.
+
+        Best-effort; never raises. ``probe`` must be a freshly-read
+        ``probe_robot()`` result, not the cached ``_last_probe``.
+        """
+
+        if self.dry_run or self._operator_shutdown:
+            return
+        if self.state != OT2ServiceState.REQUIRES_INIT or not self._boot_started:
+            return
+        if not probe.get("reachable"):
+            return
+
+        if probe.get("run_active"):
+            # Same stand-off boot_reconnect would have taken had the robot been
+            # reachable then; _maybe_resume_from_external_control takes it from here.
+            self.state = OT2ServiceState.EXTERNAL_CONTROL
+            self._status_note = (
+                "Robot has an active run (external / official app); gateway is standing off"
+            )
+            logger.info("self-heal: %s", self._status_note)
+            return
+
+        now = time.monotonic()
+        if self._last_self_heal_at and (now - self._last_self_heal_at) < _OT2_SELF_HEAL_INTERVAL:
+            return
+        self._last_self_heal_at = now
+
+        logger.info(
+            "self-heal: robot reachable and idle after an unreachable boot; "
+            "starting %s session + protocol init (this can take several minutes)",
+            self.transport,
+        )
+        try:
+            self.startup()
+        except Exception:  # pragma: no cover - startup records its own error/state
+            # startup() already recorded last_error and flipped to ERROR; the
+            # requires_init guard above stops this from retrying in a loop.
             pass
 
     def boot_reconnect(self) -> None:

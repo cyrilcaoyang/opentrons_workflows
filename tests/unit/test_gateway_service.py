@@ -535,6 +535,136 @@ def test_boot_reconnect_unreachable_stays_requires_init(monkeypatch):
     assert "unreachable" in service.get_status().message.lower()
 
 
+def test_self_heals_when_robot_returns_after_unreachable_boot(monkeypatch):
+    """A gateway that starts while its OT-2 is off must not stay down forever.
+
+    Before this, nothing retried the unreachable-at-boot stand-off, so the
+    gateway sat in `requires_init` until an operator noticed the tile.
+    """
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", lambda **kwargs: Mock())
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(fail=True)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9", password="pw")
+    service.boot_reconnect()
+    assert service.state == OT2ServiceState.REQUIRES_INIT
+
+    # Robot powers back on: the next background refresh takes the control plane.
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=False)
+    )
+    service._refresh_identity()
+
+    assert service.state == OT2ServiceState.READY
+    assert service.control is not None
+
+
+def test_returning_robot_that_is_busy_is_deferred_to(monkeypatch):
+    """If the robot comes back mid-run, stand off exactly as boot would have —
+    the external-control self-heal picks it up when that run ends."""
+
+    def must_not_connect(**kwargs):
+        raise AssertionError("must not seize a robot with an active run")
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", must_not_connect)
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(fail=True)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9")
+    service.boot_reconnect()
+
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=True)
+    )
+    service._refresh_identity()
+
+    assert service.state == OT2ServiceState.EXTERNAL_CONTROL
+    assert service.control is None
+    status = service.get_status()
+    assert status.equipment_status == "busy"
+    assert status.activity == "running"
+
+
+def test_self_heal_never_undoes_an_operator_shutdown(monkeypatch):
+    """Otherwise /control/shutdown would be a no-op: the refresh loop would
+    re-take the REPL seconds later."""
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", lambda **kwargs: Mock())
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=False)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9", password="pw")
+    service.boot_reconnect()
+    assert service.state == OT2ServiceState.READY
+
+    service.shutdown()
+    assert service.state == OT2ServiceState.REQUIRES_INIT
+
+    service._refresh_identity()
+    assert service.state == OT2ServiceState.REQUIRES_INIT
+    assert service.control is None
+
+    # An explicit startup re-arms it.
+    service.startup()
+    assert service.state == OT2ServiceState.READY
+
+
+def test_self_heal_retry_is_rate_limited(monkeypatch):
+    """A robot that answers HTTP but cannot finish a protocol init must not be
+    hammered once per refresh tick."""
+
+    attempts = []
+
+    def flaky(**kwargs):
+        attempts.append(1)
+        raise RuntimeError("protocol init failed")
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", flaky)
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(fail=True)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9")
+    service.boot_reconnect()
+
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=False)
+    )
+    service._refresh_identity()
+    assert len(attempts) == 1
+    assert service.state == OT2ServiceState.ERROR
+
+    # Even back in requires_init, the next tick is inside the retry window.
+    service.state = OT2ServiceState.REQUIRES_INIT
+    service._refresh_identity()
+    assert len(attempts) == 1
+
+
+def test_stale_unreachable_message_clears_when_robot_returns(monkeypatch):
+    """/status must stop claiming 'Robot unreachable' once it isn't — the note
+    was set at boot and previously nothing ever cleared it."""
+
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(fail=True)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9")
+    service.boot_reconnect()
+    assert "unreachable" in service.get_status().message.lower()
+
+    # Reachable again, but the operator has asked for it to stay down, so no
+    # session is taken — the message must still tell the truth.
+    service._operator_shutdown = True
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=False)
+    )
+    service._refresh_identity()
+
+    status = service.get_status()
+    assert status.equipment_status == "requires_init"
+    assert "unreachable" not in (status.message or "").lower()
+    assert status.details["robot"]["reachable"] is True
+
+
 def test_boot_reconnect_is_noop_in_dry_run(monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("dry-run must not probe the robot")
