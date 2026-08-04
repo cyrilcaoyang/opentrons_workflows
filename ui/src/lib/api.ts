@@ -36,7 +36,10 @@ const apiBase: string = (() => {
 })();
 
 function apiUrl(path: string): string {
-  return `${apiBase}${path}`.replace(/\/{2,}/g, (m, off) => (off === 0 ? m : "/"));
+  // Join without ever producing a leading "//": the browser would read that
+  // as a scheme-relative URL (e.g. "//status" -> http://status/). apiBase
+  // always ends with "/" and path always starts with "/", so trim one.
+  return `${apiBase.replace(/\/+$/, "")}${path}`;
 }
 
 export class ApiError extends Error {

@@ -51,8 +51,16 @@ export function useClaim(owner: string) {
 
   const acquire = useCallback(async () => {
     setState((s) => ({ ...s, pending: true, error: null, conflict: null }));
-    const sessionId = `ui-${crypto.randomUUID()}`;
     try {
+      // crypto.randomUUID is secure-context-only, and the edge serves this
+      // page over plain HTTP on a raw tailnet IP — fall back to
+      // getRandomValues, which is available in insecure contexts too.
+      const uuid =
+        crypto.randomUUID?.() ??
+        Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
+          b.toString(16).padStart(2, "0"),
+        ).join("");
+      const sessionId = `ui-${uuid}`;
       const resp = await postClaim(owner, sessionId, 60);
       tokenRef.current = resp.claim_token;
       setState({
