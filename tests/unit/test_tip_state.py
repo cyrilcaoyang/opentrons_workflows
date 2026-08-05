@@ -6,6 +6,7 @@ from opentrons_server.gateway.tip_state import (
     EMPTY,
     TipStateStore,
     TipUnavailable,
+    covered_well_span,
     tip_well_order_96,
 )
 
@@ -92,6 +93,132 @@ def test_unknown_rack_and_well_raise(store):
     store.register_rack("tips_300")
     with pytest.raises(ValueError):
         store.set_status("tips_300", "Z99", "x")
+
+
+# ---- multi-channel coverage -------------------------------------------------
+
+
+def test_covered_well_span_geometry():
+    assert covered_well_span("A1", 1) == ["A1"]
+    assert covered_well_span("C7", 1) == ["C7"]  # 1 channel: any row is fine
+    assert covered_well_span("A1", 8) == ["A1", "B1", "C1", "D1", "E1", "F1", "G1", "H1"]
+    assert covered_well_span("A12", 8) == [f"{r}12" for r in "ABCDEFGH"]
+    assert covered_well_span("A3", 4) == ["A3", "B3", "C3", "D3"]
+
+    with pytest.raises(ValueError):
+        covered_well_span("E1", 8)  # would run off the bottom of the rack
+    with pytest.raises(ValueError):
+        covered_well_span("A1", 0)
+    with pytest.raises(ValueError):
+        covered_well_span("nope", 1)
+
+
+def test_covered_wells_refuses_non_row_a_multichannel(store):
+    store.register_rack("tips_20")
+
+    assert store.covered_wells("tips_20", "B1", channels=1) == ["B1"]
+    with pytest.raises(TipUnavailable) as exc:
+        store.covered_wells("tips_20", "B1", channels=8)
+    assert exc.value.body["well"] == "B1"
+    assert exc.value.body["channels"] == 8
+    # No blocking well: the address itself is wrong, no column was inspected.
+    assert exc.value.body["covered_wells"] is None
+    assert "blocking_well" not in exc.value.body
+
+
+def test_covered_wells_rejects_a_span_the_rack_cannot_hold(store):
+    store.register_rack("mini", wells=["A1", "B1"])
+    with pytest.raises(ValueError):
+        store.covered_wells("mini", "A1", channels=8)
+
+
+def test_validate_pick_requires_the_whole_column(store):
+    store.register_rack("tips_20")
+    assert store.validate_pick("tips_20", "A1", channels=8) is None
+
+    # One consumed well in the column makes the whole column unpickable, and the
+    # refusal names it — a partial column is not pickable by an 8-channel head.
+    store.set_status("tips_20", "C1", EMPTY)
+    with pytest.raises(TipUnavailable) as exc:
+        store.validate_pick("tips_20", "A1", channels=8)
+    body = exc.value.body
+    assert body["blocking_well"] == "C1"
+    assert body["well"] == "A1"
+    assert body["tip_status"] == EMPTY
+    assert body["channels"] == 8
+    assert body["covered_wells"] == [f"{r}1" for r in "ABCDEFGH"]
+    assert "C1" in body["detail"]
+
+    # Single-channel picks in that column are unaffected.
+    assert store.validate_pick("tips_20", "A1", channels=1) is None
+
+
+def test_validate_pick_multichannel_contamination_and_force(store):
+    store.register_rack("tips_20")
+    store.set_status("tips_20", "D1", "sample_X")
+
+    with pytest.raises(TipUnavailable) as exc:
+        store.validate_pick("tips_20", "A1", channels=8, sample_id="sample_Y")
+    assert exc.value.body["blocking_well"] == "D1"
+    assert exc.value.body["tip_status"] == "sample_X"
+
+    # Same-sample reuse and force clear it, exactly as for one channel.
+    assert store.validate_pick("tips_20", "A1", channels=8, sample_id="sample_X") is None
+    assert store.validate_pick("tips_20", "A1", channels=8, force=True) is None
+    # The return value is the *addressed* well's prior status, not the column's.
+    store.set_status("tips_20", "A1", "sample_X")
+    assert (
+        store.validate_pick("tips_20", "A1", channels=8, sample_id="sample_X")
+        == "sample_X"
+    )
+
+
+def test_next_available_multichannel_steps_by_column(store):
+    store.register_rack("tips_20")
+    assert store.next_available("tips_20", channels=8) == "A1"
+
+    # A single consumed tip retires the whole column for an 8-channel head: the
+    # next start is A2, never B1 (which would put 7 channels over empty holes).
+    store.set_statuses("tips_20", [f"{r}1" for r in "ABCDEFGH"], EMPTY)
+    assert store.next_available("tips_20", channels=8) == "A2"
+    store.set_status("tips_20", "H2", "sample_X")
+    assert store.next_available("tips_20", channels=8) == "A3"
+    # ... while a single-channel head happily takes what is left of column 2.
+    assert store.next_available("tips_20", channels=1) == "A2"
+    # Same-sample reuse still counts as pickable for the whole span.
+    assert store.next_available("tips_20", channels=8, sample_id="sample_X") == "A2"
+
+
+def test_next_available_multichannel_exhausted_raises(store):
+    store.register_rack("tips_20")
+    for column in range(1, 13):
+        store.set_status("tips_20", f"H{column}", EMPTY)
+
+    with pytest.raises(TipUnavailable) as exc:
+        store.next_available("tips_20", channels=8)
+    assert exc.value.body["channels"] == 8
+    assert exc.value.body["rack"] == "tips_20"
+    # Every column still has 7 fresh tips for a single-channel pipette.
+    assert store.next_available("tips_20", channels=1) == "A1"
+
+
+def test_next_available_single_channel_body_is_unchanged(store):
+    store.register_rack("mini", wells=["A1"])
+    store.set_status("mini", "A1", EMPTY)
+
+    with pytest.raises(TipUnavailable) as exc:
+        store.next_available("mini")
+    assert "channels" not in exc.value.body
+
+
+def test_set_statuses_validates_before_mutating(store):
+    store.register_rack("mini", wells=["A1", "B1"])
+    with pytest.raises(ValueError):
+        store.set_statuses("mini", ["A1", "Z9"], EMPTY)
+    assert store.status("mini", "A1") == "new"  # nothing was written
+
+    store.set_statuses("mini", ["A1", "B1"], EMPTY)
+    assert store.summary()["mini"]["empty"] == 2
 
 
 def test_summary_counts(store):

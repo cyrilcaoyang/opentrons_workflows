@@ -769,8 +769,32 @@ transports:
 - Aspirate/dispense stamp the mounted tip with what it touched — the tracked
   plate's real `sample_id` when the target well has one, else
   `<labware>_<well>`. Drop marks the origin well `"empty"`.
-- `/status` surfaces `details.tip_racks` (per-rack counts + non-fresh wells)
-  and `details.mounted_tips` (per-pipette rack/well/last sample).
+- `/status` surfaces `details.tip_racks` (per-rack counts + non-fresh wells),
+  `details.mounted_tips` (per-pipette rack / addressed well / covered `wells` /
+  `channels` / last sample), and `details.pipette_channels`.
+
+**Multi-channel pipettes** are tracked per *head*, not per addressed well. An
+N-channel pipette sent to a row-A well takes N tips **downward in the same
+column**, so an 8-channel pick at A1 consumes A1–H1: all eight wells are
+validated, stamped on aspirate/dispense, and set `"empty"` on drop. Consequences
+worth knowing:
+
+- **Auto-pick steps by column.** With `position` omitted, an 8-channel pipette
+  returns the first well whose *whole* span is free — A1, then A2 — never B1,
+  which would put seven channels over holes whose tips are already on the head.
+- **A partial column is not pickable.** One consumed well retires the column for
+  a multi-channel head; the 412 body adds `channels`, `covered_wells`, and
+  `blocking_well` naming the offender. Single-channel picks in that column are
+  unaffected.
+- **Multi-channel picks must be addressed at row A**; a lower start is refused
+  rather than silently tracking the wrong wells.
+- **Channel counts come from the robot**, via `GET /instruments` joined to the
+  recipe's `mount` (an explicit `channels` on a `/control/setup` instrument entry
+  wins, which is what makes this testable in dry-run). They are never inferred
+  from the model name — `p20_multi_gen2` containing `multi` is a naming
+  convention, not a fact about the hardware. A pipette whose count cannot be
+  determined falls back to 1, i.e. pre-multi-channel behaviour; check
+  `details.pipette_channels` if a rack's counts look eight times too optimistic.
 
 ## Workflows
 

@@ -184,9 +184,16 @@ class OT2Service:
         self.tips = (
             tips if tips is not None else TipStateStore(state_path="./ot2_tip_state.json")
         )
-        # pipette -> {rack, well, last_sample, origin_status} for the currently
-        # mounted (tracked) tip. In-memory session state, like session_recipe.
+        # pipette -> {rack, well, wells, channels, last_sample, origin_status} for
+        # the currently mounted (tracked) tips. `well` is the addressed well and
+        # `wells` every well the head emptied — the same list for a 1-channel
+        # pipette, a whole column for an 8-channel one. In-memory session state,
+        # like session_recipe.
         self._mounted_tips: Dict[str, Dict[str, Any]] = {}
+        # pipette nickname -> channel count, bound at /control/setup from the
+        # robot's own instrument report (see _bind_pipette_channels). Drives how
+        # many tip wells a pick consumes; unknown pipettes default to 1.
+        self._pipette_channels: Dict[str, int] = {}
         self._refresh_stop = threading.Event()
         self.started_at = time.monotonic()
         self.state = OT2ServiceState.DRY_RUN if dry_run else OT2ServiceState.REQUIRES_INIT
@@ -338,6 +345,56 @@ class OT2Service:
             nickname = lw.get("nickname")
             if nickname and self._labware_is_tiprack(lw):
                 self.tips.register_rack(str(nickname))
+        self._bind_pipette_channels()
+
+    def _bind_pipette_channels(self) -> None:
+        """Bind each recipe pipette nickname to its channel count.
+
+        The count comes from the robot's own ``GET /instruments`` (mount ->
+        channels, cached on ``_last_probe``), joined to the nickname by the mount
+        the recipe declares — the recipe is the only place both are known. An
+        explicit ``channels`` on the instrument entry wins, which is what makes
+        dry-run and simulation testable without a robot.
+
+        Never inferred from the model name: ``p20_multi_gen2`` happening to
+        contain ``multi`` is a naming convention, not a fact about the hardware,
+        and getting it wrong here mis-tracks a whole column.
+        """
+
+        by_mount = {
+            str(inst.get("mount")).strip().lower(): inst.get("channels")
+            for inst in (self._last_probe.get("instruments") or [])
+            if inst.get("mount")
+        }
+        for inst in self.session_recipe.get("instruments") or []:
+            nickname = inst.get("nickname")
+            if not nickname:
+                continue
+            channels = inst.get("channels")
+            if channels is None:
+                channels = by_mount.get(str(inst.get("mount") or "").strip().lower())
+            try:
+                count = int(channels)
+            except (TypeError, ValueError):
+                continue  # unknown -> stay unbound; _channels_for falls back to 1
+            if count >= 1:
+                self._pipette_channels[str(nickname)] = count
+
+    def _channels_for(self, pipette: str) -> int:
+        """Channel count for a pipette nickname; 1 when it cannot be determined.
+
+        Falls back to 1 deliberately: an unbound pipette then behaves exactly as
+        it did before multi-channel tracking existed, rather than refusing picks
+        on a robot whose instrument probe is unreachable. The live binding is
+        published as ``details.pipette_channels`` so a silent 1 is diagnosable.
+        """
+
+        channels = self._pipette_channels.get(pipette)
+        if channels is None and self._last_probe:
+            # The probe may have landed after setup (boot order, a reconnect).
+            self._bind_pipette_channels()
+            channels = self._pipette_channels.get(pipette)
+        return channels or 1
 
     @staticmethod
     def _labware_is_tiprack(lw: Dict[str, Any]) -> bool:
@@ -428,16 +485,21 @@ class OT2Service:
         sample_id = getattr(request, "sample_id", None)
         force = bool(getattr(request, "force", False))
         tracked = bool(rack) and self.tips.has_rack(rack)
+        # An N-channel head takes N wells per pick, so every tracking decision
+        # below is made over the covered set, not the addressed well alone.
+        channels = self._channels_for(request.pipette)
 
         # Contamination guard + auto-pick, both only for tracked racks. Raises
         # TipUnavailable (HTTP 412 at the API layer) before any hardware motion.
         if tracked and not well:
-            well = self.tips.next_available(rack, sample_id=sample_id)
+            well = self.tips.next_available(rack, sample_id=sample_id, channels=channels)
         prior_status: Optional[str] = None
+        covered: List[str] = []
         if tracked and well:
             prior_status = self.tips.validate_pick(
-                rack, well, sample_id=sample_id, force=force
+                rack, well, sample_id=sample_id, force=force, channels=channels
             )
+            covered = self.tips.covered_wells(rack, well, channels=channels)
 
         def _pick_up_tip() -> None:
             if rack and well:
@@ -449,6 +511,8 @@ class OT2Service:
             self._mounted_tips[request.pipette] = {
                 "rack": rack,
                 "well": well,
+                "wells": covered,
+                "channels": channels,
                 "last_sample": sample_id or prior_status,
                 "origin_status": prior_status,
             }
@@ -467,8 +531,20 @@ class OT2Service:
 
         self._run_action("drop_tip", _drop_tip, idempotent=False)
         mounted = self._mounted_tips.pop(request.pipette, None)
-        if mounted is not None and self.tips.has_rack(mounted["rack"]):
-            self.tips.set_status(mounted["rack"], mounted["well"], EMPTY)
+        # Every well the head emptied goes back to "empty", not just the
+        # addressed one — otherwise a multi-channel column stays partly "new"
+        # and the next auto-pick sends the head onto holes.
+        self._mark_mounted_wells(mounted, EMPTY)
+
+    def _mark_mounted_wells(
+        self, mounted: Optional[Dict[str, Any]], status: str
+    ) -> None:
+        """Stamp ``status`` on every rack well the mounted head's tips came from."""
+
+        if mounted is None or not self.tips.has_rack(mounted["rack"]):
+            return
+        wells = mounted.get("wells") or [mounted["well"]]
+        self.tips.set_statuses(mounted["rack"], list(wells), status)
 
     def _mark_tip_used(self, pipette: str, labware_nickname: str, position: str) -> None:
         """Record what the mounted tip touched, after a successful liquid step.
@@ -483,8 +559,7 @@ class OT2Service:
             return
         sample = self._resolve_sample_id(labware_nickname, position)
         mounted["last_sample"] = sample
-        if self.tips.has_rack(mounted["rack"]):
-            self.tips.set_status(mounted["rack"], mounted["well"], sample)
+        self._mark_mounted_wells(mounted, sample)
 
     def _resolve_sample_id(self, labware_nickname: str, position: str) -> str:
         plate = self.plates.get()
@@ -1093,6 +1168,10 @@ class OT2Service:
         details["mounted_tips"] = {
             pip: dict(info) for pip, info in self._mounted_tips.items()
         }
+        # How many tip wells each pipette consumes per pick. Published because an
+        # unbound pipette falls back to 1, and a silent 1 on an 8-channel head is
+        # exactly the mis-tracking this exists to prevent.
+        details["pipette_channels"] = dict(self._pipette_channels)
         if self._last_probe:
             details["robot"] = self._last_probe
         claimed_by = self.claims.current()

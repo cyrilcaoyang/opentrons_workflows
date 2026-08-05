@@ -15,6 +15,13 @@ Tip status vocabulary (per well):
   sample X* (or with ``force=true``), but never silently for another sample —
   that is the cross-contamination guard.
 
+A pick is tracked per *pipette head*, not per addressed well: an N-channel
+pipette sent to a row-A well removes the whole N-well column (see
+:func:`covered_well_span`), so ``validate_pick`` / ``next_available`` /
+``set_statuses`` all operate on the covered set. ``channels=1`` covers exactly
+the addressed well, which is the single-channel behaviour this store has always
+had.
+
 ``OT2Service`` drives the lifecycle: registration on ``/control/setup``,
 validation + auto-pick on ``/control/pick-up-tip``, sample marking after
 aspirate/dispense, ``"empty"`` on drop. Refusals raise :class:`TipUnavailable`,
@@ -52,6 +59,41 @@ def tip_well_order_96() -> List[str]:
     """
 
     return [f"{row}{col}" for col in range(1, 13) for row in _ROW_LETTERS]
+
+
+def _split_well(well: str) -> tuple[str, str]:
+    """Split ``"A1"`` into ``("A", "1")``; raise on any other shape."""
+
+    text = str(well).strip()
+    if len(text) < 2 or not text[1:].isdigit():
+        raise ValueError(f"Well id {well!r} is not <row letter><column number>")
+    return text[0].upper(), text[1:]
+
+
+def covered_well_span(well: str, channels: int) -> List[str]:
+    """The wells a ``channels``-wide pipette head occupies when sent to ``well``.
+
+    A single-channel pipette covers exactly the addressed well. A multi-channel
+    head spans ``channels`` wells **downward in the same column**, so an
+    8-channel pick at A1 occupies A1..H1 — the physical reason a whole column
+    leaves the rack on one pick, which is what the addressed well alone cannot
+    express.
+
+    Pure geometry: it knows nothing about a rack's contents or which starts are
+    permitted (see :meth:`TipStateStore.covered_wells` for the row-A policy).
+    """
+
+    if channels < 1:
+        raise ValueError(f"channels must be >= 1, got {channels!r}")
+    row, column = _split_well(well)
+    if row not in _ROW_LETTERS:
+        raise ValueError(f"Well id {well!r} has an unknown row letter {row!r}")
+    start = _ROW_LETTERS.index(row)
+    if start + channels > len(_ROW_LETTERS):
+        raise ValueError(
+            f"A {channels}-channel head at {well} would run off the bottom of the rack"
+        )
+    return [f"{_ROW_LETTERS[start + offset]}{column}" for offset in range(channels)]
 
 
 class TipUnavailable(Exception):
@@ -143,6 +185,66 @@ class TipStateStore:
             rack.tips[well] = status
             self._persist_locked()
 
+    def set_statuses(self, nickname: str, wells: List[str], status: str) -> None:
+        """Set several wells at once, validating all of them before mutating any.
+
+        One persist for the whole set, so a multi-channel pick or drop can never
+        leave half a column recorded.
+        """
+
+        with self._lock:
+            rack = self._require_rack_locked(nickname)
+            for well in wells:
+                self._require_well_locked(rack, well)
+            for well in wells:
+                rack.tips[well] = status
+            self._persist_locked()
+
+    def covered_wells(
+        self,
+        nickname: str,
+        well: str,
+        *,
+        channels: int = 1,
+        sample_id: Optional[str] = None,
+    ) -> List[str]:
+        """The wells in ``nickname`` a ``channels``-wide head takes tips from.
+
+        ``channels=1`` is exactly ``[well]``. A multi-channel pick must be
+        addressed at row A — the head spans downward from there — so a lower
+        start is refused with :class:`TipUnavailable` rather than silently
+        tracking the wrong wells.
+        """
+
+        with self._lock:
+            rack = self._require_rack_locked(nickname)
+            self._require_well_locked(rack, well)
+            known = set(rack.tips)
+        if channels > 1 and _split_well(well)[0] != _ROW_LETTERS[0]:
+            raise TipUnavailable(
+                {
+                    "detail": (
+                        f"A {channels}-channel pick must be addressed at row "
+                        f"{_ROW_LETTERS[0]}, not {nickname} {well}"
+                    ),
+                    "rack": nickname,
+                    "well": well,
+                    "tip_status": None,
+                    "requested_sample_id": sample_id,
+                    "channels": channels,
+                    "covered_wells": None,
+                    "retry_after_s": None,
+                }
+            )
+        covered = covered_well_span(well, channels)
+        missing = [w for w in covered if w not in known]
+        if missing:
+            raise ValueError(
+                f"Rack {nickname!r} has no well(s) {missing}, covered by a "
+                f"{channels}-channel pick at {well}"
+            )
+        return covered
+
     def validate_pick(
         self,
         nickname: str,
@@ -150,13 +252,64 @@ class TipStateStore:
         *,
         sample_id: Optional[str] = None,
         force: bool = False,
+        channels: int = 1,
     ) -> Optional[str]:
-        """Refuse or allow picking the tip at ``well``.
+        """Refuse or allow a ``channels``-wide pick addressed at ``well``.
 
-        Returns the prior status when the pick is allowed (``None`` for a fresh
-        tip); raises :class:`TipUnavailable` otherwise. Allowed when the tip is
-        fresh, when its status equals ``sample_id`` (same-sample reuse), or when
-        ``force`` is set — except an ``"empty"`` well, which force cannot fix.
+        Returns the prior status of the **addressed** well when the pick is
+        allowed (``None`` for a fresh tip); raises :class:`TipUnavailable`
+        otherwise.
+
+        Every well the head covers must be pickable. A multi-channel pick takes
+        a whole column in one motion, so a partially-consumed column is not
+        pickable at all — the refusal names the well that blocks it, since
+        "some tip in that column is gone" is not actionable on its own.
+        """
+
+        covered = self.covered_wells(
+            nickname, well, channels=channels, sample_id=sample_id
+        )
+        if channels == 1:
+            return self._validate_one(nickname, covered[0], sample_id=sample_id, force=force)
+        addressed: Optional[str] = None
+        for index, covered_well in enumerate(covered):
+            try:
+                prior = self._validate_one(
+                    nickname, covered_well, sample_id=sample_id, force=force
+                )
+            except TipUnavailable as exc:
+                raise TipUnavailable(
+                    {
+                        "detail": (
+                            f"Cannot pick {channels} tips at {nickname} {well}: "
+                            + str(exc.body.get("detail", "tip unavailable"))
+                        ),
+                        "rack": nickname,
+                        "well": well,
+                        "tip_status": exc.body.get("tip_status"),
+                        "requested_sample_id": sample_id,
+                        "channels": channels,
+                        "covered_wells": covered,
+                        "blocking_well": covered_well,
+                        "retry_after_s": None,
+                    }
+                ) from exc
+            if index == 0:
+                addressed = prior
+        return addressed
+
+    def _validate_one(
+        self,
+        nickname: str,
+        well: str,
+        *,
+        sample_id: Optional[str] = None,
+        force: bool = False,
+    ) -> Optional[str]:
+        """Single-well pickability: fresh, same-sample reuse, or ``force``.
+
+        An ``"empty"`` well is refused even with ``force`` — force overrides the
+        contamination guard, not the absence of a tip.
         """
 
         status = self.status(nickname, well)
@@ -199,8 +352,16 @@ class TipStateStore:
         *,
         sample_id: Optional[str] = None,
         start_well: Optional[str] = None,
+        channels: int = 1,
     ) -> str:
-        """First pickable well (fresh, or matching ``sample_id``), column-major."""
+        """First well a ``channels``-wide head can pick from, column-major.
+
+        Pickable means fresh, or matching ``sample_id``. For a multi-channel head
+        it means **every** well the head covers is pickable, so the scan only
+        considers valid row-A starts and effectively steps by column
+        (A1 -> A2 -> ...). Returning a lower row would put the trailing channels
+        over wells whose tips are already on the head.
+        """
 
         with self._lock:
             rack = self._require_rack_locked(nickname)
@@ -210,23 +371,36 @@ class TipStateStore:
                 raise ValueError(f"start_well {start_well!r} is not in rack {nickname!r}")
             wells = wells[wells.index(start_well) :]
         for well in wells:
-            status = self.status(nickname, well)
-            normalized = status.strip().lower()
-            if normalized in _FRESH_STATUSES:
+            try:
+                covered = self.covered_wells(
+                    nickname, well, channels=channels, sample_id=sample_id
+                )
+            except (TipUnavailable, ValueError):
+                continue  # not a valid start for this head: wrong row, or off the rack
+            if all(self._is_pickable(nickname, w, sample_id=sample_id) for w in covered):
                 return well
-            if sample_id is not None and status == sample_id:
-                return well
-        raise TipUnavailable(
-            {
-                "detail": f"No available tip in {nickname!r}"
-                + (f" for sample {sample_id!r}" if sample_id else ""),
-                "rack": nickname,
-                "well": None,
-                "tip_status": None,
-                "requested_sample_id": sample_id,
-                "retry_after_s": None,
-            }
-        )
+        body: Dict[str, Any] = {
+            "detail": f"No available tip in {nickname!r}"
+            + (f" for a {channels}-channel pipette" if channels > 1 else "")
+            + (f" for sample {sample_id!r}" if sample_id else ""),
+            "rack": nickname,
+            "well": None,
+            "tip_status": None,
+            "requested_sample_id": sample_id,
+            "retry_after_s": None,
+        }
+        if channels > 1:
+            body["channels"] = channels
+        raise TipUnavailable(body)
+
+    def _is_pickable(
+        self, nickname: str, well: str, *, sample_id: Optional[str] = None
+    ) -> bool:
+        status = self.status(nickname, well)
+        normalized = status.strip().lower()
+        if normalized in _FRESH_STATUSES:
+            return True
+        return sample_id is not None and status == sample_id
 
     def summary(self) -> Dict[str, Any]:
         """Compact per-rack view for ``/status`` — full map plus counts."""
@@ -299,4 +473,11 @@ class TipStateStore:
             logger.exception("Failed to persist tip state to %s", self._path)
 
 
-__all__ = ["TipStateStore", "TipUnavailable", "tip_well_order_96", "FRESH", "EMPTY"]
+__all__ = [
+    "TipStateStore",
+    "TipUnavailable",
+    "covered_well_span",
+    "tip_well_order_96",
+    "FRESH",
+    "EMPTY",
+]

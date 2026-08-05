@@ -29,6 +29,34 @@ RECIPE = {
     "modules": [],
 }
 
+# Both mounts loaded, as on ot2_complexation: a single-channel p300 and an
+# 8-channel p20. `channels` is declared explicitly here — the robot's own
+# GET /instruments report is the other source (see the by-mount test).
+MULTI_RECIPE = {
+    "labware": [
+        {"nickname": "plate_D", "loadname": "corning_96_wellplate_360ul_flat", "location": "1", "ot_default": True},
+        {"nickname": "tips_300", "loadname": "opentrons_96_tiprack_300ul", "location": "4", "ot_default": True},
+        {"nickname": "tips_20", "loadname": "opentrons_96_tiprack_20ul", "location": "5", "ot_default": True},
+    ],
+    "instruments": [
+        {"nickname": "p300", "instrument_name": "p300_single_gen2", "mount": "left", "channels": 1},
+        {"nickname": "p20", "instrument_name": "p20_multi_gen2", "mount": "right", "channels": 8},
+    ],
+    "modules": [],
+}
+
+
+def _recipe_without_channels() -> dict:
+    """``MULTI_RECIPE`` with the explicit counts stripped, leaving only mounts."""
+
+    return {
+        **MULTI_RECIPE,
+        "instruments": [
+            {k: v for k, v in inst.items() if k != "channels"}
+            for inst in MULTI_RECIPE["instruments"]
+        ],
+    }
+
 
 @pytest.fixture
 def service(tmp_path):
@@ -45,11 +73,11 @@ def service(tmp_path):
     return svc
 
 
-def _pick(service, well=None, sample_id=None, force=False):
+def _pick(service, well=None, sample_id=None, force=False, pipette="p300", rack="tips_300"):
     service.pick_up_tip(
         TipRequest(
-            pipette="p300",
-            labware_nickname="tips_300",
+            pipette=pipette,
+            labware_nickname=rack,
             position=well,
             sample_id=sample_id,
             force=force,
@@ -57,9 +85,9 @@ def _pick(service, well=None, sample_id=None, force=False):
     )
 
 
-def _move(service, kind, labware, well):
+def _move(service, kind, labware, well, pipette="p300"):
     request = LiquidMoveRequest(
-        pipette="p300",
+        pipette=pipette,
         volume_ul=50,
         location=WellLocation(labware_nickname=labware, position=well),
     )
@@ -144,6 +172,155 @@ def test_untracked_rack_behaves_as_before(service):
     assert service._mounted_tips == {}
 
 
+# ---- multi-channel pipettes -------------------------------------------------
+#
+# An 8-channel head sent to a row-A well removes the whole column, so tracking
+# only the addressed well under-counts by seven. These pin the service side of
+# that: binding the channel count, consuming the covered set, and refusing the
+# picks a column-wide head cannot make.
+
+COLUMN_1 = [f"{row}1" for row in "ABCDEFGH"]
+
+
+def _column(number: int) -> list:
+    return [f"{row}{number}" for row in "ABCDEFGH"]
+
+
+def _statuses(service, wells, rack="tips_20"):
+    return {service.tips.status(rack, well) for well in wells}
+
+
+def test_setup_binds_channel_count_from_the_recipe(service):
+    service.setup_protocol(MULTI_RECIPE)
+
+    assert service._pipette_channels == {"p300": 1, "p20": 8}
+    assert service._channels_for("p300") == 1
+    assert service._channels_for("p20") == 8
+
+
+def test_setup_binds_channel_count_from_the_robot_probe_by_mount(service):
+    # No `channels` in the recipe: the count comes from GET /instruments, joined
+    # to the nickname by the mount the recipe declares.
+    service._last_probe = {
+        "instruments": [
+            {"mount": "left", "model": "p300_single_gen2", "channels": 1},
+            {"mount": "right", "model": "p20_multi_gen2", "channels": 8},
+        ]
+    }
+    service.setup_protocol(_recipe_without_channels())
+
+    assert service._pipette_channels == {"p300": 1, "p20": 8}
+
+
+def test_unbound_pipette_falls_back_to_single_channel(service):
+    # Neither an explicit count nor a reachable probe: behave exactly as before
+    # multi-channel tracking existed rather than refusing picks outright.
+    service.setup_protocol(_recipe_without_channels())
+
+    assert service._channels_for("p20") == 1
+    _pick(service, well="A1", pipette="p20", rack="tips_20")
+    assert service._mounted_tips["p20"]["wells"] == ["A1"]
+
+
+def test_multichannel_pick_and_drop_empties_the_whole_column(service):
+    """The 2026-08-04 ot2_complexation run: p300 at A1 (1ch) + p20 at A1 (8ch)."""
+
+    service.setup_protocol(MULTI_RECIPE)
+
+    _pick(service, well="A1")
+    _pick(service, well="A1", pipette="p20", rack="tips_20")
+    assert service._mounted_tips["p20"]["wells"] == COLUMN_1
+    assert service._mounted_tips["p20"]["channels"] == 8
+
+    service.drop_tip(TipRequest(pipette="p300"))
+    service.drop_tip(TipRequest(pipette="p20"))
+
+    summary = service.tips.summary()
+    # 9 tips left the deck, and the rack now says so: 88, not the 95 the
+    # addressed-well-only tracker reported.
+    assert summary["tips_20"]["available"] == 88
+    assert sorted(summary["tips_20"]["tips"]) == COLUMN_1
+    assert _statuses(service, COLUMN_1) == {"empty"}
+    # The single-channel rack is unaffected.
+    assert summary["tips_300"]["available"] == 95
+    assert summary["tips_300"]["tips"] == {"A1": "empty"}
+
+
+def test_multichannel_auto_pick_advances_by_column(service):
+    service.setup_protocol(MULTI_RECIPE)
+
+    _pick(service, pipette="p20", rack="tips_20")
+    assert service._mounted_tips["p20"]["well"] == "A1"
+    service.drop_tip(TipRequest(pipette="p20"))
+
+    # A2, never B1 — B1's tip is already on channel two, so a B1 start would
+    # descend on seven empty holes.
+    _pick(service, pipette="p20", rack="tips_20")
+    assert service._mounted_tips["p20"]["well"] == "A2"
+    assert service._mounted_tips["p20"]["wells"] == _column(2)
+
+
+def test_multichannel_sample_marking_stamps_the_whole_column(service):
+    service.setup_protocol(MULTI_RECIPE)
+    _pick(service, well="A1", pipette="p20", rack="tips_20")
+
+    _move(service, "aspirate", "reservoir", "A1", pipette="p20")
+    assert _statuses(service, COLUMN_1) == {"reservoir_A1"}
+
+    # Pick/drop round-trips: the column goes empty, not back to a mixed state.
+    service.drop_tip(TipRequest(pipette="p20"))
+    assert _statuses(service, COLUMN_1) == {"empty"}
+
+
+def test_multichannel_pick_refuses_a_partial_column(service):
+    service.setup_protocol(MULTI_RECIPE)
+    service.tips.set_status("tips_20", "E1", "empty")
+
+    with pytest.raises(TipUnavailable) as exc:
+        _pick(service, well="A1", pipette="p20", rack="tips_20")
+    body = exc.value.body
+    assert body["blocking_well"] == "E1"
+    assert body["well"] == "A1"
+    assert body["channels"] == 8
+    assert body["covered_wells"] == COLUMN_1
+    assert "E1" in body["detail"]
+    # Nothing moved and nothing was recorded.
+    assert "p20" not in service._mounted_tips
+
+    # A single-channel pipette can still take what is left of that column.
+    _pick(service, well="A1")
+    assert service._mounted_tips["p300"]["wells"] == ["A1"]
+
+
+def test_multichannel_pick_refuses_a_non_row_a_address(service):
+    service.setup_protocol(MULTI_RECIPE)
+
+    with pytest.raises(TipUnavailable) as exc:
+        _pick(service, well="B1", pipette="p20", rack="tips_20")
+    assert exc.value.body["well"] == "B1"
+    assert exc.value.body["channels"] == 8
+    assert "row A" in exc.value.body["detail"]
+    assert "p20" not in service._mounted_tips
+
+    # ... while any row is fine for a single-channel head.
+    _pick(service, well="B1")
+    assert service._mounted_tips["p300"]["wells"] == ["B1"]
+
+
+def test_multichannel_exhaustion_refuses_once_every_column_is_broken(service):
+    service.setup_protocol(MULTI_RECIPE)
+    for column in range(1, 13):
+        service.tips.set_status("tips_20", f"H{column}", "empty")
+
+    with pytest.raises(TipUnavailable) as exc:
+        _pick(service, pipette="p20", rack="tips_20")  # auto-pick
+    assert exc.value.body["channels"] == 8
+    assert exc.value.body["well"] is None
+
+    # 84 tips remain, all reachable by a single-channel head.
+    assert service.tips.next_available("tips_20", channels=1) == "A1"
+
+
 def test_status_surfaces_tip_state(service):
     service.setup_protocol(RECIPE)
     _pick(service)
@@ -153,6 +330,18 @@ def test_status_surfaces_tip_state(service):
     assert details["tip_racks"]["tips_300"]["available"] == 95
     assert details["tip_racks"]["tips_300"]["tips"] == {"A1": "reservoir_A1"}
     assert details["mounted_tips"]["p300"]["well"] == "A1"
+
+
+def test_status_surfaces_pipette_channels(service):
+    """An unbound 8-channel head silently tracked as 1 is the whole bug, so the
+    live binding is published for diagnosis."""
+
+    service.setup_protocol(MULTI_RECIPE)
+    _pick(service, well="A1", pipette="p20", rack="tips_20")
+
+    details = service.get_status().details
+    assert details["pipette_channels"] == {"p300": 1, "p20": 8}
+    assert details["mounted_tips"]["p20"]["wells"] == COLUMN_1
 
 
 def test_allowed_actions_include_tips_reset(service):
@@ -188,3 +377,29 @@ def test_api_pick_up_tip_412_and_tips_reset(tmp_path, monkeypatch):
     reset = client.post("/control/tips/reset", json={"nickname": "tips_300"})
     assert reset.status_code == 200
     assert reset.json()["tips"]["A1"] == "new"
+
+
+def test_api_multichannel_partial_column_412_body(tmp_path, monkeypatch):
+    """The 412 body is what a caller branches on, so the multi-channel fields
+    (STATUS_SPEC §6.1: distinguishable by shape) have to survive the API layer."""
+
+    monkeypatch.setenv("OT2_TIP_STATE_PATH", str(tmp_path / "tips.json"))
+    monkeypatch.setenv("OT2_PLATE_STATE_PATH", str(tmp_path / "plate.json"))
+    monkeypatch.setenv("OT2_DECK_STATE_PATH", str(tmp_path / "deck.json"))
+    app = create_app(dry_run=True, enforce_claims=False)
+    client = TestClient(app)
+    service = app.state.service
+    service.setup_protocol(MULTI_RECIPE)
+    service.tips.set_status("tips_20", "E1", "empty")
+
+    response = client.post(
+        "/control/pick-up-tip",
+        json={"pipette": "p20", "labware_nickname": "tips_20", "position": "A1"},
+    )
+    assert response.status_code == 412
+    body = response.json()
+    assert body["blocking_well"] == "E1"
+    assert body["covered_wells"] == [f"{row}1" for row in "ABCDEFGH"]
+    assert body["channels"] == 8
+    # A precondition refusal never mutates last_error (STATUS_SPEC §6.3).
+    assert client.get("/status").json()["last_error"] is None
