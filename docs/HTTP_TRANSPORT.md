@@ -136,6 +136,21 @@ Consequences:
 - A leftover `current` run (e.g. after a crash) makes the *SSH* gateway stand
   off in `external_control` until the run is deleted — the two transports
   interfere on the robot even though the code paths are separate.
+- **An http gateway used to stand off against its own run.** Because the
+  session run is created and *never played*, it sits in `status: idle` with
+  `startedAt: null` for its whole life — indistinguishable, to the `/runs`
+  boot probe, from a run the Opentrons app just created. So a restart while a
+  previous session's run was still `current` came up `busy`
+  ("Robot has an active run (external / official app); gateway is standing
+  off"), and could not leave: `_maybe_resume_from_external_control` waits for
+  `run_active` to go false, which the gateway's own leftover run prevented.
+  Fixed by `_run_counts_as_active` in `service.py`, which excludes a
+  never-started run (`idle` + no `startedAt`) — it has executed nothing, so it
+  is not evidence anyone is driving the robot. A genuinely external session
+  still counts the moment it starts. Observed live on `ot2_complexation`,
+  2026-08-05, where it presented as "the tile says busy and taking control
+  takes forever" (the escape path runs `startup()`, minutes of SSH +
+  protocol-API init).
 
 Implementation: `control/http_run.py` (`RunEngineClient` + typed
 `RunEngineCommands` builders, error mapping to `CommandFailed` /

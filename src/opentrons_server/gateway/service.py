@@ -111,6 +111,42 @@ _RUN_STARTING_ACTIONS = frozenset(
 )
 
 
+# Run statuses that mean the robot-server has finished with a run.
+_RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "stopped"})
+
+
+def _run_counts_as_active(run: Dict[str, Any]) -> bool:
+    """Is this robot-server run evidence that something is driving the robot?
+
+    Only the *current* run can be, and only while it is not terminal — but
+    "not terminal" is not sufficient. A run in ``idle`` that has never been
+    started (``startedAt`` null) has executed no command at all: it is a
+    container the robot-server opened, not work in progress.
+
+    Excluding it matters because **this gateway opens exactly such a run
+    itself** on ``OT2_TRANSPORT=http`` — the run-engine transport keeps a run
+    open between commands (docs/HTTP_TRANSPORT.md). Counting it made the
+    gateway read its *own* open run as somebody else's session, so every
+    restart landed in the ``EXTERNAL_CONTROL`` stand-off ("Robot has an active
+    run (external / official app)") and reported ``busy``. Worse, the escape
+    from that stand-off (:meth:`OT2Service._maybe_resume_from_external_control`)
+    waits for ``run_active`` to go false — a condition the gateway's own
+    leftover run prevented, so it could sit ``busy`` until someone forced
+    ``/control/startup``. Observed live on ot2_complexation, 2026-08-05.
+
+    This mirrors the rule :meth:`OT2Service._observed_activity` already states:
+    an open run is not evidence of motion. A genuinely external session still
+    counts the moment it starts (``startedAt`` set, or any non-idle status).
+    """
+
+    if not run.get("current"):
+        return False
+    status = run.get("status")
+    if status in _RUN_TERMINAL_STATUSES:
+        return False
+    return not (status == "idle" and not run.get("startedAt"))
+
+
 class OT2ServiceState(str, Enum):
     REQUIRES_INIT = "requires_init"
     CONNECTING = "connecting"
@@ -748,8 +784,7 @@ class OT2Service:
                 base + "/runs", headers=_OPENTRONS_HTTP_HEADERS, timeout=_OT2_HTTP_TIMEOUT
             ).json()
             result["run_active"] = any(
-                r.get("current") and r.get("status") not in {"succeeded", "failed", "stopped"}
-                for r in runs.get("data", []) or []
+                _run_counts_as_active(r) for r in runs.get("data", []) or []
             )
         except Exception:
             pass

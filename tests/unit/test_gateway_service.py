@@ -429,6 +429,57 @@ def test_boot_reconnect_idle_establishes_session(monkeypatch):
     assert status.details["robot"]["robot_name"] == "ot2cytation"
 
 
+def test_never_started_run_is_not_an_active_run():
+    """A created-but-never-started run has executed nothing, and on
+    OT2_TRANSPORT=http it is very likely the gateway's OWN open run — counting
+    it made every restart stand off as if an app were driving the robot."""
+
+    from opentrons_server.gateway.service import _run_counts_as_active
+
+    # The exact shape observed live on ot2_complexation, 2026-08-05.
+    assert not _run_counts_as_active(
+        {"current": True, "status": "idle", "startedAt": None, "protocolId": None}
+    )
+    assert not _run_counts_as_active({"current": True, "status": "idle"})  # key absent
+
+    # A real session still counts the moment it has actually started...
+    assert _run_counts_as_active(
+        {"current": True, "status": "idle", "startedAt": "2026-08-05T23:13:22Z"}
+    )
+    # ... and any non-idle live status counts regardless.
+    for status in ("running", "paused", "blocked-by-open-door", "finishing"):
+        assert _run_counts_as_active({"current": True, "status": status})
+
+    # Terminal and non-current runs never count.
+    for status in ("succeeded", "failed", "stopped"):
+        assert not _run_counts_as_active({"current": True, "status": status})
+    assert not _run_counts_as_active({"current": False, "status": "running"})
+
+
+def test_boot_reconnect_ignores_the_gateways_own_idle_run(monkeypatch):
+    """The regression this guards: an http-transport gateway restarting with its
+    own leftover run open must come up ready, not stand off against itself."""
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", lambda **kwargs: Mock())
+
+    def probe_with_idle_run(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResponse({"api_version": "8.7.0", "name": "ot2training"})
+        if url.endswith("/runs"):
+            return _FakeResponse(
+                {"data": [{"current": True, "status": "idle", "startedAt": None}]}
+            )
+        return _FakeResponse({"data": []})
+
+    monkeypatch.setattr("opentrons_server.gateway.service.requests.get", probe_with_idle_run)
+
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9", password="pw")
+    service.boot_reconnect()
+
+    assert service.state != OT2ServiceState.EXTERNAL_CONTROL
+    assert service.get_status().details["robot"]["run_active"] is False
+
+
 def test_boot_reconnect_active_run_stands_off(monkeypatch):
     def must_not_connect(**kwargs):
         raise AssertionError("must not open a session while a run is active")
