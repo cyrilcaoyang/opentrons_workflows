@@ -17,7 +17,7 @@ from starlette.staticfiles import StaticFiles
 
 from .claims import ClaimConflict, UnknownClaim
 from .deck import DeckDeclarationStore
-from .labware import standard_summaries
+from .labware import standard_definition, standard_summaries
 from .models import (
     ClaimRejection,
     ClaimRequest,
@@ -199,7 +199,12 @@ def create_app(
         @app.middleware("http")
         async def _edge_gate(request: Request, call_next: Any) -> Any:
             path = request.url.path
-            gated = path == "/ui" or path.startswith("/ui/") or path == "/labware"
+            gated = (
+                path == "/ui"
+                or path.startswith("/ui/")
+                or path == "/labware"
+                or path.startswith("/labware/")
+            )
             if gated and not _from_edge(request):
                 # 404 (not 401/403): the UI surface simply does not exist for
                 # anyone who is not the edge.
@@ -253,6 +258,19 @@ def create_app(
         (grid summaries), for the UI's deck-declare picker. Empty when
         ``opentrons-shared-data`` is not installed."""
         return {"definitions": list(standard_summaries())}
+
+    @app.get("/labware/{load_name}", tags=["ui"])
+    def labware_definition(load_name: str) -> dict[str, Any]:
+        """One full Opentrons definition, for the UI's side-view cross-section.
+
+        Summaries carry only the grid; the elevation needs real geometry. 404
+        covers both "no such load_name" and "``opentrons-shared-data`` is not
+        installed" — the UI treats them the same way, by omitting the side view.
+        """
+        defn = standard_definition(load_name)
+        if defn is None:
+            raise HTTPException(status_code=404, detail=f"No labware definition {load_name!r}")
+        return defn
 
     @app.post(
         "/control/claim",

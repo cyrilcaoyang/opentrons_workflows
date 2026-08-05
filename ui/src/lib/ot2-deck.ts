@@ -14,7 +14,13 @@
  * when a `load_name` exists would silently degrade an exact declaration.
  */
 
-import type { DeviceDeck, DeviceDeckSlot, EquipmentStatus, RobotModule } from "./types";
+import type {
+  DeviceDeck,
+  DeviceDeckSlot,
+  EquipmentStatus,
+  RobotModule,
+  WellSample,
+} from "./types";
 
 type Status = EquipmentStatus;
 
@@ -190,6 +196,13 @@ export interface SlotView {
   loadName?: string;
   /** For mismatch slots: what was declared vs what is observed. */
   declared?: { kind: string; load_name: string } | null;
+  /** The setup recipe's nickname for this slot — the join key for
+   *  `details.tip_racks` and the `/control/*` `labware_nickname` argument. */
+  nickname?: string | null;
+  /** True when this slot holds a tip rack (drives tip- vs sample-state reads). */
+  isTiprack?: boolean;
+  /** Tracked plate samples folded onto this slot, when there are any. */
+  wells?: WellSample[] | null;
 }
 
 export function buildSlotView(
@@ -244,6 +257,11 @@ export function buildSlotView(
       moduleName: s.module?.module_name,
       loadName: s.labware?.load_name || undefined,
       declared: s.declared ?? null,
+      nickname: s.labware?.nickname ?? null,
+      // Trust the deck's own flag; fall back to the classified kind for a
+      // gateway that predates it.
+      isTiprack: s.labware?.is_tiprack ?? kind === "tiprack",
+      wells: s.labware?.wells ?? null,
     };
   }
   // Legacy store: pure intent, no lifecycle.
@@ -360,7 +378,14 @@ export function tipRacksFromStatus(status: Status): TipRackSummary[] {
 export interface MountedTip {
   pipette: string;
   rack?: string;
+  /** The addressed well. */
   well?: string;
+  /** Every well this head emptied — a whole column for a multi-channel
+   *  pipette, `[well]` for a single-channel one. Absent on a gateway
+   *  predating multi-channel tip tracking. */
+  wells?: string[];
+  /** Channel count of the pipette holding these tips. */
+  channels?: number;
   last_sample?: string;
   origin_status?: string;
 }
@@ -376,6 +401,10 @@ export function mountedTipsFromStatus(status: Status): MountedTip[] {
       pipette,
       rack: typeof m.rack === "string" ? m.rack : undefined,
       well: typeof m.well === "string" ? m.well : undefined,
+      wells: Array.isArray(m.wells)
+        ? m.wells.filter((w): w is string => typeof w === "string")
+        : undefined,
+      channels: typeof m.channels === "number" ? m.channels : undefined,
       last_sample: typeof m.last_sample === "string" ? m.last_sample : undefined,
       origin_status: typeof m.origin_status === "string" ? m.origin_status : undefined,
     });

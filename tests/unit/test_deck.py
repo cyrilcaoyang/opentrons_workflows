@@ -290,6 +290,69 @@ def test_build_deck_loaded_plate_declares_its_slot_when_unobserved():
 
 
 # ---------------------------------------------------------------------------
+# build_deck — slot nickname stamping (the join key for nickname-addressed state)
+# ---------------------------------------------------------------------------
+
+
+def test_build_deck_stamps_nickname_on_every_source():
+    # The nickname belongs to the slot, so it must survive whichever source wins:
+    # it is how a reader joins a slot to details.tip_racks.
+    for kwargs, expected_source in (
+        ({"run": {"5": _plate()}}, "run"),
+        ({"repl": {"5": _plate()}}, "repl"),
+        ({"declared": {"5": _plate()}}, "declared"),
+    ):
+        deck = build_deck(nickname_to_slot={"tips_20": "5"}, now=_NOW, **kwargs)
+        assert deck.slots["5"].source == expected_source
+        assert deck.slots["5"].labware.nickname == "tips_20"
+
+
+def test_build_deck_nickname_survives_run_overriding_repl():
+    # The robot's own display_name replaces the recipe's on a run/repl slot,
+    # which is exactly why display_name cannot serve as the join key.
+    run_lw = make_slot_labware("opentrons_96_tiprack_20ul", display_name="Opentrons 20uL Tiprack")
+    deck = build_deck(
+        run={"5": run_lw},
+        declared={"5": make_slot_labware("opentrons_96_tiprack_20ul", display_name="tips_20")},
+        nickname_to_slot={"tips_20": "5"},
+        now=_NOW,
+    )
+    assert deck.slots["5"].labware.display_name == "Opentrons 20uL Tiprack"
+    assert deck.slots["5"].labware.nickname == "tips_20"
+
+
+def test_build_deck_nickname_absent_when_unmapped_or_empty():
+    deck = build_deck(repl={"5": _plate()}, nickname_to_slot={"tips_20": "9"}, now=_NOW)
+    assert deck.slots["5"].labware.nickname is None
+    # An empty slot has no labware to stamp at all.
+    assert deck.slots["9"].labware is None
+
+
+def test_build_deck_nickname_two_nicknames_one_slot_is_deterministic():
+    # A malformed recipe shouldn't make the deck flap between polls.
+    first = build_deck(
+        repl={"5": _plate()}, nickname_to_slot={"b_tips": "5", "a_tips": "5"}, now=_NOW
+    )
+    second = build_deck(
+        repl={"5": _plate()}, nickname_to_slot={"a_tips": "5", "b_tips": "5"}, now=_NOW
+    )
+    assert first.slots["5"].labware.nickname == second.slots["5"].labware.nickname == "a_tips"
+
+
+def test_build_deck_plate_slot_keeps_both_nickname_and_wells():
+    deck = build_deck(
+        repl={"2": _plate()},
+        loaded_plate=_loaded_plate("D"),
+        nickname_to_slot={"D": "2"},
+        now=_NOW,
+    )
+    labware = deck.slots["2"].labware
+    assert labware.nickname == "D"
+    assert labware.plate_id == "D"
+    assert labware.wells[0].sample_id == "caffeine"
+
+
+# ---------------------------------------------------------------------------
 # DeckDeclarationStore
 # ---------------------------------------------------------------------------
 

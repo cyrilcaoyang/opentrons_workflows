@@ -239,6 +239,14 @@ class SlotLabware(BaseModel):
 
     ``plate_id`` / ``wells`` are populated only for the orchestrator-tracked
     plate (unified from :class:`PlateStateStore`), never stored twice.
+
+    ``nickname`` is the name the setup recipe gave this slot's labware — the key
+    every nickname-addressed surface uses (``details.tip_racks``, the
+    ``/control/*`` ``labware_nickname`` argument). It is a property of the
+    *slot*, so :func:`~opentrons_server.gateway.deck.build_deck` stamps it
+    regardless of which source won the slot; ``display_name`` cannot stand in
+    for it, because a run/REPL source overwrites that with the robot's own
+    display name.
     """
 
     kind: LabwareKind
@@ -249,6 +257,7 @@ class SlotLabware(BaseModel):
     columns: Optional[int] = None
     plate_id: Optional[str] = None
     wells: Optional[List[WellSample]] = None
+    nickname: Optional[str] = None
 
 
 class SlotModule(BaseModel):

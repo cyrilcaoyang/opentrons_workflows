@@ -271,6 +271,15 @@ def build_deck(
             )
             effective_declared[plate_slot] = plate_lw
 
+    # Reverse the nickname map once. A slot's recipe nickname belongs to the
+    # slot, not to whichever source wins it, so it has to survive run > repl >
+    # declared precedence: it is the join key for every nickname-addressed
+    # surface (details.tip_racks, /control/* labware_nickname). Sorted so a
+    # recipe that maps two nicknames to one slot resolves deterministically.
+    slot_to_nickname: Dict[str, str] = {}
+    for nickname, nickname_slot in sorted(nickname_to_slot.items()):
+        slot_to_nickname.setdefault(str(nickname_slot), str(nickname))
+
     slots: Dict[str, DeckSlot] = {}
     contributing: set[DeckSource] = set()
 
@@ -303,6 +312,11 @@ def build_deck(
         deck_slot = _resolve_slot(
             observed, observed_source, module, module_source, declared_labware, busy
         )
+        nickname = slot_to_nickname.get(slot)
+        if nickname and deck_slot.labware is not None and deck_slot.labware.nickname is None:
+            deck_slot = deck_slot.model_copy(
+                update={"labware": deck_slot.labware.model_copy(update={"nickname": nickname})}
+            )
         slots[slot] = deck_slot
         if deck_slot.source != "empty":
             contributing.add(deck_slot.source)

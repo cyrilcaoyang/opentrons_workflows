@@ -108,6 +108,13 @@ export function getLabwareList(): Promise<{ definitions: LabwareSummary[] }> {
   return fetchJson<{ definitions: LabwareSummary[] }>("/labware");
 }
 
+/** One full Opentrons definition, for the inspector's side elevation. Throws
+ *  `ApiError(404)` when the load_name is unknown or `opentrons-shared-data`
+ *  isn't installed — callers treat both as "no elevation available". */
+export function getLabwareDefinition(loadName: string): Promise<unknown> {
+  return fetchJson<unknown>(`/labware/${encodeURIComponent(loadName)}`);
+}
+
 // ---------------------------------------------------------------------------
 // Claim lifecycle
 // ---------------------------------------------------------------------------

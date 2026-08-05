@@ -31,6 +31,7 @@ import type { GatewaySnapshot } from "../lib/types";
 
 import { ActionErrorBadge } from "./ActionErrorBadge";
 import { DeckPanel, ModuleReadout } from "./DeckPanel";
+import { PlateInspector } from "./PlateInspector";
 import { DeclarePicker } from "./DeclarePicker";
 import { FetchErrorBand } from "./FetchErrorBand";
 import { LastErrorBadge } from "./LastErrorBadge";
@@ -419,8 +420,17 @@ export function ControlPanel({
           </Section>
         </div>
 
-        {/* Right column: robot / pipettes / modules / tips / claim */}
+        {/* Right column: selected plate / robot / pipettes / modules / tips / claim */}
         <div className="flex flex-col gap-4">
+          <Section title="Selected plate">
+            <PlateInspector
+              slot={selectedSlot}
+              view={selectedView}
+              tipRacks={tipRacks}
+              mountedTips={mountedTips}
+            />
+          </Section>
+
           <Section title="Robot">
             <div className="flex flex-col gap-1">
               <KV k="Robot" v={robot?.robot_name ?? "—"} mono />

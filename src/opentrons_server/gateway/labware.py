@@ -77,6 +77,33 @@ def _summary(load_name: str, defn: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@lru_cache(maxsize=64)
+def standard_definition(load_name: str) -> dict[str, Any] | None:
+    """The full schema-2 definition for ``load_name``, or ``None`` if unknown.
+
+    Summaries (:func:`standard_summaries`) carry only the grid; the UI's
+    side-view cross-section needs the real geometry — footprint dimensions, well
+    depth / shape / diameter, and the A1 offset and spacing the definition's own
+    well coordinates imply. Returns the definition verbatim rather than a
+    derived spec, mirroring the dashboard's
+    ``GET /api/labware/standard/{load_name}`` so both UIs can share one
+    client-side reader.
+
+    Cached per load_name (bounded: a deck holds at most a dozen distinct
+    definitions, and the shared-data package never changes at runtime).
+    """
+
+    path = _standard_index().get(load_name)
+    if path is None:
+        return None
+    try:
+        defn = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.exception("standard labware definition %s unreadable", path)
+        return None
+    return defn if isinstance(defn, dict) else None
+
+
 @lru_cache(maxsize=1)
 def standard_summaries() -> tuple[dict[str, Any], ...]:
     """Summaries for every standard definition, sorted by load_name and cached

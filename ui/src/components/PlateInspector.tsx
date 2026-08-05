@@ -1,0 +1,518 @@
+/**
+ * Expanded view of the deck slot selected in the DeckPanel — the top of the
+ * right column.
+ *
+ * Two drawings of the same labware, from the same per-well model
+ * (`lib/plate-wells.ts`):
+ *
+ * - **Plan** (top-down): every well, with row/column labels, coloured by real
+ *   state — a tip rack's fresh / touched / empty from `details.tip_racks`, a
+ *   plate's tracked samples from the slot's own wells. Wells whose tips are on
+ *   a pipette right now are ringed.
+ * - **Elevation** (side cross-section): the labware's true profile in
+ *   millimetres, in the manner of the dashboard's `utils/labware_builder`,
+ *   with one cavity per *column* tinted by that column's aggregate state.
+ *   Columns are the right unit here: an 8-channel head takes a whole column,
+ *   so "partly consumed" is the fact worth seeing.
+ *
+ * Honesty rules this component exists to keep:
+ * - A rack the gateway has never registered renders `unknown`, never as 96
+ *   fresh tips. "Not tracked" and "full" are different answers.
+ * - The elevation is drawn **only** from a real definition. Without one it says
+ *   so, rather than inventing a footprint and well depth to scale against.
+ */
+
+import { useEffect, useState } from "react";
+
+import { ApiError, getLabwareDefinition } from "../lib/api";
+import {
+  geometryFromDefinition,
+  wellHalfX,
+  wellHalfY,
+  type LabwareGeometry,
+} from "../lib/labware-geometry";
+import type { MountedTip, SlotView, TipRackSummary } from "../lib/ot2-deck";
+import {
+  buildWellModel,
+  columnKinds,
+  type ColumnKind,
+  type PlateWellModel,
+  type WellCell,
+  type WellKind,
+} from "../lib/plate-wells";
+
+// ---------------------------------------------------------------------------
+// Palette — one source for both drawings and the legend
+// ---------------------------------------------------------------------------
+
+const WELL_FILL: Record<WellKind, string> = {
+  fresh: "fill-sky-300 stroke-sky-600 dark:fill-sky-800 dark:stroke-sky-400",
+  touched: "fill-amber-300 stroke-amber-600 dark:fill-amber-700 dark:stroke-amber-400",
+  // An empty well is a hole: no fill, dashed edge.
+  empty: "fill-transparent stroke-slate-400 dark:stroke-slate-500",
+  sample: "fill-sky-300 stroke-sky-600 dark:fill-sky-800 dark:stroke-sky-400",
+  vacant: "fill-slate-100 stroke-slate-300 dark:fill-slate-800 dark:stroke-slate-600",
+  unknown: "fill-slate-200 stroke-slate-300 dark:fill-slate-700 dark:stroke-slate-600",
+};
+
+const COLUMN_FILL: Record<ColumnKind, string> = {
+  fresh: "fill-sky-300 dark:fill-sky-800",
+  touched: "fill-amber-300 dark:fill-amber-700",
+  empty: "fill-white dark:fill-slate-900",
+  sample: "fill-sky-300 dark:fill-sky-800",
+  vacant: "fill-white dark:fill-slate-900",
+  unknown: "fill-slate-200 dark:fill-slate-700",
+  mixed: "fill-amber-200 dark:fill-amber-800",
+};
+
+/**
+ * Column tint for the elevation. A part-consumed column is amber on a **tip
+ * rack** because it is exactly what an 8-channel head cannot pick from — but a
+ * part-filled *plate* column is unremarkable, so it gets a pale sample tint
+ * rather than a colour that reads as a warning.
+ */
+function columnFill(kind: ColumnKind, contents: "tiprack" | "plate"): string {
+  if (kind === "mixed" && contents === "plate") return "fill-sky-200 dark:fill-sky-900";
+  return COLUMN_FILL[kind];
+}
+
+const KIND_LABEL: Record<WellKind, string> = {
+  fresh: "fresh",
+  touched: "used",
+  empty: "empty",
+  sample: "sample",
+  vacant: "empty",
+  unknown: "not tracked",
+};
+
+/** Legend swatch — a div, so it matches the SVG fills without duplicating them. */
+function Swatch({ kind }: { kind: WellKind }) {
+  const dashed = kind === "empty";
+  return (
+    <span
+      className={[
+        "inline-block h-2.5 w-2.5 shrink-0 rounded-full border",
+        dashed ? "border-dashed" : "",
+        kind === "fresh" || kind === "sample"
+          ? "border-sky-600 bg-sky-300 dark:border-sky-400 dark:bg-sky-800"
+          : kind === "touched"
+            ? "border-amber-600 bg-amber-300 dark:border-amber-400 dark:bg-amber-700"
+            : kind === "empty"
+              ? "border-slate-400 bg-transparent dark:border-slate-500"
+              : kind === "vacant"
+                ? "border-slate-300 bg-slate-100 dark:border-slate-600 dark:bg-slate-800"
+                : "border-slate-300 bg-slate-200 dark:border-slate-600 dark:bg-slate-700",
+      ].join(" ")}
+      aria-hidden
+    />
+  );
+}
+
+const ROW_LETTERS = "ABCDEFGHIJKLMNOP";
+
+function wellTitle(cell: WellCell, contents: "tiprack" | "plate"): string {
+  const parts = [cell.well];
+  if (cell.kind === "touched") parts.push(`tip touched ${cell.detail ?? "a sample"}`);
+  else if (cell.kind === "sample") parts.push(cell.detail ? `sample ${cell.detail}` : "sample");
+  else parts.push(contents === "tiprack" ? `tip ${KIND_LABEL[cell.kind]}` : KIND_LABEL[cell.kind]);
+  if (cell.volumeUl != null) parts.push(`${cell.volumeUl} µL`);
+  if (cell.mounted) parts.push("on a pipette now");
+  return parts.join(" · ");
+}
+
+// ---------------------------------------------------------------------------
+// Plan (top-down)
+// ---------------------------------------------------------------------------
+
+/**
+ * Top-down plan. Uses the definition's real well positions when we have them,
+ * else a uniform grid laid out on the standard 9 mm pitch — for the regular
+ * SBS grids this panel shows, a synthesized plan is geometrically the same
+ * drawing, so it is safe here in a way the elevation is not.
+ */
+function PlanView({
+  model,
+  geometry,
+}: {
+  model: PlateWellModel;
+  geometry: LabwareGeometry | null;
+}) {
+  const { rows, columns } = model;
+  // Synthesized frame: 9 mm pitch inside a standard SBS footprint.
+  const pitch = 9;
+  const margin = 10;
+  const frameW = geometry?.footprintX ?? columns * pitch + margin * 2;
+  const frameH = geometry?.footprintY ?? rows * pitch + margin * 2;
+  const labelPad = 7;
+
+  return (
+    <svg
+      viewBox={`${-labelPad} ${-labelPad} ${frameW + labelPad * 2} ${frameH + labelPad * 2}`}
+      className="w-full"
+      role="img"
+      aria-label={`Top-down view of ${columns} × ${rows} wells`}
+    >
+      <rect
+        x={0}
+        y={0}
+        width={frameW}
+        height={frameH}
+        rx={2}
+        className="fill-slate-50 stroke-slate-400 dark:fill-slate-800 dark:stroke-slate-500"
+        strokeWidth={0.6}
+      />
+      {/* Column numbers along the top, row letters down the left. */}
+      {Array.from({ length: columns }, (_, c) => {
+        const well = geometry?.ordering[c]?.[0];
+        const g = well ? geometry?.wells[well] : undefined;
+        const cx = g ? g.x : margin + pitch / 2 + c * pitch;
+        return (
+          <text
+            key={`col-${c}`}
+            x={cx}
+            y={-1.5}
+            textAnchor="middle"
+            className="fill-slate-500 dark:fill-slate-400"
+            style={{ fontSize: 4.2 }}
+          >
+            {c + 1}
+          </text>
+        );
+      })}
+      {Array.from({ length: rows }, (_, r) => {
+        const well = geometry?.ordering[0]?.[r];
+        const g = well ? geometry?.wells[well] : undefined;
+        // Definition y grows toward the back; SVG y grows downward.
+        const cy = g ? frameH - g.y : margin + pitch / 2 + r * pitch;
+        return (
+          <text
+            key={`row-${r}`}
+            x={-2}
+            y={cy + 1.5}
+            textAnchor="end"
+            className="fill-slate-500 dark:fill-slate-400"
+            style={{ fontSize: 4.2 }}
+          >
+            {ROW_LETTERS[r] ?? "?"}
+          </text>
+        );
+      })}
+      {model.cells.map((cell) => {
+        const g = geometry?.wells[cell.well];
+        const cx = g ? g.x : margin + pitch / 2 + cell.column * pitch;
+        const cy = g ? frameH - g.y : margin + pitch / 2 + cell.row * pitch;
+        const rx = g ? wellHalfX(g) : pitch * 0.38;
+        const ry = g ? wellHalfY(g) : pitch * 0.38;
+        const rectangular = g?.shape === "rectangular";
+        return (
+          <g key={cell.well}>
+            {rectangular ? (
+              <rect
+                x={cx - rx}
+                y={cy - ry}
+                width={rx * 2}
+                height={ry * 2}
+                className={WELL_FILL[cell.kind]}
+                strokeWidth={0.4}
+                strokeDasharray={cell.kind === "empty" ? "1 1" : undefined}
+              />
+            ) : (
+              <ellipse
+                cx={cx}
+                cy={cy}
+                rx={rx}
+                ry={ry}
+                className={WELL_FILL[cell.kind]}
+                strokeWidth={0.4}
+                strokeDasharray={cell.kind === "empty" ? "1 1" : undefined}
+              />
+            )}
+            {cell.mounted && (
+              <ellipse
+                cx={cx}
+                cy={cy}
+                rx={rx + 1}
+                ry={ry + 1}
+                className="fill-none stroke-emerald-500 dark:stroke-emerald-400"
+                strokeWidth={0.6}
+              />
+            )}
+            <title>{wellTitle(cell, model.contents)}</title>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Elevation (side cross-section)
+// ---------------------------------------------------------------------------
+
+/**
+ * Front elevation, to scale, from the real definition only. The body is
+ * `footprintZ` tall; each column's cavity hangs from its well mouth
+ * (`z + depth`) down to its floor (`z`), so a tip rack's tips correctly stand
+ * proud of the rack body while a plate's wells sit inside it. Tip-rack cavities
+ * taper (a tip is conical); plate wells are drawn straight-sided.
+ */
+function ElevationView({
+  geometry,
+  model,
+}: {
+  geometry: LabwareGeometry;
+  model: PlateWellModel;
+}) {
+  const kinds = columnKinds(model);
+  const { footprintX, footprintZ } = geometry;
+  const cavities = geometry.ordering.map((column, index) => {
+    const g = geometry.wells[column[0]];
+    if (!g) return null;
+    const halfX = wellHalfX(g);
+    const mouthY = Math.max(0, footprintZ - (g.z + g.depth)); // SVG y of the well mouth
+    const floorY = Math.min(footprintZ, footprintZ - g.z); // SVG y of the well floor
+    const kind = kinds[index] ?? "unknown";
+    const fill = columnFill(kind, model.contents);
+    const points = geometry.isTiprack
+      ? // Tapered: full width at the mouth, ~25% at the tip.
+        `${g.x - halfX},${mouthY} ${g.x + halfX},${mouthY} ${g.x + halfX * 0.25},${floorY} ${
+          g.x - halfX * 0.25
+        },${floorY}`
+      : `${g.x - halfX},${mouthY} ${g.x + halfX},${mouthY} ${g.x + halfX},${floorY} ${
+          g.x - halfX
+        },${floorY}`;
+    return (
+      <g key={column[0]}>
+        <polygon
+          points={points}
+          className={`${fill} stroke-slate-500 dark:stroke-slate-400`}
+          strokeWidth={0.3}
+        />
+        <title>{`Column ${index + 1} — ${kind}`}</title>
+      </g>
+    );
+  });
+
+  return (
+    <svg
+      viewBox={`-2 -2 ${footprintX + 4} ${footprintZ + 4}`}
+      className="w-full"
+      role="img"
+      aria-label="Side-view labware cross-section"
+    >
+      <rect
+        x={0}
+        y={0}
+        width={footprintX}
+        height={footprintZ}
+        className="fill-slate-200 stroke-slate-400 dark:fill-slate-700 dark:stroke-slate-500"
+        strokeWidth={0.6}
+      />
+      {cavities}
+      {/* Re-stroke the outline so cavities never paint over the body edge. */}
+      <rect
+        x={0}
+        y={0}
+        width={footprintX}
+        height={footprintZ}
+        className="fill-none stroke-slate-400 dark:stroke-slate-500"
+        strokeWidth={0.6}
+      />
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Panel
+// ---------------------------------------------------------------------------
+
+export interface PlateInspectorProps {
+  slot: number | null;
+  view: SlotView | null;
+  /** Tracker summaries from `details.tip_racks`, joined by slot nickname. */
+  tipRacks: TipRackSummary[];
+  mountedTips: MountedTip[];
+}
+
+/** Fetch + cache one definition per load_name for the elevation. */
+function useLabwareGeometry(loadName: string | undefined): {
+  geometry: LabwareGeometry | null;
+  state: "idle" | "loading" | "ready" | "unavailable";
+} {
+  const [cache, setCache] = useState<Record<string, LabwareGeometry | null>>({});
+  const [loading, setLoading] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!loadName || loadName in cache) return;
+    let cancelled = false;
+    setLoading(loadName);
+    getLabwareDefinition(loadName)
+      .then((defn) => {
+        if (!cancelled) setCache((c) => ({ ...c, [loadName]: geometryFromDefinition(defn) }));
+      })
+      .catch((err: unknown) => {
+        // 404 = unknown load_name or shared-data absent; either way, no
+        // elevation. Anything else is also non-fatal: this is a drawing.
+        if (!cancelled) {
+          if (!(err instanceof ApiError)) console.warn("labware definition fetch failed", err);
+          setCache((c) => ({ ...c, [loadName]: null }));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadName, cache]);
+
+  if (!loadName) return { geometry: null, state: "idle" };
+  if (loading === loadName) return { geometry: null, state: "loading" };
+  if (!(loadName in cache)) return { geometry: null, state: "loading" };
+  const geometry = cache[loadName];
+  return { geometry, state: geometry ? "ready" : "unavailable" };
+}
+
+export function PlateInspector({ slot, view, tipRacks, mountedTips }: PlateInspectorProps) {
+  const nickname = view?.nickname ?? null;
+  const isTiprack = view?.isTiprack ?? false;
+  const loadName = view?.loadName;
+  const { geometry, state: geometryState } = useLabwareGeometry(loadName);
+
+  if (slot == null || view == null || view.state === "empty") {
+    return (
+      <p className="text-xs text-ink-subtle dark:text-slate-500">
+        Select a deck slot to inspect its labware.
+      </p>
+    );
+  }
+  if (view.isTrash) {
+    return (
+      <p className="text-xs text-ink-subtle dark:text-slate-500">
+        Slot {slot} is the waste chute — no wells to show.
+      </p>
+    );
+  }
+
+  const rows = geometry?.rows ?? view.rows;
+  const columns = geometry?.columns ?? view.columns;
+  if (rows <= 0 || columns <= 0) {
+    return (
+      <p className="text-xs text-ink-subtle dark:text-slate-500">
+        Slot {slot} holds <span className="font-medium">{view.label || view.kind}</span>, which has
+        no well grid to draw.
+      </p>
+    );
+  }
+
+  const tipRack = nickname ? (tipRacks.find((r) => r.nickname === nickname) ?? null) : null;
+  const model = buildWellModel({
+    isTiprack,
+    rows,
+    columns,
+    geometry,
+    tipRack,
+    samples: view.wells ?? null,
+    mountedTips,
+    nickname,
+  });
+
+  const legendKinds = (
+    model.tracked
+      ? model.contents === "tiprack"
+        ? (["fresh", "touched", "empty"] as WellKind[])
+        : (["sample", "vacant"] as WellKind[])
+      : (["unknown"] as WellKind[])
+  ).filter((k) => (model.counts[k] ?? 0) > 0 || k === "unknown");
+
+  const availableLabel =
+    model.contents === "tiprack" && model.tracked
+      ? `${model.counts.fresh ?? 0}/${model.total} available`
+      : model.contents === "plate" && model.tracked
+        ? `${model.counts.sample ?? 0}/${model.total} with sample`
+        : `${model.total} wells`;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {/* Identity */}
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="min-w-0 truncate text-xs font-semibold text-ink dark:text-slate-200">
+          Slot {slot}
+          {nickname && <span className="font-mono font-normal"> · {nickname}</span>}
+        </span>
+        <span className="shrink-0 text-xs tabular-nums text-ink-subtle dark:text-slate-400">
+          {availableLabel}
+        </span>
+      </div>
+      {loadName && (
+        <span className="-mt-1 truncate font-mono text-[10px] text-ink-subtle dark:text-slate-500">
+          {loadName}
+        </span>
+      )}
+
+      {!model.tracked && (
+        <p className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] text-ink-subtle dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400">
+          {model.contents === "tiprack"
+            ? "This rack is not registered with the tip tracker — its tips are unknown, which is not the same as full."
+            : "No plate samples are tracked for this slot."}
+        </p>
+      )}
+
+      {/* Plan */}
+      <div className="rounded border border-slate-200 bg-white p-1.5 dark:border-slate-700 dark:bg-slate-900">
+        <PlanView model={model} geometry={geometry} />
+      </div>
+
+      {/* Legend + counts */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-ink-subtle dark:text-slate-400">
+        {legendKinds.map((kind) => (
+          <span key={kind} className="flex items-center gap-1">
+            <Swatch kind={kind} />
+            {KIND_LABEL[kind]}
+            {model.counts[kind] != null && (
+              <span className="tabular-nums">{model.counts[kind]}</span>
+            )}
+          </span>
+        ))}
+        {model.cells.some((c) => c.mounted) && (
+          <span className="flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full border-2 border-emerald-500 dark:border-emerald-400"
+              aria-hidden
+            />
+            on a pipette
+          </span>
+        )}
+      </div>
+
+      {/* Elevation */}
+      <div className="mt-1 border-t border-slate-100 pt-2 dark:border-slate-800">
+        <p className="mb-1 text-[10px] uppercase tracking-wider text-ink-subtle dark:text-slate-500">
+          Side view {geometryState === "ready" && "(front elevation, to scale)"}
+        </p>
+        {geometryState === "ready" && geometry ? (
+          <>
+            <div className="rounded border border-slate-200 bg-white p-1.5 dark:border-slate-700 dark:bg-slate-900">
+              <ElevationView geometry={geometry} model={model} />
+            </div>
+            <p className="mt-1 text-[10px] tabular-nums text-ink-subtle dark:text-slate-500">
+              {geometry.footprintX.toFixed(1)} × {geometry.footprintY.toFixed(1)} ×{" "}
+              {geometry.footprintZ.toFixed(1)} mm
+              {geometry.tipLength != null && ` · tip ${geometry.tipLength.toFixed(1)} mm`}
+              {geometry.wellVolumeUl != null && ` · well ${geometry.wellVolumeUl} µL`}
+              {" · columns tinted by aggregate state"}
+            </p>
+          </>
+        ) : geometryState === "loading" ? (
+          <p className="text-[10px] text-ink-subtle dark:text-slate-500">Loading definition…</p>
+        ) : (
+          <p className="text-[10px] text-ink-subtle dark:text-slate-500">
+            No definition available for{" "}
+            <span className="font-mono">{loadName || view.kind || "this labware"}</span>, so the
+            elevation would have to invent its dimensions. Omitted.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}

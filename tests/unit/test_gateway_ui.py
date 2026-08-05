@@ -72,6 +72,38 @@ def test_labware_endpoint_always_answers():
         assert summary["source"] == "standard"
 
 
+def test_labware_definition_endpoint_serves_geometry():
+    client = _client(ui=False)
+    resp = client.get("/labware/opentrons_96_tiprack_20ul")
+    assert resp.status_code == 200
+    defn = resp.json()
+    # The fields the inspector's side elevation needs — summaries carry none of
+    # these, which is why the whole definition is served.
+    assert defn["dimensions"]["zDimension"] > 0
+    assert defn["parameters"]["isTiprack"] is True
+    assert defn["parameters"]["tipLength"] > 0
+    assert defn["ordering"][0][0] == "A1"
+    a1 = defn["wells"]["A1"]
+    assert a1["depth"] > 0 and a1["shape"] in {"circular", "rectangular"}
+
+
+def test_labware_definition_unknown_is_404():
+    client = _client(ui=False)
+    assert client.get("/labware/no_such_labware_xyz").status_code == 404
+
+
+def test_labware_definition_is_edge_gated_like_the_catalog():
+    # A new path under /labware must not become a hole in the edge gate.
+    client = _client(ui=True, trust_local_ui=False, edge_secret="s3cret")
+    assert client.get("/labware/opentrons_96_tiprack_20ul").status_code == 404
+    assert (
+        client.get(
+            "/labware/opentrons_96_tiprack_20ul", headers={"X-Edge-Key": "s3cret"}
+        ).status_code
+        == 200
+    )
+
+
 def test_edge_mode_requires_secret():
     import pytest
 
