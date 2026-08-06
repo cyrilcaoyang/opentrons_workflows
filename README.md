@@ -209,7 +209,7 @@ deploys the gateway and not only by this lab:
 
 | credential | how it is verified | who it is for |
 |---|---|---|
-| `X-Auth-User` | trusted **only** with a matching `X-Edge-Key` (`OT2_EDGE_SECRET`) | humans behind any authenticating reverse proxy |
+| `X-Auth-User` | trusted **only** with a matching `X-Edge-Key` *or* `X-Edge-Auth` (`OT2_EDGE_SECRET`) | humans behind any authenticating reverse proxy |
 | `X-Api-Key` | constant-time match against `OT2_API_KEYS` | workflows, the SDK, agents — no browser session |
 
 The header pair is all a proxy has to produce, so this lab's Caddy edge,
@@ -217,6 +217,13 @@ oauth2-proxy, Authelia, nginx `auth_request` and Cloudflare Access all work
 unchanged. `X-Auth-User` **without** a valid `X-Edge-Key` is ignored: the
 device is directly reachable, so an unauthenticated caller must not be able to
 assert an identity with one header.
+
+Two spellings of the same secret are accepted: `X-Edge-Key` (what this
+gateway's Caddy block sets) and `X-Edge-Auth` (what the dashboard's control
+passthrough sends, matching the xArm). The passthrough reaches devices on their
+tailnet `base_url` rather than through the edge, so it needs the alias — set
+`DEVICE_EDGE_SHARED_SECRET` on the dashboard to the same value as
+`OT2_EDGE_SECRET` to enable that path.
 
 A verified principal always **overrides** the request body's `owner` — even
 when the gate is off — so `details.claimed_by.owner`, and the `control_action`
@@ -239,6 +246,11 @@ self-declared string. An API key resolves to `api:<name>`, never to the key.
 - **CORS is still `*`.** Any web page loaded in a browser that can route to
   this device can call the API. With the gate on it cannot obtain a claim, but
   tighten `allow_origins` to your dashboard's origin anyway (STATUS_SPEC §10).
+- **Direct API callers need a key.** `lab-skills`, `execute_plan` and agents
+  reach `/control/*` on the tailnet with no credential, so they get 401 once
+  the gate is on. Give them an `OT2_API_KEYS` entry before enabling it. The
+  framed operator panel is unaffected — it goes through the edge, which
+  injects both headers.
 - **The network is still the real boundary.** For a deployment that is not on
   a trusted tailnet, bind to loopback and put a reverse proxy in front — the
   pattern `kasa-tapo-services` uses — rather than relying on this gate alone.

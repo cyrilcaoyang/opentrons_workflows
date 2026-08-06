@@ -91,6 +91,35 @@ def test_an_identity_header_without_the_edge_secret_is_worthless():
         assert client.post("/control/claim", json=CLAIM, headers=headers).status_code == 401
 
 
+def test_the_dashboard_passthrough_header_name_is_accepted():
+    """The passthrough sends X-Edge-Auth, not X-Edge-Key.
+
+    It reaches devices on their tailnet base_url rather than through Caddy
+    (api/app/control.py::_device_auth_headers, matching the xArm's spelling),
+    so without this alias a login-gated gateway would refuse the dashboard
+    while the framed panel — which does go through the edge — kept working.
+    """
+    client = _client(require_login=True, edge_secret=SECRET)
+
+    resp = client.post(
+        "/control/claim",
+        json=CLAIM,
+        headers={"X-Edge-Auth": SECRET, "X-Auth-User": "ada@lab"},
+    )
+
+    assert resp.status_code == 200
+    assert client.get("/status").json()["details"]["claimed_by"]["owner"] == "ada@lab"
+    # ... and a wrong secret under that name is still worthless.
+    assert (
+        client.post(
+            "/control/claim",
+            json={"owner": "x", "session_id": "s9", "ttl_s": 30},
+            headers={"X-Edge-Auth": "wrong", "X-Auth-User": "mallory@lab"},
+        ).status_code
+        == 401
+    )
+
+
 def test_api_key_identifies_a_machine_principal_by_name():
     client = _client(require_login=True, api_keys={"solubility-workflow": "k-123"})
 

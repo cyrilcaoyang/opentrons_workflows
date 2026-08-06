@@ -313,14 +313,27 @@ def create_app(
         return identity
 
     def _from_edge(request: Request) -> bool:
-        """True iff the request provably came through the auth edge: it
-        carries X-Edge-Key matching the configured shared secret. Never true
-        when no secret is configured, so identity headers on direct requests
-        are always ignored."""
+        """True iff the request provably came through a trusted front: it
+        carries the shared secret. Never true when no secret is configured, so
+        identity headers on direct requests are always ignored.
+
+        Two accepted header names for the same secret. ``X-Edge-Key`` is what
+        this gateway's Caddy block sets. ``X-Edge-Auth`` is the name the
+        dashboard's control passthrough already sends
+        (``api/app/control.py::_device_auth_headers``, matching the xArm's
+        ``XARM_EDGE_SHARED_SECRET``) — the passthrough reaches devices on their
+        tailnet ``base_url`` rather than through the edge, so without this
+        alias a login-gated gateway would refuse the dashboard while the
+        framed panel (which does go through Caddy) kept working. Same
+        constant-time comparison either way; only the spelling differs.
+        """
         if not edge_secret:
             return False
-        supplied = request.headers.get("X-Edge-Key")
-        return supplied is not None and hmac.compare_digest(supplied, edge_secret)
+        for header in ("X-Edge-Key", "X-Edge-Auth"):
+            supplied = request.headers.get(header)
+            if supplied is not None and hmac.compare_digest(supplied, edge_secret):
+                return True
+        return False
 
     if ui and not trust_local_ui:
 
