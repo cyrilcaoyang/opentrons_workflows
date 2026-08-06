@@ -55,14 +55,34 @@ class ClaimManager:
             expires_at=self._expires_at,
         )
 
-    def acquire(self, request: ClaimRequest) -> ClaimResponse:
+    def acquire(self, request: ClaimRequest, *, takeover: bool = False) -> ClaimResponse:
+        """Acquire, re-acquire (idempotent for the same session), or take over.
+
+        ``takeover`` lets a request supersede an existing claim held by the
+        **same owner** — the operator who opened a second tab, or reloaded the
+        one holding the claim (the token goes with the old page, leaving a live
+        claim nobody can heartbeat or release until its TTL runs out). A claim
+        held by a *different* owner — an agent mid-plan, the dashboard's
+        per-request claim — is never taken over; that stays a 409.
+
+        The old token is invalidated: the superseded page's next heartbeat gets
+        401 and it re-locks its controls, which is exactly what §5 defines a
+        client to do with a lost claim.
+        """
         self._clear_if_expired()
         current = self.current()
-        if current is not None and current.session_id != request.session_id:
-            retry_after_s = max((current.expires_at - datetime.now(timezone.utc)).total_seconds(), 0.0)
-            raise ClaimConflict(current, retry_after_s)
+        same_session = current is not None and current.session_id == request.session_id
+        if current is not None and not same_session:
+            if not (takeover and current.owner == request.owner):
+                retry_after_s = max(
+                    (current.expires_at - datetime.now(timezone.utc)).total_seconds(), 0.0
+                )
+                raise ClaimConflict(current, retry_after_s)
 
-        self._token = self._token if current else secrets.token_urlsafe(24)
+        # Same session re-claiming keeps its token (§5 idempotence); a takeover
+        # must mint a fresh one so the superseded page's token stops working.
+        reuse = same_session and self._token is not None
+        self._token = self._token if reuse else secrets.token_urlsafe(24)
         self._owner = request.owner
         self._session_id = request.session_id
         self._ttl_s = max(request.ttl_s, 5.0)

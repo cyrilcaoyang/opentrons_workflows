@@ -25,6 +25,13 @@ export interface ClaimState {
   error: string | null;
   /** The competing holder on a 409, when the gateway reported one. */
   conflict: ClaimedBy | null;
+  /**
+   * True when the competing holder is *this* owner — the same operator's other
+   * tab, or one they reloaded and whose token went with the old page. Only
+   * then does the gateway honour `acquire({ takeover: true })`; an agent's or
+   * the dashboard's claim is never taken, so the UI must not offer it.
+   */
+  canTakeover: boolean;
 }
 
 const IDLE: ClaimState = {
@@ -35,6 +42,7 @@ const IDLE: ClaimState = {
   pending: false,
   error: null,
   conflict: null,
+  canTakeover: false,
 };
 
 export function useClaim(owner: string) {
@@ -49,8 +57,8 @@ export function useClaim(owner: string) {
     }
   }, []);
 
-  const acquire = useCallback(async () => {
-    setState((s) => ({ ...s, pending: true, error: null, conflict: null }));
+  const acquire = useCallback(async (takeover = false) => {
+    setState((s) => ({ ...s, pending: true, error: null, conflict: null, canTakeover: false }));
     try {
       // crypto.randomUUID is secure-context-only, and the edge serves this
       // page over plain HTTP on a raw tailnet IP — fall back to
@@ -61,7 +69,7 @@ export function useClaim(owner: string) {
           b.toString(16).padStart(2, "0"),
         ).join("");
       const sessionId = `ui-${uuid}`;
-      const resp = await postClaim(owner, sessionId, 60);
+      const resp = await postClaim(owner, sessionId, 60, takeover);
       tokenRef.current = resp.claim_token;
       setState({
         held: true,
@@ -71,6 +79,7 @@ export function useClaim(owner: string) {
         pending: false,
         error: null,
         conflict: null,
+        canTakeover: false,
       });
       stopHeartbeat();
       // Spec: heartbeat MORE OFTEN than heartbeat_interval_s.
@@ -103,7 +112,13 @@ export function useClaim(owner: string) {
           ? `Device is controlled by ${conflict.owner} (until ${conflict.expires_at}).`
           : body.detail ?? message;
       }
-      setState({ ...IDLE, error: message, conflict });
+      // Same owner ⇒ this operator's own stale/other session, which the
+      // gateway will hand over on request. Anyone else's claim stands.
+      const canTakeover = !takeover && conflict?.owner === owner;
+      if (canTakeover) {
+        message = `${message} That is your own session — you can take control from it.`;
+      }
+      setState({ ...IDLE, error: message, conflict, canTakeover });
     }
   }, [owner, stopHeartbeat]);
 

@@ -254,8 +254,19 @@ export function ControlPanel({
       </header>
 
       {claim.error && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-          {claim.error}
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+          <span>{claim.error}</span>
+          {/* Offered only when the holder is this same owner (another tab of
+              yours, or one you reloaded). Never for an agent's claim. */}
+          {claim.canTakeover && (
+            <TileButton
+              onClick={() => void claim.acquire(true)}
+              disabled={claim.pending}
+              title="Supersede your other session's claim; its page will re-lock its controls"
+            >
+              TAKE OVER
+            </TileButton>
+          )}
         </p>
       )}
 

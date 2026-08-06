@@ -20,12 +20,12 @@ from .deck import DeckDeclarationStore
 from .labware import standard_definition, standard_summaries
 from .models import (
     ClaimRejection,
-    ClaimRequest,
     ClaimResponse,
     CommandResponse,
     DeckDeclareRequest,
     DeckState,
     EquipmentStatus,
+    GatewayClaimRequest,
     HealthResponse,
     LightsRequest,
     LiquidMoveRequest,
@@ -278,7 +278,7 @@ def create_app(
         responses={409: {"model": ClaimRejection}},
         tags=["claim"],
     )
-    def claim(request: ClaimRequest, http_request: Request) -> ClaimResponse:
+    def claim(request: GatewayClaimRequest, http_request: Request) -> ClaimResponse:
         # Edge-asserted identity: when the request provably came through the
         # auth edge, the logged-in user overrides the body's owner so
         # details.claimed_by names a person, not a UI constant.
@@ -286,8 +286,9 @@ def create_app(
             edge_user = http_request.headers.get("X-Auth-User")
             if edge_user:
                 request = request.model_copy(update={"owner": edge_user})
+        held = service.claims.current()
         try:
-            return service.claims.acquire(request)
+            response = service.claims.acquire(request, takeover=request.takeover)
         except ClaimConflict as exc:
             rejection = ClaimRejection(
                 detail=str(exc),
@@ -299,6 +300,15 @@ def create_app(
                 payload=rejection.model_dump(mode="json"),
                 headers={"Retry-After": str(int(exc.retry_after_s + 1))},
             )
+        # Audit the one case where a grant cost somebody else their claim.
+        if held is not None and held.session_id != request.session_id:
+            logger.warning(
+                "claim taken over by owner %r (session %s) from session %s",
+                request.owner,
+                request.session_id,
+                held.session_id,
+            )
+        return response
 
     @app.post("/control/heartbeat", response_model=ClaimResponse, tags=["claim"])
     def heartbeat(x_claim_token: Optional[str] = Header(default=None, alias="X-Claim-Token")) -> ClaimResponse:

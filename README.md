@@ -152,6 +152,19 @@ the prebuilt static bundle ships inside the package (`src/opentrons_server/ui_di
   claim (STATUS_SPEC v1.1) and heartbeats it in the background; every control
   button attaches `X-Claim-Token` and unlocks only while the claim is held.
   Releasing (or closing the tab) frees the device for workflows/the dashboard.
+  A tab that reloads, or a second tab, arrives with a new `session_id` and no
+  token, so it is refused — the stranded claim is one nobody can heartbeat or
+  release until its TTL expires. For that case `POST /control/claim` accepts a
+  gateway-local `takeover: true`, which supersedes a claim **held by the same
+  `owner`** and mints a fresh token (the superseded page's next heartbeat gets
+  401 and it re-locks). A different owner — an agent mid-plan, the dashboard's
+  per-request claim — is never taken over; that stays a 409, and the UI offers
+  its "TAKE OVER" button only when the holder is the same owner. Behind the
+  auth edge that owner is the logged-in user, so takeover means *your* other
+  session; in `OT2_TRUST_LOCAL_UI=true` dev mode every tab is
+  `ot2-gateway-ui`, so it means any UI tab. The field is additive and
+  defaults false, so spec-shaped `lab-skills` / dashboard bodies are unchanged
+  and never take over by accident.
 - **Labware catalog:** the deck-declare picker merges the authored catalog with
   `GET /labware`, a read-only summary of the official Opentrons definitions.
   That endpoint is populated when the optional extra is installed:

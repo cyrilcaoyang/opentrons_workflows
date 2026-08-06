@@ -51,6 +51,23 @@ PROTOCOL_VERSION = "1.2"
 EQUIPMENT_KIND: EquipmentKind = "liquid_handler"
 
 
+class GatewayClaimRequest(ClaimRequest):
+    """``POST /control/claim`` body — the spec's, plus one local field.
+
+    ``takeover`` asks to supersede a claim **already held by the same owner**:
+    the operator's other tab, or the one they just reloaded (a reload drops the
+    token, stranding a live claim nobody can heartbeat or release until its TTL
+    runs out). Never grants a claim held by a different owner — an agent
+    mid-plan or the dashboard is refused as usual, with 409.
+
+    Additive and defaulted, so a spec-shaped body from ``lab-skills`` or the
+    dashboard validates unchanged and never takes over by accident. Not part of
+    STATUS_SPEC §5; see the README's claim section.
+    """
+
+    takeover: bool = False
+
+
 class CommandResponse(BaseModel):
     ok: bool = True
     message: Optional[str] = None

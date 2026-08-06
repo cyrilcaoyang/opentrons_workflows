@@ -119,15 +119,19 @@ export function getLabwareDefinition(loadName: string): Promise<unknown> {
 // Claim lifecycle
 // ---------------------------------------------------------------------------
 
+/** `takeover` supersedes a claim held by the *same owner* — this operator's
+ *  other tab, or the one they reloaded. A different owner (an agent, the
+ *  dashboard) still comes back 409. Gateway-local, not STATUS_SPEC §5. */
 export function postClaim(
   owner: string,
   sessionId: string,
   ttlS = 60,
+  takeover = false,
 ): Promise<ClaimResponse> {
   return fetchJson<ClaimResponse>("/control/claim", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ owner, session_id: sessionId, ttl_s: ttlS }),
+    body: JSON.stringify({ owner, session_id: sessionId, ttl_s: ttlS, takeover }),
   });
 }
 

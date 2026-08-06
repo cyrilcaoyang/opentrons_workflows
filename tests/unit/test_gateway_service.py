@@ -769,3 +769,69 @@ def test_ssh_connect_failure_raises_the_real_reason():
     assert "3 attempts" in message
     # The old, misleading message must not be what surfaces.
     assert "SSH client is not connected" not in message
+
+
+def test_same_owner_can_take_over_its_own_stale_claim():
+    """A reloaded or second UI tab arrives with a new session_id and no token.
+
+    Without takeover it is refused for the full TTL (nobody can heartbeat or
+    release the stranded claim); with it, the same owner supersedes itself and
+    the old token dies.
+    """
+    client = TestClient(create_app(dry_run=True, enforce_claims=True))
+
+    first = client.post(
+        "/control/claim", json={"owner": "ot2-gateway-ui", "session_id": "tab-1", "ttl_s": 60}
+    ).json()["claim_token"]
+
+    # Plain re-claim from the new tab: still a conflict, naming the holder.
+    refused = client.post(
+        "/control/claim", json={"owner": "ot2-gateway-ui", "session_id": "tab-2"}
+    )
+    assert refused.status_code == 409
+    assert refused.json()["claimed_by"]["session_id"] == "tab-1"
+
+    taken = client.post(
+        "/control/claim",
+        json={"owner": "ot2-gateway-ui", "session_id": "tab-2", "takeover": True},
+    )
+    assert taken.status_code == 200
+    second = taken.json()["claim_token"]
+    assert second != first
+
+    # The superseded tab learns it lost the claim on its next heartbeat (§5).
+    assert client.post("/control/heartbeat", headers={"X-Claim-Token": first}).status_code == 401
+    assert client.post("/control/heartbeat", headers={"X-Claim-Token": second}).status_code == 200
+    assert client.get("/status").json()["details"]["claimed_by"]["session_id"] == "tab-2"
+
+
+def test_takeover_never_steals_another_owners_claim():
+    """The whole point of scoping it to the owner: an agent mid-plan, or the
+    dashboard's per-request claim, is not something a UI click may end."""
+    client = TestClient(create_app(dry_run=True, enforce_claims=True))
+
+    client.post(
+        "/control/claim",
+        json={"owner": "agent:solubility-screening", "session_id": "run-1", "ttl_s": 60},
+    )
+
+    resp = client.post(
+        "/control/claim",
+        json={"owner": "ot2-gateway-ui", "session_id": "tab-1", "takeover": True},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["claimed_by"]["owner"] == "agent:solubility-screening"
+
+
+def test_reclaiming_the_same_session_keeps_its_token():
+    """§5 idempotence must survive the takeover change: the same session
+    re-claiming gets its existing token back, not a rotated one that would
+    strand the token its own page is still heartbeating with."""
+    client = TestClient(create_app(dry_run=True, enforce_claims=True))
+
+    body = {"owner": "ot2-gateway-ui", "session_id": "tab-1", "ttl_s": 60}
+    first = client.post("/control/claim", json=body).json()["claim_token"]
+    again = client.post("/control/claim", json=body).json()["claim_token"]
+
+    assert again == first
+    assert client.post("/control/heartbeat", headers={"X-Claim-Token": first}).status_code == 200
