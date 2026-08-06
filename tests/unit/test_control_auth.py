@@ -1,0 +1,160 @@
+"""The control-plane identity gate (``OT2_REQUIRE_LOGIN``).
+
+Claims are cooperative coordination, not authentication (STATUS_SPEC §5) — the
+owner is a string the caller invents. Without this gate anyone who can reach
+the port takes a claim as anybody and drives the hardware; with it, a claim
+requires a verified principal and ``details.claimed_by.owner`` becomes
+trustworthy even on a direct call.
+
+Deliberately no external auth service: an edge-injected header (any reverse
+proxy can produce it) or a static API key. That is what makes the gate usable
+by someone who deploys this gateway outside our lab.
+"""
+
+from fastapi.testclient import TestClient
+
+from opentrons_server.gateway.api import _parse_api_keys, create_app
+
+SECRET = "edge-secret"
+CLAIM = {"owner": "whoever-i-say", "session_id": "s1", "ttl_s": 30}
+
+
+def _client(**kwargs):
+    return TestClient(create_app(dry_run=True, **kwargs))
+
+
+# ---------------------------------------------------------------------------
+# Default posture: unchanged
+# ---------------------------------------------------------------------------
+
+
+def test_off_by_default_so_existing_deployments_are_unchanged():
+    client = _client()
+    resp = client.post("/control/claim", json=CLAIM)
+    assert resp.status_code == 200
+    # The caller's own owner string stands when nothing verified it.
+    assert client.get("/status").json()["details"]["claimed_by"]["owner"] == "whoever-i-say"
+    assert client.get("/status").json()["details"]["control_auth"] == "claim_only"
+
+
+def test_status_publishes_the_posture():
+    # An operator can see which gate a gateway runs without reading its env.
+    assert _client().get("/status").json()["details"]["control_auth"] == "claim_only"
+    assert (
+        _client(enforce_claims=False).get("/status").json()["details"]["control_auth"] == "open"
+    )
+    gated = _client(require_login=True, edge_secret=SECRET)
+    assert gated.get("/status").json()["details"]["control_auth"] == "identity"
+
+
+# ---------------------------------------------------------------------------
+# Enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_claim_without_a_credential_is_401():
+    client = _client(require_login=True, edge_secret=SECRET)
+
+    resp = client.post("/control/claim", json=CLAIM)
+
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "login_required"
+    # Nothing was granted. (details.claimed_by is omitted, not null, when no
+    # claim is held — STATUS_SPEC §5 allows either.)
+    assert client.get("/status").json()["details"].get("claimed_by") is None
+
+
+def test_edge_identity_is_accepted_and_overrides_the_claimed_owner():
+    client = _client(require_login=True, edge_secret=SECRET)
+
+    resp = client.post(
+        "/control/claim",
+        json=CLAIM,
+        headers={"X-Edge-Key": SECRET, "X-Auth-User": "ada@lab"},
+    )
+
+    assert resp.status_code == 200
+    # The verified principal wins over the body — this is what makes the audit
+    # trail (and details.claimed_by) mean something.
+    assert client.get("/status").json()["details"]["claimed_by"]["owner"] == "ada@lab"
+
+
+def test_an_identity_header_without_the_edge_secret_is_worthless():
+    # The device is directly reachable, so X-Auth-User alone must never be
+    # trusted — otherwise anyone forges any identity with one header.
+    client = _client(require_login=True, edge_secret=SECRET)
+
+    for headers in (
+        {"X-Auth-User": "mallory@lab"},
+        {"X-Edge-Key": "wrong", "X-Auth-User": "mallory@lab"},
+    ):
+        assert client.post("/control/claim", json=CLAIM, headers=headers).status_code == 401
+
+
+def test_api_key_identifies_a_machine_principal_by_name():
+    client = _client(require_login=True, api_keys={"solubility-workflow": "k-123"})
+
+    resp = client.post("/control/claim", json=CLAIM, headers={"X-Api-Key": "k-123"})
+
+    assert resp.status_code == 200
+    # Named, and never the key itself.
+    owner = client.get("/status").json()["details"]["claimed_by"]["owner"]
+    assert owner == "api:solubility-workflow"
+    assert "k-123" not in owner
+
+
+def test_a_wrong_api_key_is_refused():
+    client = _client(require_login=True, api_keys={"wf": "k-123"})
+    assert client.post("/control/claim", json=CLAIM, headers={"X-Api-Key": "nope"}).status_code == 401
+
+
+def test_identity_still_labels_the_owner_when_the_gate_is_off():
+    # Attribution is useful even when it isn't mandatory.
+    client = _client(edge_secret=SECRET)  # require_login not set
+
+    client.post(
+        "/control/claim", json=CLAIM, headers={"X-Edge-Key": SECRET, "X-Auth-User": "ada@lab"}
+    )
+
+    assert client.get("/status").json()["details"]["claimed_by"]["owner"] == "ada@lab"
+
+
+def test_login_is_not_bypassed_when_claims_are_disabled():
+    # The claim gate normally carries the identity requirement (a token can
+    # only be had by an authenticated caller). With claims off it must be
+    # enforced directly on the control endpoints, or the flag does nothing.
+    client = _client(require_login=True, enforce_claims=False, edge_secret=SECRET)
+
+    assert client.post("/control/home", json={}).status_code == 401
+    ok = client.post("/control/home", json={}, headers={"X-Edge-Key": SECRET, "X-Auth-User": "ada@lab"})
+    assert ok.status_code == 200
+
+
+def test_read_surfaces_stay_open_for_the_aggregator():
+    # The gate is for the control plane. /status must keep answering or the
+    # dashboard marks the device unreachable.
+    client = _client(require_login=True, edge_secret=SECRET)
+    for path in ("/", "/health", "/status"):
+        assert client.get(path).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+
+def test_requiring_login_with_no_way_in_is_refused_at_startup():
+    # Fail-closed with no credential configured is a bricked device, not a
+    # secure one — so say so at boot rather than at 2am.
+    import pytest
+
+    with pytest.raises(RuntimeError, match="OT2_REQUIRE_LOGIN"):
+        create_app(dry_run=True, require_login=True, ui=False)
+
+
+def test_api_key_parsing():
+    assert _parse_api_keys("wf:k1,agent:k2") == {"wf": "k1", "agent": "k2"}
+    assert _parse_api_keys("  wf : k1 ") == {"wf": "k1"}
+    assert _parse_api_keys("bare-key") == {"unnamed": "bare-key"}
+    assert _parse_api_keys("") == {}
+    assert _parse_api_keys(None) == {}

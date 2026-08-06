@@ -145,9 +145,11 @@ the prebuilt static bundle ships inside the package (`src/opentrons_server/ui_di
     anyone who can reach the port; no identity trusted. Startup logs a
     warning. Flip to `false` before any deployment that faces the lab.
   The effective state is visible at `/status` → `details.ui_mode`
-  (`edge` = gated, `open` = trusted/dev, `off` = headless). Spec surfaces
-  (`/`, `/health`, `/status`, `/control/*`) are never gated — the
-  aggregator and SDK reach them directly as before.
+  (`edge` = gated, `open` = trusted/dev, `off` = headless). Spec read surfaces
+  (`/`, `/health`, `/status`) are never gated — the aggregator and SDK reach
+  them directly as before. `/control/*` is not gated by *this* switch either;
+  gating who may drive the hardware is a separate opt-in,
+  [`OT2_REQUIRE_LOGIN`](#who-may-drive-the-hardware-ot2_require_login).
 - **Claims:** the UI is claim-native. "Take control" acquires a cooperative
   claim (STATUS_SPEC v1.1) and heartbeats it in the background; every control
   button attaches `X-Claim-Token` and unlocks only while the claim is held.
@@ -175,6 +177,71 @@ the prebuilt static bundle ships inside the package (`src/opentrons_server/ui_di
 
   Without it the endpoint returns an empty catalog and the picker still works
   from its authored entries + free-text load names.
+
+## Who may drive the hardware (`OT2_REQUIRE_LOGIN`)
+
+**A claim is not authentication.** STATUS_SPEC §5 is explicit that claims are
+*cooperative* — `POST /control/claim` takes an `owner` and a `session_id`,
+both strings the caller invents. So by default, anyone who can reach the port
+takes a claim under any name and drives the robot. That is the deliberate v1
+posture (§11: "No auth at the equipment-repo level for v1. Tailscale ACLs gate
+access") — **the security boundary is the network, not this service.**
+
+`OT2_REQUIRE_LOGIN=true` moves that boundary into the gateway. Claim
+acquisition then demands a *verified principal*, and since every motion
+endpoint already sits behind the claim, gating that one chokepoint gates the
+control plane. It is **off by default**, so existing and dev deployments are
+unchanged.
+
+```
+OT2_REQUIRE_LOGIN=true
+OT2_EDGE_SECRET=<shared secret>                    # for edge-injected identity
+OT2_API_KEYS=solubility-workflow:k1,agent-a:k2     # for machine principals
+```
+
+At least one credential source must be configured, or startup fails — a
+fail-closed device with no way in is bricked, not secure.
+
+### Two credentials, no external auth service
+
+Deliberately no auth-server dependency, so this is usable by anyone who
+deploys the gateway and not only by this lab:
+
+| credential | how it is verified | who it is for |
+|---|---|---|
+| `X-Auth-User` | trusted **only** with a matching `X-Edge-Key` (`OT2_EDGE_SECRET`) | humans behind any authenticating reverse proxy |
+| `X-Api-Key` | constant-time match against `OT2_API_KEYS` | workflows, the SDK, agents — no browser session |
+
+The header pair is all a proxy has to produce, so this lab's Caddy edge,
+oauth2-proxy, Authelia, nginx `auth_request` and Cloudflare Access all work
+unchanged. `X-Auth-User` **without** a valid `X-Edge-Key` is ignored: the
+device is directly reachable, so an unauthenticated caller must not be able to
+assert an identity with one header.
+
+A verified principal always **overrides** the request body's `owner` — even
+when the gate is off — so `details.claimed_by.owner`, and the `control_action`
+rows the events exporter writes, name a real principal rather than a
+self-declared string. An API key resolves to `api:<name>`, never to the key.
+
+`GET /status` publishes the posture as `details.control_auth`:
+
+| value | meaning |
+|---|---|
+| `identity` | a verified principal is required to claim |
+| `claim_only` | a claim token is the only gate — coordination, not authentication |
+| `open` | claims disabled too |
+
+### What it does *not* cover
+
+- **Read surfaces stay open.** `/`, `/health` and `/status` must keep
+  answering or the aggregator marks the device unreachable — so deck, tip and
+  plate state remain readable by anyone who can reach the port.
+- **CORS is still `*`.** Any web page loaded in a browser that can route to
+  this device can call the API. With the gate on it cannot obtain a claim, but
+  tighten `allow_origins` to your dashboard's origin anyway (STATUS_SPEC §10).
+- **The network is still the real boundary.** For a deployment that is not on
+  a trusted tailnet, bind to loopback and put a reverse proxy in front — the
+  pattern `kasa-tapo-services` uses — rather than relying on this gate alone.
 
 ### Developing the UI
 

@@ -101,6 +101,29 @@ class ClaimHTTPError(Exception):
         self.headers = headers or {}
 
 
+def _parse_api_keys(raw: Optional[str]) -> dict[str, str]:
+    """Parse ``OT2_API_KEYS`` into ``{principal_name: key}``.
+
+    Accepts ``name:key`` pairs, comma-separated, so an audit row can say *which*
+    machine principal acted (``api:solubility-workflow``) rather than just "an
+    API key". A bare ``key`` with no name is accepted and reported as
+    ``api:unnamed`` — convenient for a quick deployment, worse for the audit
+    trail.
+    """
+
+    out: dict[str, str] = {}
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        name, sep, key = entry.partition(":")
+        if sep and key.strip():
+            out[name.strip() or "unnamed"] = key.strip()
+        else:
+            out["unnamed"] = entry
+    return out
+
+
 def create_app(
     *,
     dry_run: Optional[bool] = None,
@@ -109,6 +132,8 @@ def create_app(
     ui: Optional[bool] = None,
     trust_local_ui: Optional[bool] = None,
     edge_secret: Optional[str] = None,
+    require_login: Optional[bool] = None,
+    api_keys: Optional[dict[str, str]] = None,
 ) -> FastAPI:
     _configure_logging()
     if dry_run is None:
@@ -139,6 +164,34 @@ def create_app(
         edge_secret = os.environ.get("OT2_EDGE_SECRET") or None
     if ui and not trust_local_ui and not edge_secret:
         raise RuntimeError("OT2_TRUST_LOCAL_UI=false requires OT2_EDGE_SECRET to be set")
+
+    # Control-plane identity gate (OT2_REQUIRE_LOGIN, default off so existing
+    # and dev deployments are unchanged). Claims are cooperative, NOT
+    # authentication — STATUS_SPEC §5 — so without this anyone who can reach
+    # the port acquires a claim under any owner they care to type and drives
+    # the hardware. Enforced at claim acquisition, the single chokepoint every
+    # motion endpoint already sits behind.
+    if require_login is None:
+        require_login = os.environ.get("OT2_REQUIRE_LOGIN", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    if api_keys is None:
+        api_keys = _parse_api_keys(os.environ.get("OT2_API_KEYS"))
+    if require_login and not edge_secret and not api_keys:
+        # Fail-closed with no way in is a bricked device, not a secure one.
+        raise RuntimeError(
+            "OT2_REQUIRE_LOGIN=true requires OT2_EDGE_SECRET (for edge-injected "
+            "identity) and/or OT2_API_KEYS (for machine principals)"
+        )
+    if require_login:
+        logger.info(
+            "OT2_REQUIRE_LOGIN=true: /control/claim requires a verified identity "
+            "(edge header%s)",
+            " or API key" if api_keys else "",
+        )
     if ui and trust_local_ui:
         logger.warning(
             "OT2_TRUST_LOCAL_UI=true: operator UI is served without the auth "
@@ -146,6 +199,14 @@ def create_app(
         )
     # Compact summary surfaced at /status details.ui_mode.
     ui_mode = "off" if not ui else ("open" if trust_local_ui else "edge")
+    # ... and its control-plane sibling, details.control_auth: "identity" when
+    # a verified principal is required to claim, "claim_only" when a claim
+    # token is the only gate (cooperative, not authentication), "open" when
+    # even that is off. Published so an operator can see which posture a
+    # gateway is actually running without reading its service env.
+    control_auth = (
+        "identity" if require_login else ("claim_only" if enforce_claims else "open")
+    )
 
     service = OT2Service(
         equipment_id=os.environ.get("OT2_EQUIPMENT_ID", "ot2"),
@@ -184,6 +245,73 @@ def create_app(
         allow_headers=["*"],
     )
 
+    def _principal_for_api_key(supplied: str) -> Optional[str]:
+        """Match ``X-Api-Key`` against the configured keys, in constant time.
+
+        Every entry is compared even after a hit, so the response time does not
+        reveal which key matched (or how far down the list it was).
+        """
+
+        matched: Optional[str] = None
+        for name, key in api_keys.items():
+            if hmac.compare_digest(supplied, key):
+                matched = name
+        return matched
+
+    def _resolve_identity(request: Request) -> Optional[str]:
+        """The verified principal behind a control request, or ``None``.
+
+        Two credentials, in order, and **no external auth service is
+        contacted** — that is deliberate, so this gate is usable by anyone who
+        deploys the gateway, not only by this lab:
+
+        1. **Edge-injected identity** — ``X-Auth-User``, trusted only when the
+           request also carries a matching ``X-Edge-Key`` (:func:`_from_edge`).
+           Any reverse proxy that authenticates a human and sets two headers
+           works: our Caddy edge, oauth2-proxy, Authelia, nginx auth_request.
+        2. **Static API key** — ``X-Api-Key`` against ``OT2_API_KEYS``, for
+           machine principals (workflows, the SDK, agents) that have no browser
+           session and no proxy in front of them.
+
+        The returned string is what lands in ``details.claimed_by.owner`` and
+        in the audit rows the events exporter writes, so it must name a real
+        principal: an edge identity is the person's own name, an API key
+        resolves to ``api:<name>`` and never to the key itself.
+        """
+
+        if _from_edge(request):
+            edge_user = (request.headers.get("X-Auth-User") or "").strip()
+            if edge_user:
+                return edge_user
+        supplied = request.headers.get("X-Api-Key")
+        if supplied:
+            name = _principal_for_api_key(supplied)
+            if name:
+                return f"api:{name}"
+        return None
+
+    def _require_identity(request: Request) -> Optional[str]:
+        """Resolve the principal, refusing the request when login is required.
+
+        Fails closed: with ``OT2_REQUIRE_LOGIN`` on, a request carrying no
+        recognised credential is refused outright rather than falling back to
+        the caller-supplied owner — which is a string the caller invents.
+        """
+
+        identity = _resolve_identity(request)
+        if require_login and not identity:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "login_required",
+                    "hint": (
+                        "This gateway requires a verified identity. Sign in through "
+                        "the auth edge, or send X-Api-Key."
+                    ),
+                },
+            )
+        return identity
+
     def _from_edge(request: Request) -> bool:
         """True iff the request provably came through the auth edge: it
         carries X-Edge-Key matching the configured shared secret. Never true
@@ -219,8 +347,17 @@ def create_app(
             headers=exc.headers,
         )
 
-    def require_claim(x_claim_token: Optional[str] = Header(default=None, alias="X-Claim-Token")) -> None:
+    def require_claim(
+        request: Request,
+        x_claim_token: Optional[str] = Header(default=None, alias="X-Claim-Token"),
+    ) -> None:
         if not enforce_claims:
+            # Claims off, but login on: the claim gate is normally what carries
+            # the identity requirement (a token can only be obtained by an
+            # authenticated caller), so with claims disabled it has to be
+            # checked here or OT2_REQUIRE_LOGIN would be silently bypassed.
+            if require_login:
+                _require_identity(request)
             return
         if service.claims.validate(x_claim_token):
             return
@@ -250,6 +387,7 @@ def create_app(
     def status() -> EquipmentStatus:
         snapshot = service.get_status()
         snapshot.details["ui_mode"] = ui_mode
+        snapshot.details["control_auth"] = control_auth
         return snapshot
 
     @app.get("/labware", tags=["ui"])
@@ -279,13 +417,13 @@ def create_app(
         tags=["claim"],
     )
     def claim(request: GatewayClaimRequest, http_request: Request) -> ClaimResponse:
-        # Edge-asserted identity: when the request provably came through the
-        # auth edge, the logged-in user overrides the body's owner so
-        # details.claimed_by names a person, not a UI constant.
-        if _from_edge(http_request):
-            edge_user = http_request.headers.get("X-Auth-User")
-            if edge_user:
-                request = request.model_copy(update={"owner": edge_user})
+        # A verified identity always OVERRIDES the body's owner, so
+        # details.claimed_by (and every audit row keyed off it) names a real
+        # principal rather than a string the caller typed. With
+        # OT2_REQUIRE_LOGIN on, the absence of one is a 401 instead.
+        identity = _require_identity(http_request)
+        if identity:
+            request = request.model_copy(update={"owner": identity})
         held = service.claims.current()
         try:
             response = service.claims.acquire(request, takeover=request.takeover)
