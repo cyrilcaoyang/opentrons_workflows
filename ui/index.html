@@ -4,14 +4,38 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OT-2 Gateway</title>
-    <!-- Pre-apply the banner's stored theme before first paint; banner.js
-         loads deferred and its applyTheme is idempotent. -->
     <script>
-      try {
-        var t = localStorage.getItem("theme");
-        var d = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-        document.documentElement.classList.toggle("dark", d);
-      } catch (e) {}
+      (function () {
+        // Pre-apply the banner's stored theme before first paint; banner.js
+        // loads later and its own applyTheme is idempotent.
+        function applyTheme() {
+          try {
+            var t = localStorage.getItem("theme");
+            var d = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+            document.documentElement.classList.toggle("dark", d);
+          } catch (e) {}
+        }
+        applyTheme();
+
+        // Embedded (the dashboard frames us same-origin at
+        // /ot2/{hte,complexation}/ui/): the host page already shows the SDL2
+        // auth banner, so suppress ours — one banner, not two. window.EMBEDDED
+        // gates the banner.js include at the bottom of the page. Mirrors the
+        // xArm panel, which solved this first.
+        var embedded = false;
+        try { embedded = window.self !== window.top; } catch (e) { embedded = true; }
+        window.EMBEDDED = embedded;
+        if (embedded) document.documentElement.classList.add("embedded");
+
+        // Theme follows the host: same origin through the edge means the same
+        // localStorage, and `storage` fires in every OTHER document of the
+        // origin — so the dashboard's toggle reaches us live. Poll as a
+        // fallback for same-document writes, which storage does not fire for.
+        window.addEventListener("storage", function (e) {
+          if (!e || e.key === null || e.key === "theme") applyTheme();
+        });
+        if (embedded) setInterval(applyTheme, 1000);
+      })();
     </script>
   </head>
   <body>
@@ -19,7 +43,16 @@
     <script type="module" src="/src/main.tsx"></script>
     <!-- Shared signed-in-user banner, served by the authenticated Caddy edge.
          Absolute path on purpose: it resolves at the edge origin, not from
-         this bundle — 404s harmlessly in dev / open mode. -->
-    <script defer src="/auth/banner.js"></script>
+         this bundle — 404s harmlessly in dev / open mode. Injected rather than
+         written inline so it can be skipped when embedded (the host page has
+         its own banner). -->
+    <script>
+      if (!window.EMBEDDED) {
+        var _b = document.createElement("script");
+        _b.defer = true;
+        _b.src = "/auth/banner.js";
+        document.body.appendChild(_b);
+      }
+    </script>
   </body>
 </html>
