@@ -8,6 +8,7 @@ import {
   postPause,
   postResume,
   postSetLights,
+  postTipsReset,
   postShutdown,
   postStartup,
 } from "../lib/api";
@@ -100,6 +101,8 @@ export function ControlPanel({
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
   const [declaring, setDeclaring] = useState(false);
   const [pending, setPending] = useState(false);
+  // Which rack is awaiting a refill confirmation (nickname), if any.
+  const [refillConfirm, setRefillConfirm] = useState<string | null>(null);
 
   // Controls unlock when this browser session holds the device claim.
   const locked = !claim.held;
@@ -187,6 +190,11 @@ export function ControlPanel({
       .then(() => refetch())
       .catch((e: unknown) => reportError(e, name))
       .finally(() => setPending(false));
+  }
+
+  function refillRack(nickname: string) {
+    setRefillConfirm(null);
+    runControl("tips.reset", () => postTipsReset(token, nickname));
   }
 
   function clearAll() {
@@ -362,6 +370,7 @@ export function ControlPanel({
               selectedSlot={selectedSlot}
               onSelectSlot={setSelectedSlot}
               variant="page"
+              tipRacks={tipRacks}
             />
             {!deviceDeck && (
               <p className="mt-2 text-xs text-ink-subtle dark:text-slate-500">
@@ -508,6 +517,45 @@ export function ControlPanel({
                       <p className="mt-0.5 text-[10px] text-ink-subtle dark:text-slate-500">
                         {r.empty} used · {r.touched} touched
                       </p>
+                    )}
+                    {/* Refill is always an explicit operator act: the gateway
+                        cannot see new tips going in, and a wrong "full" sends
+                        the head onto bare holes. Hence the confirm step. */}
+                    {r.available < r.total && (
+                      <div className="mt-1.5">
+                        {refillConfirm === r.nickname ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-ink-subtle dark:text-slate-400">
+                              All {r.total} tips physically present?
+                            </span>
+                            <button
+                              type="button"
+                              disabled={locked || pending}
+                              onClick={() => refillRack(r.nickname)}
+                              className="rounded border border-sky-500 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-500 dark:text-sky-300 dark:hover:bg-sky-950/40"
+                            >
+                              Yes, refilled
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setRefillConfirm(null)}
+                              className="text-[10px] text-ink-subtle underline dark:text-slate-400"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={locked || pending}
+                            onClick={() => setRefillConfirm(r.nickname)}
+                            title={controlHint ?? "Mark every tip in this rack fresh again"}
+                            className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-ink-subtle hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-400"
+                          >
+                            Mark refilled
+                          </button>
+                        )}
+                      </div>
                     )}
                   </li>
                 ))}

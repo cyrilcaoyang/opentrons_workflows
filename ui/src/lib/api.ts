@@ -186,6 +186,12 @@ export const postHome = (token: string | null) => controlPost("home", {}, token)
 export const postSetLights = (token: string | null, on: boolean) =>
   controlPost("lights", { on }, token);
 
+/** Mark every tip in a rack fresh again — the operator asserting a physical
+ *  refill. Never inferred: the gateway cannot observe new tips being put in,
+ *  and guessing wrong claims tips that aren't there. */
+export const postTipsReset = (token: string | null, nickname: string) =>
+  controlPost("tips/reset", { nickname }, token);
+
 /** Full-layout declared-deck replace. Values are load_names, module keys, or
  *  legacy kind strings; an empty map clears the declaration. */
 export const postDeckDeclare = (
