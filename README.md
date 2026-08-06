@@ -732,6 +732,45 @@ sudo systemctl restart ac-dashboard-api.service
 sudo systemctl status ac-dashboard-api.service --no-pager
 ```
 
+### History events (`OT2_INGEST_URL`)
+
+Optionally the gateway pushes domain events to the dashboard's history DB
+(`POST /api/ingest/events`, the device-side exporter of ARCHITECTURE decision
+#9). Off unless configured:
+
+```
+OT2_INGEST_URL=http://<dashboard-host>:8001/api/ingest/events
+OT2_INGEST_DEVICE_ID=ot2_hte     # optional; defaults to OT2_EQUIPMENT_ID
+```
+
+It carries only what the aggregator's 60 s poll **cannot** see — an operation
+that starts and finishes between two polls is invisible to it, not merely
+undercounted (the reasoning STATUS_SPEC §2.3.1 gives for `cycles_total`):
+
+| event | carries |
+|---|---|
+| `control_action` | `action`, `outcome`, `owner`, `duration_s`, `source: "device"` |
+| `tip_pickup` / `tip_drop` | `rack`, `well`, `wells` (the whole covered column for a multi-channel head), `channels`, `sample_id` |
+| `tips_reset` | `rack`, plus the `available_before` / `empty_before` / `touched_before` counts the refill discarded |
+| `startup` / `shutdown` / `error` | `from_state`, `to_state`, `transport` |
+
+Two things to know:
+
+- **A dashboard-proxied click produces two `control_action` rows** — the
+  passthrough's (recording its HTTP hop; carries `method` / `status_code`) and
+  the device's (recording what the hardware did; carries `source: "device"`).
+  The device row is authoritative for outcome and duration. Count one or the
+  other, not both. A write made in this gateway's own `/ui` produces only the
+  device row — which is the gap this closes, since that path never reaches the
+  dashboard.
+- **Tip lifecycle is otherwise current-state only.** `ot2_tip_state.json` says
+  which tips are gone; these rows say when they went and for which sample, so
+  usage is answerable per run.
+
+Never emitted in dry run — a simulation must not enter the lab's history as
+real work. Delivery is best-effort: a bounded queue and a daemon thread, so an
+unreachable dashboard drops rows rather than stalling the control path.
+
 ## SSH Failure Policy
 
 The gateway treats SSH failures differently depending on the operation:

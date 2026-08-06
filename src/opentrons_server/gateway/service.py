@@ -27,6 +27,7 @@ from .deck import (
     normalize_repl_slots,
     normalize_run_slots,
 )
+from .events_exporter import EventsExporter
 from .models import (
     EQUIPMENT_KIND,
     PROTOCOL_VERSION,
@@ -189,6 +190,7 @@ class OT2Service:
         plates: Optional[PlateStateStore] = None,
         decks: Optional[DeckDeclarationStore] = None,
         tips: Optional[TipStateStore] = None,
+        events: Optional[EventsExporter] = None,
         transport: Optional[str] = None,
         http_run_state_path: Optional[str] = None,
     ) -> None:
@@ -237,6 +239,10 @@ class OT2Service:
         # the same method surface the service calls.
         self.control: Optional[Any] = None
         self.claims = ClaimManager()
+        # Best-effort push of control actions + tip lifecycle to the dashboard's
+        # history DB. A no-op unless OT2_INGEST_URL is set, and never emitted in
+        # dry run — a simulation must not enter the lab's history as real work.
+        self.events = events if events is not None else EventsExporter.from_env()
         self.last_error: Optional[ErrorInfo] = None
         self._dry_run_lights_on = False
         # Cached deck-light state. Refreshed off the request path (background
@@ -324,10 +330,12 @@ class OT2Service:
             self.state = OT2ServiceState.READY
             self.last_error = None
             self._status_note = None
+            self._emit_session_event("startup", to_state=self.state.value)
             self.refresh_snapshot()
             self._refresh_identity()
         except Exception as exc:
             self._set_error("startup_failed", str(exc), severity="error")
+            self._emit_session_event("error", message=str(exc), code="startup_failed")
             raise
 
     def _connect_http(self) -> OT2HttpControl:
@@ -359,7 +367,11 @@ class OT2Service:
             finally:
                 self.control = None
         self.claims.force_clear()
+        previous = self.state
         self.state = OT2ServiceState.DRY_RUN if self.dry_run else OT2ServiceState.REQUIRES_INIT
+        self._emit_session_event(
+            "shutdown", from_state=previous.value, to_state=self.state.value
+        )
 
     def setup_protocol(self, setup: Dict[str, Any]) -> None:
         self.session_recipe = {
@@ -552,6 +564,15 @@ class OT2Service:
                 "last_sample": sample_id or prior_status,
                 "origin_status": prior_status,
             }
+            self._emit_tip_event(
+                "tip_pickup",
+                rack,
+                pipette=request.pipette,
+                well=well,
+                wells=covered or None,
+                channels=channels,
+                sample_id=sample_id,
+            )
 
     def drop_tip(self, request: Any) -> None:
         def _drop_tip() -> None:
@@ -571,6 +592,16 @@ class OT2Service:
         # addressed one — otherwise a multi-channel column stays partly "new"
         # and the next auto-pick sends the head onto holes.
         self._mark_mounted_wells(mounted, EMPTY)
+        if mounted is not None:
+            self._emit_tip_event(
+                "tip_drop",
+                mounted.get("rack"),
+                pipette=request.pipette,
+                well=mounted.get("well"),
+                wells=mounted.get("wells") or None,
+                channels=mounted.get("channels"),
+                sample_id=mounted.get("last_sample"),
+            )
 
     def _mark_mounted_wells(
         self, mounted: Optional[Dict[str, Any]], status: str
@@ -606,9 +637,25 @@ class OT2Service:
         return f"{labware_nickname}_{position}"
 
     def reset_tip_rack(self, nickname: str, *, wells: Optional[list[str]] = None):
-        """(Re)register a rack with all tips fresh — a physical rack swap."""
+        """(Re)register a rack with all tips fresh — a physical rack swap.
 
-        return self.tips.reset_rack(nickname, wells=wells)
+        Audited: this is an operator asserting a physical fact the gateway
+        cannot observe, and it discards the record of every tip consumed so
+        far. The previous counts go on the event so the history still shows
+        what was thrown away.
+        """
+
+        before = self.tips.summary().get(nickname) if self.tips.has_rack(nickname) else None
+        result = self.tips.reset_rack(nickname, wells=wells)
+        self._emit_tip_event(
+            "tips_reset",
+            nickname,
+            available_before=None if before is None else before.get("available"),
+            empty_before=None if before is None else before.get("empty"),
+            touched_before=None if before is None else before.get("touched"),
+            total=len(result.tips),
+        )
+        return result
 
     def move_labware(self, request: Any) -> None:
         self._run_action(
@@ -1382,6 +1429,98 @@ class OT2Service:
             self.last_error = None
             self.state = OT2ServiceState.READY
 
+    # ---- history export (best-effort; see events_exporter.py) --------------
+
+    def _claim_owner(self) -> Optional[str]:
+        """Who holds the claim right now — the actor for an audit row.
+
+        The edge stamps the signed-in person into the claim owner, so on a
+        gated deployment this names a human rather than a UI constant.
+        """
+
+        current = self.claims.current()
+        return current.owner if current else None
+
+    def _emit_control_action(
+        self,
+        action: str,
+        outcome: str,
+        started: Optional[float] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        """One audit row per ``/control/*`` command.
+
+        This is the row the dashboard's passthrough writes for operator clicks
+        it proxies (ARCHITECTURE decision #1) — but a write made in this
+        gateway's own UI never passes through the dashboard, so without this it
+        left no trace. Emitting device-side covers both paths, and is the only
+        way to cover an SDK/workflow call as well.
+
+        **A dashboard-proxied action therefore produces two rows**: the
+        passthrough's, recording the HTTP hop it made, and this one, recording
+        what the hardware actually did. They are distinguished by ``source``
+        (``device`` here; the passthrough's rows carry ``method`` /
+        ``status_code`` and no ``source``), and the device row is the
+        authoritative one for outcome and duration — the proxy only ever sees
+        its own request. Count one or the other, not both.
+
+        Message follows the passthrough's convention so the two read alike in
+        one series. Never emitted in dry run: a simulation must not enter lab
+        history.
+        """
+
+        if self.dry_run:
+            return
+        owner = self._claim_owner()
+        summary = f"{owner or 'unclaimed'} {action} → {outcome}"
+        self.events.emit(
+            "control_action",
+            message=f"{summary}: {message}" if message else summary,
+            action=action,
+            outcome=outcome,
+            owner=owner,
+            source="device",
+            duration_s=None if started is None else round(time.monotonic() - started, 3),
+        )
+
+    def _emit_session_event(
+        self,
+        event: str,
+        *,
+        from_state: Optional[str] = None,
+        to_state: Optional[str] = None,
+        message: Optional[str] = None,
+        **extra: Any,
+    ) -> None:
+        """Session edges (startup / shutdown / error).
+
+        The aggregator's poll sees state eventually; these carry the instant
+        and the reason, and survive a transition that opens and closes inside
+        one poll window.
+        """
+
+        if self.dry_run:
+            return
+        self.events.emit(
+            event,
+            from_state=from_state,
+            to_state=to_state,
+            message=message,
+            owner=self._claim_owner(),
+            transport=self.transport,
+            **extra,
+        )
+
+    def _emit_tip_event(self, event: str, rack: Optional[str], **extra: Any) -> None:
+        """Tip lifecycle, which otherwise exists only as *current* state in
+        ``ot2_tip_state.json``. The file answers "which tips are gone"; these
+        rows answer "when, and for which sample" — per-run tip accounting the
+        60 s poll cannot reconstruct."""
+
+        if self.dry_run or not rack:
+            return
+        self.events.emit(event, rack=rack, owner=self._claim_owner(), **extra)
+
     def _run_action(self, name: str, func: Callable[[], None], *, idempotent: bool) -> None:
         if self.dry_run:
             self.state = OT2ServiceState.DRY_RUN
@@ -1393,22 +1532,27 @@ class OT2Service:
         previous_state = self.state
         self.state = OT2ServiceState.BUSY
         self._sync_activity()  # exact span start (§2.3): the command is in flight
+        started = time.monotonic()
         try:
             func()
             self.state = OT2ServiceState.READY
             self.last_error = None
             self._cycles_total += 1
+            self._emit_control_action(name, "ok", started)
             self.refresh_snapshot()
         except (socket.timeout, paramiko.SSHException, OSError) as exc:
             if idempotent:
                 self._set_error(f"{name}_transport_failed", str(exc), severity="error")
+                self._emit_control_action(name, "transport_failed", started, str(exc))
             else:
                 self.state = OT2ServiceState.UNKNOWN_OUTCOME
                 self._set_error(f"{name}_unknown_outcome", str(exc), severity="critical")
+                self._emit_control_action(name, "unknown_outcome", started, str(exc))
                 raise UnknownOutcomeError(str(exc)) from exc
             raise
         except Exception as exc:
             self._set_error(f"{name}_failed", str(exc), severity="error")
+            self._emit_control_action(name, "failed", started, str(exc))
             raise
         finally:
             if self.state == OT2ServiceState.BUSY:
