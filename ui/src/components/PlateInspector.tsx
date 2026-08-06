@@ -11,9 +11,11 @@
  *   a pipette right now are ringed.
  * - **Elevation** (side cross-section): the labware's true profile in
  *   millimetres, in the manner of the dashboard's `utils/labware_builder`,
- *   with one cavity per *column* tinted by that column's aggregate state.
- *   Columns are the right unit here: an 8-channel head takes a whole column,
- *   so "partly consumed" is the fact worth seeing.
+ *   drawn as an outline with one cavity per *column*. Only a tip rack's tips
+ *   are shaded — by that column's aggregate state — since they are the solid
+ *   the section cuts; bodies and plate wells stay hollow. Columns are the
+ *   right unit here: an 8-channel head takes a whole column, so "partly
+ *   consumed" is the fact worth seeing.
  *
  * Honesty rules this component exists to keep:
  * - A rack the gateway has never registered renders `unknown`, never as 96
@@ -55,25 +57,28 @@ const WELL_FILL: Record<WellKind, string> = {
   unknown: "fill-slate-200 stroke-slate-300 dark:fill-slate-700 dark:stroke-slate-600",
 };
 
+/**
+ * Tip tint for the elevation. A column with no tips is drawn hollow like the
+ * rack around it — an absent tip should not read as a solid.
+ */
 const COLUMN_FILL: Record<ColumnKind, string> = {
   fresh: "fill-sky-300 dark:fill-sky-800",
   touched: "fill-amber-300 dark:fill-amber-700",
-  empty: "fill-white dark:fill-slate-900",
+  empty: "fill-none",
   sample: "fill-sky-300 dark:fill-sky-800",
-  vacant: "fill-white dark:fill-slate-900",
+  vacant: "fill-none",
   unknown: "fill-slate-200 dark:fill-slate-700",
   mixed: "fill-amber-200 dark:fill-amber-800",
 };
 
 /**
- * Column tint for the elevation. A part-consumed column is amber on a **tip
- * rack** because it is exactly what an 8-channel head cannot pick from — but a
- * part-filled *plate* column is unremarkable, so it gets a pale sample tint
- * rather than a colour that reads as a warning.
+ * Cavity tint for the elevation. Only a **tip rack's tips** are shaded: they
+ * are the solid the section actually cuts through, and a part-consumed column
+ * is amber because it is exactly what an 8-channel head cannot pick from. A
+ * plate's wells are voids, so they are drawn hollow — as is every body.
  */
-function columnFill(kind: ColumnKind, contents: "tiprack" | "plate"): string {
-  if (kind === "mixed" && contents === "plate") return "fill-sky-200 dark:fill-sky-900";
-  return COLUMN_FILL[kind];
+function cavityFill(kind: ColumnKind, contents: "tiprack" | "plate"): string {
+  return contents === "tiprack" ? COLUMN_FILL[kind] : "fill-none";
 }
 
 const KIND_LABEL: Record<WellKind, string> = {
@@ -254,7 +259,8 @@ function PlanView({
  * `footprintZ` tall; each column's cavity hangs from its well mouth
  * (`z + depth`) down to its floor (`z`), so a tip rack's tips correctly stand
  * proud of the rack body while a plate's wells sit inside it. Tip-rack cavities
- * taper (a tip is conical); plate wells are drawn straight-sided.
+ * taper (a tip is conical); plate wells are drawn straight-sided. Everything is
+ * an outline except a tip rack's tips (see `cavityFill`).
  */
 function ElevationView({
   geometry,
@@ -272,7 +278,7 @@ function ElevationView({
     const mouthY = Math.max(0, footprintZ - (g.z + g.depth)); // SVG y of the well mouth
     const floorY = Math.min(footprintZ, footprintZ - g.z); // SVG y of the well floor
     const kind = kinds[index] ?? "unknown";
-    const fill = columnFill(kind, model.contents);
+    const fill = cavityFill(kind, model.contents);
     const points = geometry.isTiprack
       ? // Tapered: full width at the mouth, ~25% at the tip.
         `${g.x - halfX},${mouthY} ${g.x + halfX},${mouthY} ${g.x + halfX * 0.25},${floorY} ${
@@ -300,16 +306,8 @@ function ElevationView({
       role="img"
       aria-label="Side-view labware cross-section"
     >
-      <rect
-        x={0}
-        y={0}
-        width={footprintX}
-        height={footprintZ}
-        className="fill-slate-200 stroke-slate-400 dark:fill-slate-700 dark:stroke-slate-500"
-        strokeWidth={0.6}
-      />
-      {cavities}
-      {/* Re-stroke the outline so cavities never paint over the body edge. */}
+      {/* The body is an outline only; a section drawing shades the solids it
+          cuts, and here that is just a tip rack's tips. */}
       <rect
         x={0}
         y={0}
@@ -318,6 +316,7 @@ function ElevationView({
         className="fill-none stroke-slate-400 dark:stroke-slate-500"
         strokeWidth={0.6}
       />
+      {cavities}
     </svg>
   );
 }
