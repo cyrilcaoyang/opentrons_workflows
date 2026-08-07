@@ -68,9 +68,18 @@ const MINI_ROW_LETTERS = "ABCDEFGHIJKLMNOP";
  * nothing, and the slot's tooltip plus the expanded inspector carry the truth.
  */
 const MINI_WELL_FILL: Record<string, string> = {
-  empty: "bg-slate-100 dark:bg-slate-800",
+  // Green is reserved for "a tip is there and unused" — the one state an
+  // operator scans the deck for. It also distinguishes a *tracked* rack at a
+  // glance: no green anywhere means either every tip is gone or the tracker
+  // has no record, and both of those want a closer look.
+  fresh: "bg-emerald-400 dark:bg-emerald-500",
   touched: "bg-amber-300 dark:bg-amber-600",
+  empty: "bg-slate-300 dark:bg-slate-600",
 };
+// Wells with nothing known about them: plates (tip state is a rack concept)
+// and racks the tracker has never registered. Same grey as an emptied well —
+// deliberately, because "no tip" and "no idea" are both "do not count on it",
+// and the tooltip plus the inspector carry the distinction.
 const MINI_WELL_DEFAULT = "bg-slate-300 dark:bg-slate-600";
 
 // Miniature well grid drawn inside a deck slot once well-plate labware is
@@ -246,29 +255,13 @@ export function DeckPanel({
                 </span>
               </div>
             )}
-            {page && v.state !== "empty" && !overhang && !v.isTrash && (
-              <span
-                className="absolute inset-x-0 bottom-0 truncate bg-white/80 px-1 py-0.5 text-left text-[10px] font-medium text-ink dark:bg-slate-900/80 dark:text-slate-200"
-                title={v.loadName || v.label}
-              >
-                {v.label}
-              </span>
-            )}
-            {page && v.state !== "empty" && (
-              <span
-                className="absolute left-1 top-1 rounded bg-slate-100/90 px-1 text-[9px] font-semibold text-ink-subtle dark:bg-slate-800/90 dark:text-slate-400"
-                aria-hidden
-              >
-                {slot}
-              </span>
-            )}
             {moduleAccent && (
               <span
                 className="absolute inset-x-0 top-0 h-[3px] bg-amber-400/90 dark:bg-amber-500/80"
                 aria-hidden
               />
             )}
-            {migrated && (v.state === "in_use" || v.state === "mismatch") && (
+            {!page && migrated && (v.state === "in_use" || v.state === "mismatch") && (
               <span
                 className={[
                   "absolute right-1 top-1 rounded px-1 text-[8px] font-semibold uppercase tracking-wide",
@@ -279,15 +272,54 @@ export function DeckPanel({
                 {v.state === "mismatch" ? "≠" : "busy"}
               </span>
             )}
-            {page && migrated && v.state === "declared" && (
+          </>
+        );
+        // On the full-width deck the slot number sits ABOVE the plate and the
+        // labware label BELOW it, rather than as badges laid over the wells —
+        // an overlay hides the very wells the picture exists to show, and at
+        // this size the corner badge covered A1. The compact tile keeps the
+        // bare box: there is no room for two text rows at 160x120.
+        const box = <div className={cellClassName}>{cellBody}</div>;
+        const content = page ? (
+          <div className="flex w-full flex-col gap-1">
+            <div className="flex items-center justify-between gap-1 px-0.5 leading-none">
               <span
-                className="absolute right-1 top-1 rounded border border-dashed border-slate-400 px-1 text-[8px] font-semibold uppercase tracking-wide text-ink-subtle dark:border-slate-500 dark:text-slate-400"
+                className="text-[10px] font-semibold text-ink-subtle dark:text-slate-400"
                 aria-hidden
               >
-                declared
+                {v.state === "empty" ? "\u00a0" : slot}
               </span>
-            )}
-          </>
+              {migrated && (v.state === "in_use" || v.state === "mismatch") && (
+                <span
+                  className={[
+                    "rounded px-1 text-[8px] font-semibold uppercase tracking-wide",
+                    v.state === "mismatch" ? "bg-amber-500 text-white" : "bg-sky-500 text-white",
+                  ].join(" ")}
+                  aria-hidden
+                >
+                  {v.state === "mismatch" ? "≠" : "busy"}
+                </span>
+              )}
+              {migrated && v.state === "declared" && (
+                <span
+                  className="rounded border border-dashed border-slate-400 px-1 text-[8px] font-semibold uppercase tracking-wide text-ink-subtle dark:border-slate-500 dark:text-slate-400"
+                  aria-hidden
+                >
+                  declared
+                </span>
+              )}
+            </div>
+            {box}
+            {/* Reserve the row even when blank so every plate box lines up. */}
+            <span
+              className="min-h-[1.15em] truncate px-0.5 text-left text-[10px] font-medium leading-tight text-ink dark:text-slate-200"
+              title={v.loadName || v.label || undefined}
+            >
+              {v.state !== "empty" && !overhang && !v.isTrash ? v.label : "\u00a0"}
+            </span>
+          </div>
+        ) : (
+          box
         );
         return interactive ? (
           <button
@@ -295,13 +327,13 @@ export function DeckPanel({
             type="button"
             onClick={() => onSelectSlot?.(selectedSlot === slot ? null : slot)}
             title={cellTitle}
-            className={cellClassName}
+            className="block w-full text-left"
           >
-            {cellBody}
+            {content}
           </button>
         ) : (
-          <div key={slot} title={cellTitle} className={cellClassName}>
-            {cellBody}
+          <div key={slot} title={cellTitle} className="block w-full text-left">
+            {content}
           </div>
         );
       })}
