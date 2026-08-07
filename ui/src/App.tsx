@@ -1,4 +1,5 @@
 import { ControlPanel } from "./components/ControlPanel";
+import { PlanReviewPanel } from "./components/PlanReviewPanel";
 import { useClaim } from "./lib/use-claim";
 import { useGatewayStatus } from "./lib/use-status";
 
@@ -17,6 +18,7 @@ export function App() {
           service running on this host?
         </p>
       )}
+      {snapshot && <PlanReviewPanel claim={claim} />}
       {snapshot && <ControlPanel snapshot={snapshot} refetch={refetch} claim={claim} />}
     </main>
   );

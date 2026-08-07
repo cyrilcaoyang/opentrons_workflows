@@ -167,3 +167,62 @@ export interface LabwareSummary {
   namespace?: string;
   source?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Agent-proposed plans (see gateway/plans.py)
+//
+// An agent may create and revise a plan. Authorizing and running it are
+// claim-gated, so they happen here, in the operator's browser, and nowhere
+// else.
+// ---------------------------------------------------------------------------
+
+export type PlanStatus =
+  | "draft"
+  | "authorized"
+  | "executing"
+  | "executed"
+  | "failed"
+  | "aborted";
+
+export type StepOutcome = "pending" | "ok" | "failed" | "skipped";
+
+export interface PlanStep {
+  action: string;
+  args: Record<string, unknown>;
+}
+
+export interface StepResult {
+  action: string;
+  outcome: StepOutcome;
+  message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface PlanAuthorization {
+  owner: string;
+  session_id: string;
+  step_hash: string;
+  authorized_at: string;
+  expires_at: string;
+}
+
+export interface Plan {
+  plan_id: string;
+  steps: PlanStep[];
+  /** Digest of the exact step list. Authorizing sends this back, so an edit
+   *  between render and click is caught instead of silently approved. */
+  step_hash: string;
+  status: PlanStatus;
+  created_at: string;
+  created_by: string;
+  results: StepResult[];
+  authorization: PlanAuthorization | null;
+  halt_reason: string | null;
+  /** Steps that cannot be safely repeated after a transport loss. */
+  non_idempotent_actions: string[];
+  /** Whether the gateway would run this right now... */
+  executable: boolean;
+  /** ...and if not, why — same string the agent sees. */
+  blocked_reason: string | null;
+}
