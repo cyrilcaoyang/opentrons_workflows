@@ -404,7 +404,9 @@ export function PlateInspector({ slot, view, tipRacks, mountedTips }: PlateInspe
     );
   }
 
-  const tipRack = nickname ? (tipRacks.find((r) => r.nickname === nickname) ?? null) : null;
+  // Joined by slot: a rack's identity is where it sits, so this resolves even
+  // on a deck that was declared rather than loaded by a protocol setup.
+  const tipRack = slot != null ? (tipRacks.find((r) => r.slot === String(slot)) ?? null) : null;
   const model = buildWellModel({
     isTiprack,
     rows,

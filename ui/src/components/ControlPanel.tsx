@@ -192,9 +192,16 @@ export function ControlPanel({
       .finally(() => setPending(false));
   }
 
-  function refillRack(nickname: string) {
+  function refillRack(slot: string) {
     setRefillConfirm(null);
-    runControl("tips.reset", () => postTipsReset(token, nickname));
+    runControl("tips.reset", () => postTipsReset(token, slot));
+  }
+
+  /** The labware name for a tracked slot, read off the deck — the tracker
+   *  stores only the slot, since a rack has no identity beyond where it is. */
+  function rackLabel(slot: string): string | undefined {
+    const lw = deviceDeck?.slots?.[slot]?.labware;
+    return lw?.load_name || lw?.display_name || undefined;
   }
 
   function clearAll() {
@@ -506,19 +513,24 @@ export function ControlPanel({
           <Section title="Tip racks">
             {tipRacks.length === 0 ? (
               <p className="text-xs text-ink-subtle dark:text-slate-500">
-                No tracked tip racks (register via <span className="font-mono">tips.reset</span> or
-                a protocol setup).
+                No tracked tip racks — declare one on a deck slot, or run a protocol
+                setup, and it starts tracking automatically.
               </p>
             ) : (
               <ul className="flex flex-col gap-2">
                 {tipRacks.map((r) => (
                   <li
-                    key={r.nickname}
+                    key={r.slot}
                     className="rounded-md border border-slate-200 px-2 py-1.5 dark:border-slate-800"
                   >
                     <div className="flex items-baseline justify-between gap-2">
-                      <span className="min-w-0 truncate font-mono text-xs text-ink dark:text-slate-200">
-                        {r.nickname}
+                      <span className="min-w-0 truncate text-xs text-ink dark:text-slate-200">
+                        Slot {r.slot}
+                        {rackLabel(r.slot) && (
+                          <span className="ml-1 font-mono text-[11px] text-ink-subtle dark:text-slate-400">
+                            {rackLabel(r.slot)}
+                          </span>
+                        )}
                       </span>
                       <span className="shrink-0 text-xs tabular-nums text-ink-subtle dark:text-slate-400">
                         {r.available}/{r.total} available
@@ -534,15 +546,15 @@ export function ControlPanel({
                         the head onto bare holes. Hence the confirm step. */}
                     {r.available < r.total && (
                       <div className="mt-1.5">
-                        {refillConfirm === r.nickname ? (
+                        {refillConfirm === r.slot ? (
                           <div className="flex items-center gap-2">
                             <span className="text-[10px] text-ink-subtle dark:text-slate-400">
-                              All {r.total} tips physically present?
+                              All {r.total} tips present in slot {r.slot}?
                             </span>
                             <button
                               type="button"
                               disabled={locked || pending}
-                              onClick={() => refillRack(r.nickname)}
+                              onClick={() => refillRack(r.slot)}
                               className="rounded border border-sky-500 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-500 dark:text-sky-300 dark:hover:bg-sky-950/40"
                             >
                               Yes, refilled
@@ -559,7 +571,7 @@ export function ControlPanel({
                           <button
                             type="button"
                             disabled={locked || pending}
-                            onClick={() => setRefillConfirm(r.nickname)}
+                            onClick={() => setRefillConfirm(r.slot)}
                             title={controlHint ?? "Mark every tip in this rack fresh again"}
                             className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-ink-subtle hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-400"
                           >

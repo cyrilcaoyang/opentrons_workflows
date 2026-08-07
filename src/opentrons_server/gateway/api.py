@@ -617,7 +617,7 @@ def create_app(
         """
 
         try:
-            return service.reset_tip_rack(request.nickname, wells=request.wells)
+            return service.reset_tip_rack(request.target, wells=request.wells)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 

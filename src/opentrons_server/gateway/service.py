@@ -386,14 +386,60 @@ class OT2Service:
             self.control.setup_protocol(**self.session_recipe)
 
         self._run_action("setup", _setup, idempotent=True)
-        # Track every tiprack in the realized recipe. Non-destructive: a rack
-        # already known (e.g. re-setup after a gateway restart) keeps its
-        # partially-used statuses; /control/tips/reset marks a physical swap.
-        for lw in self.session_recipe.get("labware", []) or []:
-            nickname = lw.get("nickname")
-            if nickname and self._labware_is_tiprack(lw):
-                self.tips.register_rack(str(nickname))
+        self.register_tiprack_slots()
         self._bind_pipette_channels()
+
+    def register_tiprack_slots(self) -> None:
+        """Track every deck slot that holds a tip rack, keyed by the slot.
+
+        **The slot is a tip rack's identity.** A rack carries no sample and no
+        history worth naming — what an operator points at is "the rack in slot
+        4", and that is also what they refill. Keying by slot rather than by a
+        recipe nickname has three consequences worth stating:
+
+        * It works from *any* deck source. Racks used to register only from a
+          ``/control/setup`` recipe, so a rack the operator declared on the
+          deck was invisible to the tracker — three racks on the deck, two
+          unrelated ghosts in the panel.
+        * It survives a restart. ``session_recipe`` is in-memory and is lost on
+          every restart; the declared deck is persisted, so slot-keyed racks
+          come back with it.
+        * The UI join becomes trivial and always resolves — no dependency on
+          ``labware.nickname``, which is null on every slot until a setup runs.
+
+        Non-destructive: a slot already tracked keeps its partially-used
+        statuses. ``/control/tips/reset`` is the explicit "a fresh rack was
+        physically swapped in".
+        """
+
+        deck = self._build_deck_state()
+        for slot, deck_slot in deck.slots.items():
+            labware = deck_slot.labware
+            if labware is not None and labware.is_tiprack:
+                self.tips.register_rack(str(slot))
+
+    def _tiprack_slot(self, ref: Optional[str]) -> Optional[str]:
+        """Resolve a labware reference to the slot key the tracker uses.
+
+        Protocol calls address labware by nickname (``labware_nickname`` on
+        ``/control/pick-up-tip``), but the tracker is keyed by slot, so a
+        nickname is resolved through the session recipe. A caller may also pass
+        the slot itself — which is what the operator UI does, since a declared
+        deck has no nicknames at all.
+
+        Returns ``None`` when the reference names nothing the tracker holds, so
+        callers fall through to their untracked path exactly as before.
+        """
+
+        if not ref:
+            return None
+        ref = str(ref)
+        if self.tips.has_rack(ref):
+            return ref  # already a slot key
+        slot = self._nickname_to_slot().get(ref)
+        if slot and self.tips.has_rack(str(slot)):
+            return str(slot)
+        return None
 
     def _bind_pipette_channels(self) -> None:
         """Bind each recipe pipette nickname to its channel count.
@@ -528,11 +574,12 @@ class OT2Service:
         )
 
     def pick_up_tip(self, request: Any) -> None:
-        rack = request.labware_nickname
+        # The tracker is keyed by slot; protocol calls name labware by nickname.
+        rack = self._tiprack_slot(request.labware_nickname)
         well = request.position
         sample_id = getattr(request, "sample_id", None)
         force = bool(getattr(request, "force", False))
-        tracked = bool(rack) and self.tips.has_rack(rack)
+        tracked = rack is not None
         # An N-channel head takes N wells per pick, so every tracking decision
         # below is made over the covered set, not the addressed well alone.
         channels = self._channels_for(request.pipette)
@@ -550,8 +597,12 @@ class OT2Service:
             covered = self.tips.covered_wells(rack, well, channels=channels)
 
         def _pick_up_tip() -> None:
-            if rack and well:
-                self._require_control().get_location_from_labware(rack, well)
+            # The robot is addressed by the caller's own labware name — `rack`
+            # is the tracker's slot key and means nothing to the protocol API.
+            if request.labware_nickname and well:
+                self._require_control().get_location_from_labware(
+                    request.labware_nickname, well
+                )
             self._require_control().pick_up_tip(request.pipette)
 
         self._run_action("pick_up_tip", _pick_up_tip, idempotent=False)
@@ -622,7 +673,7 @@ class OT2Service:
         """
 
         mounted = self._mounted_tips.get(pipette)
-        if mounted is None or self.tips.has_rack(labware_nickname):
+        if mounted is None or self._tiprack_slot(labware_nickname) is not None:
             return
         sample = self._resolve_sample_id(labware_nickname, position)
         mounted["last_sample"] = sample
@@ -636,7 +687,7 @@ class OT2Service:
                     return w.sample_id
         return f"{labware_nickname}_{position}"
 
-    def reset_tip_rack(self, nickname: str, *, wells: Optional[list[str]] = None):
+    def reset_tip_rack(self, slot: str, *, wells: Optional[list[str]] = None):
         """(Re)register a rack with all tips fresh — a physical rack swap.
 
         Audited: this is an operator asserting a physical fact the gateway
@@ -645,11 +696,12 @@ class OT2Service:
         what was thrown away.
         """
 
-        before = self.tips.summary().get(nickname) if self.tips.has_rack(nickname) else None
-        result = self.tips.reset_rack(nickname, wells=wells)
+        slot = self._tiprack_slot(slot) or str(slot)
+        before = self.tips.summary().get(slot) if self.tips.has_rack(slot) else None
+        result = self.tips.reset_rack(slot, wells=wells)
         self._emit_tip_event(
             "tips_reset",
-            nickname,
+            slot,
             available_before=None if before is None else before.get("available"),
             empty_before=None if before is None else before.get("empty"),
             touched_before=None if before is None else before.get("touched"),
@@ -1326,9 +1378,17 @@ class OT2Service:
         return declared
 
     def declare_deck(self, mapping: Dict[str, Any]):
-        """Replace the operator-declared layout. Raises ValueError on a bad slot."""
+        """Replace the operator-declared layout. Raises ValueError on a bad slot.
 
-        return self.decks.declare(mapping)
+        Declaring a tip rack also starts tracking it: the operator saying "slot
+        4 holds a tip rack" is exactly the fact the tracker needs, and requiring
+        a separate /control/setup for it was why a declared rack never appeared
+        in the panel.
+        """
+
+        result = self.decks.declare(mapping)
+        self.register_tiprack_slots()
+        return result
 
     def clear_deck(self) -> None:
         self.decks.clear()

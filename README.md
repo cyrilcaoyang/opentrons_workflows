@@ -889,18 +889,34 @@ and deck stores. Each tip well is `"new"`, `"empty"` (dropped), or a sample id
 it has touched. The lifecycle is driven automatically and works on both
 transports:
 
-- `/control/setup` registers every tiprack in the recipe (non-destructive:
-  a re-setup after a restart keeps used-tip statuses).
+- **Racks are identified by the deck slot they sit in**, not by a recipe
+  nickname. A tip rack carries no sample and no history worth naming — what an
+  operator points at, and refills, is "the rack in slot 4". Three consequences:
+  a rack registers from *any* deck source, so **declaring one on a slot starts
+  tracking it** (it used to need a `/control/setup`, which is why a declared
+  rack never appeared in the panel); tracking **survives a restart**, because
+  the declared deck is persisted while the session recipe is in-memory; and the
+  UI join always resolves, with no dependency on `labware.nickname`, which is
+  null on every slot until a setup runs.
+- `/control/setup` and `/control/deck/declare` both register the tipracks they
+  place (non-destructive: a slot already tracked keeps its used-tip statuses).
+  Protocol calls still address labware by **nickname** — only the tracker uses
+  slots, and the two are resolved through the session recipe.
 - `/control/pick-up-tip` validates the pick: fresh tips are free; a
   sample-touched tip is reusable only for the same `sample_id` (or with
   `force: true`); an `"empty"` well is always refused. Violations return
   HTTP 412 with `{detail, rack, well, tip_status, requested_sample_id}`
-  before any hardware motion. Omitting `position` auto-picks the next
+  before any hardware motion (`rack` is the slot). Omitting `position` auto-picks the next
   available tip (column-major, matching protocol-API order).
 - Aspirate/dispense stamp the mounted tip with what it touched — the tracked
   plate's real `sample_id` when the target well has one, else
   `<labware>_<well>`. Drop marks the origin well `"empty"`.
-- `/status` surfaces `details.tip_racks` (per-rack counts + non-fresh wells),
+- `POST /control/tips/reset` takes `{"slot": "4"}` — the operator asserting a
+  physical refill, which is never inferred (the gateway cannot see new tips go
+  in, and a wrong "full" sends the head onto bare holes). `{"nickname": ...}`
+  is still accepted and resolved through the session recipe.
+- `/status` surfaces `details.tip_racks` **keyed by slot** (per-rack counts +
+  non-fresh wells),
   `details.mounted_tips` (per-pipette rack / addressed well / covered `wells` /
   `channels` / last sample), and `details.pipette_channels`.
 

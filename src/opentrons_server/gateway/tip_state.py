@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 
 _ROW_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 
+# A rack is identified by the deck slot it sits in — see
+# ``OT2Service.register_tiprack_slots`` for why. Kept as a literal rather than
+# imported from deck.py so this store stays dependency-free.
+_SLOT_KEYS = frozenset(str(i) for i in range(1, 13))
+
 # Statuses that mean "this tip is pickable by anyone".
 _FRESH_STATUSES = {"", "new", "unused", "clean", "available"}
 
@@ -146,6 +151,7 @@ class TipStateStore:
     ) -> TipRackState:
         """Start tracking ``nickname``; keep existing statuses if already known."""
 
+        nickname = self._require_slot_key(nickname)
         with self._lock:
             existing = self._racks.get(nickname)
             if existing is not None:
@@ -160,6 +166,7 @@ class TipStateStore:
     ) -> TipRackState:
         """(Re)register ``nickname`` with every tip fresh — a physical rack swap."""
 
+        nickname = self._require_slot_key(nickname)
         with self._lock:
             rack = self._fresh_rack(nickname, wells)
             self._racks[nickname] = rack
@@ -421,6 +428,21 @@ class TipStateStore:
 
     # ---- internals ------------------------------------------------------
 
+    @staticmethod
+    def _require_slot_key(key: str) -> str:
+        """A rack is identified by its deck slot. Enforced where racks are
+        created, because the loader drops non-slot keys — accepting one on
+        write and discarding it on the next restart is worse than refusing it.
+        """
+
+        key = str(key)
+        if key not in _SLOT_KEYS:
+            raise ValueError(
+                f"Tip racks are keyed by deck slot (1-12); got {key!r}. "
+                "A rack's identity is the slot it sits in."
+            )
+        return key
+
     def _fresh_rack(self, nickname: str, wells: Optional[List[str]]) -> TipRackState:
         well_list = wells if wells else tip_well_order_96()
         seen: set[str] = set()
@@ -455,11 +477,31 @@ class TipStateStore:
             logger.exception("tip state at %s is unreadable; ignoring", self._path)
             return
         parsed: Dict[str, TipRackState] = {}
-        for nickname, rack_raw in (raw.get("racks") or {}).items():
+        legacy: List[str] = []
+        for key, rack_raw in (raw.get("racks") or {}).items():
+            key = str(key)
+            if key not in _SLOT_KEYS:
+                # Pre-slot-keying leftovers: racks registered under a recipe
+                # nickname. They track no deck slot, so nothing can join them —
+                # they surfaced as ghost entries in the operator panel while the
+                # racks actually on the deck showed nothing. Tip racks carry no
+                # sample and no identity worth preserving, so these are dropped
+                # rather than migrated (there is no reliable nickname -> slot
+                # mapping once the session recipe is gone, which it is on every
+                # restart). The rack itself is re-registered from the deck.
+                legacy.append(key)
+                continue
             try:
-                parsed[str(nickname)] = TipRackState.model_validate(rack_raw)
+                parsed[key] = TipRackState.model_validate(rack_raw)
             except Exception:
-                logger.exception("tip state rack %s is malformed; ignoring", nickname)
+                logger.exception("tip state rack %s is malformed; ignoring", key)
+        if legacy:
+            logger.warning(
+                "tip state: dropped %d rack(s) keyed by nickname rather than deck "
+                "slot (%s); racks re-register from the deck",
+                len(legacy),
+                ", ".join(sorted(legacy)),
+            )
         self._racks = parsed
 
     def _persist_locked(self) -> None:

@@ -179,7 +179,7 @@ def test_a_multichannel_pick_records_the_whole_covered_column(service):
     service.pick_up_tip(TipRequest(pipette="p20", labware_nickname="tips_20", position="A1"))
 
     row = service.events.of("tip_pickup")[0]
-    assert row["rack"] == "tips_20"
+    assert row["rack"] == "5"  # the slot, not a nickname
     assert row["well"] == "A1"
     assert row["wells"] == [f"{r}1" for r in "ABCDEFGH"]  # 8 tips, not 1
     assert row["channels"] == 8
@@ -190,9 +190,9 @@ def test_a_multichannel_pick_records_the_whole_covered_column(service):
 
 
 def test_a_refill_records_what_it_discarded(service):
-    service.tips.set_statuses("tips_20", [f"{r}1" for r in "ABCDEFGH"], "empty")
+    service.tips.set_statuses("5", [f"{r}1" for r in "ABCDEFGH"], "empty")
 
-    service.reset_tip_rack("tips_20")
+    service.reset_tip_rack("5")
 
     row = service.events.of("tips_reset")[0]
     # The counts the reset threw away — otherwise history shows a full rack
@@ -223,7 +223,7 @@ def test_dry_run_never_enters_lab_history(tmp_path):
     svc.setup_protocol(RECIPE)
 
     svc.home()
-    svc.reset_tip_rack("tips_20")
+    svc.reset_tip_rack("5")
     svc.shutdown()
 
     assert events.records == []

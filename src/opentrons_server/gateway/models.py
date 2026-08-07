@@ -150,10 +150,30 @@ class TipRequest(BaseModel):
 
 
 class TipsResetRequest(BaseModel):
-    """(Re)register a tip rack with every tip fresh — a physical rack swap."""
+    """(Re)register a tip rack with every tip fresh — a physical rack swap.
 
-    nickname: str = Field(..., min_length=1)
+    Addressed by deck ``slot``, which is a tip rack's identity: a rack carries
+    no sample and no history worth naming, and what an operator refills is "the
+    rack in slot 4". ``nickname`` is accepted as a legacy alias and resolved
+    through the session recipe when one exists.
+    """
+
+    slot: Optional[str] = Field(default=None, min_length=1)
+    nickname: Optional[str] = Field(default=None, min_length=1)
     wells: Optional[List[str]] = None  # defaults to the 96-tip column-major grid
+
+    @property
+    def target(self) -> str:
+        ref = self.slot or self.nickname
+        if not ref:
+            raise ValueError("tips/reset needs a slot")
+        return ref
+
+    @model_validator(mode="after")
+    def _needs_a_target(self) -> "TipsResetRequest":
+        if not (self.slot or self.nickname):
+            raise ValueError("provide slot (preferred) or nickname")
+        return self
 
 
 class TipRackState(BaseModel):
