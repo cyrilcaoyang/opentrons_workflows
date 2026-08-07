@@ -202,7 +202,12 @@ def test_new_deck_fixtures_match_contract(name, slot2_state):
 
 @pytest.mark.parametrize(
     "name",
-    ["status_dry_run.json", "status_lights_on.json", "status_requires_init.json"],
+    [
+        "status_dry_run.json",
+        "status_lights_on.json",
+        "status_requires_init.json",
+        "status_ready_claim_held.json",
+    ],
 )
 def test_existing_fixtures_have_normalized_empty_deck(name):
     payload = json.loads((_FIXTURES / name).read_text())

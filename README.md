@@ -52,6 +52,7 @@ retired into feature docs (history stays in git).
 | [`docs/HTTP_SSH_PARITY.md`](docs/HTTP_SSH_PARITY.md) | feature | SSH ↔ HTTP method-by-method parity table, `/status` snapshot shapes per transport, bench-verification status |
 | [`docs/TRANSPORT_TRADEOFFS.md`](docs/TRANSPORT_TRADEOFFS.md) | feature | Pros/cons of the two transports + current default and recommendation |
 | [`docs/DECK_STATE.md`](docs/DECK_STATE.md) | feature | Normalized deck/labware state: model, run>repl>declared merge, mismatch flagging, declare endpoints |
+| [`docs/AGENT_PROPOSALS.md`](docs/AGENT_PROPOSALS.md) | feature | Agent-proposed, human-authorized plans: the propose/authorize/run boundary, what can be planned, and wiring an agent harness (Hermes) to it |
 | [`docs/HTTP_DRIVE_VALIDATION.md`](docs/HTTP_DRIVE_VALIDATION.md) | record | 2026-07-14 hardware validation of the HTTP transport |
 | [`docs/DEVICE_BRINGUP.md`](docs/DEVICE_BRINGUP.md) | runbook + records | Parameterized bring-up for any additional Opentrons gateway (install → verify → motion test → dashboard registration), plus the completed per-robot sign-offs |
 | [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md) | tracker | Open work items |
@@ -243,9 +244,14 @@ self-declared string. An API key resolves to `api:<name>`, never to the key.
 - **Read surfaces stay open.** `/`, `/health` and `/status` must keep
   answering or the aggregator marks the device unreachable — so deck, tip and
   plate state remain readable by anyone who can reach the port.
-- **CORS is still `*`.** Any web page loaded in a browser that can route to
+- **CORS defaults to `*`.** Any web page loaded in a browser that can route to
   this device can call the API. With the gate on it cannot obtain a claim, but
-  tighten `allow_origins` to your dashboard's origin anyway (STATUS_SPEC §10).
+  tighten it anyway (STATUS_SPEC §10) by setting `OT2_CORS_ORIGINS` to your
+  dashboard's origin — comma-separated, e.g.
+  `OT2_CORS_ORIGINS=http://sdl2-pc-03-cytation.tail6a1dd7.ts.net`. The default
+  stays `*` because keeping a device debuggable from a browser when the
+  aggregator is down is the reason §10 exists; narrowing it is a deployment
+  decision, not a library default.
 - **Direct API callers need a key.** `lab-skills`, `execute_plan` and agents
   reach `/control/*` on the tailnet with no credential, so they get 401 once
   the gate is on. Give them an `OT2_API_KEYS` entry before enabling it. The
@@ -446,14 +452,19 @@ distinguishes an instance is an environment variable read at startup in
 | `OT2_HTTP_BASE_URL` | robot HTTP API base (else derived from the host alias) | if not derivable |
 | `OT2_PLATE_STATE_PATH` | per-well plate store JSON | **yes** — else instances clobber each other |
 | `OT2_DECK_STATE_PATH` | operator-declared deck layout JSON | **yes** — same reason |
+| `OT2_TIP_STATE_PATH` | per-rack tip tracking JSON | **yes** — same reason |
 | `OT2_SSH_PASSWORD` | SSH key passphrase | per robot |
+| `OT2_CORS_ORIGINS` | comma-separated allowed browser origins; defaults to `*` | no |
 | listen port (uvicorn `--port`) | the gateway's own port | **yes** |
 
-> ⚠️ **Distinct state paths are mandatory.** `OT2_PLATE_STATE_PATH` and
-> `OT2_DECK_STATE_PATH` default to `./ot2_state.json` / `./ot2_deck_state.json`
-> relative to the working directory. Two instances started from the same
-> directory with the defaults would share — and corrupt — each other's state.
-> Always set both to instance-specific paths.
+> ⚠️ **Distinct state paths are mandatory.** `OT2_PLATE_STATE_PATH`,
+> `OT2_DECK_STATE_PATH` and `OT2_TIP_STATE_PATH` default to `./ot2_state.json`
+> / `./ot2_deck_state.json` / `./ot2_tip_state.json` relative to the working
+> directory. Both instances run from the *same* checkout, so with the defaults
+> they share — and corrupt — each other's state. Always set all three to
+> instance-specific paths. Tip state is the easiest to forget and the most
+> expensive to get wrong: two robots sharing one tip store will each consume
+> tips the other's tracker thinks are fresh.
 
 Example: the HTE robot on port 8020 and the Complexation robot on 8021, both
 gateways on `sdl2-pc-03` as separate NSSM services:
@@ -467,6 +478,7 @@ nssm set ot2-gateway AppEnvironmentExtra `
     OT2_HTTP_BASE_URL=http://sdl2-ot2-hte.tail6a1dd7.ts.net:31950 `
     OT2_PLATE_STATE_PATH=C:\ProgramData\ot2\ot2_state.json `
     OT2_DECK_STATE_PATH=C:\ProgramData\ot2\ot2_deck_state.json `
+    OT2_TIP_STATE_PATH=C:\ProgramData\ot2\ot2_tip_state.json `
     "OT2_SSH_PASSWORD=<passphrase>"
 # ... AppParameters: run uvicorn opentrons_server.gateway.api:app --host 0.0.0.0 --port 8020
 
@@ -479,6 +491,7 @@ nssm set ot2-gateway-complexation AppEnvironmentExtra `
     OT2_HTTP_BASE_URL=http://sdl2-ot2-complexation.tail6a1dd7.ts.net:31950 `
     OT2_PLATE_STATE_PATH=C:\ProgramData\ot2_complexation\ot2_state.json `
     OT2_DECK_STATE_PATH=C:\ProgramData\ot2_complexation\ot2_deck_state.json `
+    OT2_TIP_STATE_PATH=C:\ProgramData\ot2_complexation\ot2_tip_state.json `
     "OT2_SSH_PASSWORD=<passphrase>"
 # ... AppParameters: run uvicorn opentrons_server.gateway.api:app --host 0.0.0.0 --port 8021
 ```
@@ -579,6 +592,48 @@ degraded state is a paused protocol.
 An open run is deliberately *not* treated as activity on its own: the HTTP
 transport keeps a run open between commands (`docs/HTTP_TRANSPORT.md`), so an
 open run is not evidence of motion.
+
+**`equipment_version` is this gateway's version**, read from the installed
+distribution's metadata (`pyproject.toml` is the only place the number is
+written). It is *not* the robot's software version: the robot's `api_version`,
+firmware, and system versions describe the attached hardware and live in
+`details.robot`, alongside `robot_model` and `robot_name`.
+
+Until 2026-08-07 the field was overwritten with the robot's `api_version` on
+every probe, so a dashboard version column showed `8.7.0` for both robots and
+the gateway's own release was invisible on the wire. If you are reading stored
+history from before that date, an OT-2 `equipment_version` there is the
+robot's, not the gateway's.
+
+#### `last_error.code` taxonomy
+
+STATUS_SPEC best practice #6 asks each device repo to define a **stable** code
+set so clients branch on `code` rather than string-matching `message`. This
+gateway's set is closed and small, declared once as `ErrorCode` / `ERROR_CODES`
+in `gateway/models.py`, and enforced in `OT2Service._set_error` — the single
+mutation site for `last_error`. A code outside the set raises rather than being
+coerced, and a test walks the source AST to fail the build if any call site
+passes a computed string.
+
+| `code` | Severity | What happened | Recovery |
+|---|---|---|---|
+| `startup_failed` | `error` | The gateway could not reach or initialize the robot. | Fix connectivity, then `POST /control/startup`. |
+| `snapshot_failed` | `warning` | A deck/labware read failed. Non-blocking — `/status` keeps serving the last good `details.snapshot`. | Usually self-clears on the next successful read. |
+| `command_failed` | `error` | The robot rejected or failed a protocol command. It did not take effect. | Safe to retry. |
+| `command_transport_failed` | `error` | The link dropped during an **idempotent** command. The effect is unknown but harmless to repeat. | Retry, or re-`startup` to re-establish the session. |
+| `command_unknown_outcome` | `critical` | The link dropped during a **non-idempotent** command (aspirate / dispense / tips). Whether it happened is genuinely unknowable. | Operator reconciliation via `POST /control/reconcile` — never an automatic retry. |
+
+The codes are deliberately **not** per-command. Until 2026-08-07 the gateway
+emitted `f"{name}_failed"`, growing a new code per protocol verb
+(`aspirate_failed`, `move_to_transport_failed`, …) — an open-ended space no
+client could enumerate, and one where `aspirate_failed` vs `dispense_failed`
+implied a difference in recovery that does not exist. Which command failed is
+now in `last_error.message` (prefixed `"<command>: "`) and in the
+`control_action` audit row. Stored history from before that date carries the
+old per-command codes.
+
+Per §6.3/§6.4: a 412 precondition refusal never populates `last_error`, and
+`last_error` clears on the first successful operational `/control/*` call.
 
 ### Initialising the OT-2
 

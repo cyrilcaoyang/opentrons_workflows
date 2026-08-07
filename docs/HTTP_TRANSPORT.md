@@ -1,7 +1,9 @@
 # HTTP Run-Engine Transport — feature documentation
 
-**Status:** shipped. Implemented behind `OT2_TRANSPORT=http` (SSH remains the
-production default), hardware-validated 2026-07-14 on `ot2cytation` (full
+**Status:** shipped, and what both robots run — `ot2_complexation` since
+bring-up, `ot2_hte` since 2026-08-07 (SSH is the fallback; it remains the code
+default for an unset `OT2_TRANSPORT`). Hardware-validated 2026-07-14 on
+`ot2cytation` (full
 cycle incl. plate-out handoff, idle-persistence, custom labware,
 transport-loss → `unknown_outcome` — see
 [`HTTP_DRIVE_VALIDATION.md`](HTTP_DRIVE_VALIDATION.md)), and brought to full

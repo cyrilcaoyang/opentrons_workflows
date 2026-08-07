@@ -230,3 +230,21 @@ def test_fixtures_cover_both_healthy_activities():
 
     assert ("busy", "running") in seen
     assert ("ready", "idle") in seen
+
+
+def test_allowed_actions_method_matches_what_status_publishes():
+    """STATUS_SPEC §6.2: one helper feeds both surfaces.
+
+    The convenience actions (`lights.set`, `deck.declare`) were once appended
+    by the /status builder alone, so `service.allowed_actions()` returned a
+    narrower list than the device advertised on the wire — the endpoints
+    honored them, the published list named them, and every in-process caller
+    was told they were unavailable. Any gate that consults the method (the
+    plan executor's pre-step re-check) would have refused a step the device
+    would happily have run.
+    """
+    for dry_run in (True, False):
+        service = OT2Service(dry_run=dry_run)
+        assert sorted(service.get_status().allowed_actions) == sorted(
+            service.allowed_actions()
+        )

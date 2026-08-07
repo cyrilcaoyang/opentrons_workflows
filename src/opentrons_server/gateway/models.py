@@ -22,7 +22,7 @@ does not state one).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -49,6 +49,44 @@ PROTOCOL_VERSION = "1.2"
 # requires it rather than defaulting, so a device can never mis-declare by
 # omission).
 EQUIPMENT_KIND: EquipmentKind = "liquid_handler"
+
+
+# ---------------------------------------------------------------------------
+# `last_error.code` taxonomy (STATUS_SPEC best practice #6)
+#
+# Closed, small, and defined once here so a client can branch on the code and
+# offer a targeted recovery hint. It is deliberately NOT per-command: this
+# gateway used to emit `f"{name}_failed"` for every one of its ~15 protocol
+# commands, an open-ended space nobody could enumerate, let alone branch on —
+# and `aspirate_failed` vs `dispense_failed` implies no difference in recovery.
+# *Which* command failed stays where it belongs: in `last_error.message`, and
+# in the `control_action` audit row the events exporter writes.
+#
+# Recovery, per code:
+#   startup_failed           - the gateway could not reach or initialise the
+#                              robot. Fix connectivity, then POST /control/startup.
+#   snapshot_failed          - a deck/labware read failed. Non-blocking (severity
+#                              `warning`); /status serves the last good snapshot,
+#                              whose age is in `details.snapshot_age_s`.
+#   command_failed           - the robot rejected or failed a protocol command.
+#                              The command did not take effect; safe to retry.
+#   command_transport_failed - the link dropped during an *idempotent* command.
+#                              Effect is unknown but harmless to repeat.
+#   command_unknown_outcome  - the link dropped during a NON-idempotent command
+#                              (aspirate/dispense/tips). Whether it happened is
+#                              genuinely unknowable; needs operator
+#                              reconciliation, never an automatic retry.
+# ---------------------------------------------------------------------------
+
+ErrorCode = Literal[
+    "startup_failed",
+    "snapshot_failed",
+    "command_failed",
+    "command_transport_failed",
+    "command_unknown_outcome",
+]
+
+ERROR_CODES: frozenset[str] = frozenset(get_args(ErrorCode))
 
 
 class GatewayClaimRequest(ClaimRequest):

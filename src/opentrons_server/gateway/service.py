@@ -18,6 +18,7 @@ import requests
 
 from ..control import OT2Control, OT2HttpControl, RunEngineClient
 from ..control import state_readers as _state_readers
+from ..version import __version__ as GATEWAY_VERSION
 from .claims import ClaimManager
 from .deck import (
     SLOTS,
@@ -30,10 +31,12 @@ from .deck import (
 from .events_exporter import EventsExporter
 from .models import (
     EQUIPMENT_KIND,
+    ERROR_CODES,
     PROTOCOL_VERSION,
     Activity,
     ComponentStatus,
     EquipmentStatus,
+    ErrorCode,
     ErrorInfo,
     LoadedPlate,
     MetricValue,
@@ -252,7 +255,11 @@ class OT2Service:
         # no background loop, so seed it from the simulated in-memory state and
         # let set_lights keep it current.
         self._last_lights: Optional[bool] = self._dry_run_lights_on if dry_run else None
-        self.equipment_version: Optional[str] = None
+        # THIS service's version, not the robot's. `equipment_version` names
+        # the software answering /status; the robot's own software version is
+        # a property of the attached hardware and lives in
+        # `details.robot.api_version` (with fw/system alongside it).
+        self.equipment_version: Optional[str] = GATEWAY_VERSION
         self._last_probe: Dict[str, Any] = {}
         # Cached labware of an active *external* robot-server run (EXTERNAL_CONTROL).
         # None while the gateway owns the REPL (deck then comes from last_snapshot).
@@ -987,8 +994,6 @@ class OT2Service:
         probe = self.probe_robot()
         if probe.get("reachable"):
             self._last_probe = probe
-            if probe.get("api_version"):
-                self.equipment_version = probe["api_version"]
             # The boot note ("Robot unreachable at …") outlives the condition
             # it describes: it is set once at boot and nothing cleared it, so
             # /status went on reporting a robot as unreachable long after it
@@ -1111,8 +1116,6 @@ class OT2Service:
 
         probe = self.probe_robot()
         self._last_probe = probe
-        if probe.get("api_version"):
-            self.equipment_version = probe["api_version"]
         # Capture any active external run's labware so the deck reflects it even
         # while the gateway stands off (EXTERNAL_CONTROL). Cheap, best-effort.
         self._refresh_run_labware(force=True)
@@ -1277,16 +1280,9 @@ class OT2Service:
         # (a boot stand-off, a self-heal, an operator reconcile).
         activity = self._sync_activity()
         lights = self._lights_component()
-        # Lights are a convenience control, not gated on equipment_status, so
-        # advertise lights.set whenever the robot answered the lights read.
+        # One source of truth (§6.2): `allowed_actions()` already folds in the
+        # convenience actions, so the wire and every in-process caller agree.
         actions = self.allowed_actions()
-        if lights.connected and "lights.set" not in actions:
-            actions.append("lights.set")
-        # Declaring the deck layout is pure metadata (no hardware), so it is a
-        # convenience action available in every state except EXTERNAL_CONTROL,
-        # where the gateway advertises nothing while an external app owns the robot.
-        if self.state != OT2ServiceState.EXTERNAL_CONTROL and "deck.declare" not in actions:
-            actions.append("deck.declare")
         raw = self.last_snapshot if isinstance(self.last_snapshot, dict) else {}
         # `snapshot.deck` is the normalized, provenance-tagged DeckState (built from
         # cached inputs only — see _build_deck_state); pipettes/labwares/modules stay
@@ -1438,7 +1434,25 @@ class OT2Service:
         advertised while one is in flight, however the state table evolves.
         """
 
-        return [a for a in self._allowed_for_state() if not self._blocked_by_activity(a)]
+        actions = [a for a in self._allowed_for_state() if not self._blocked_by_activity(a)]
+        # The two convenience actions used to be appended by the /status builder
+        # instead of here, so this method returned a NARROWER list than the
+        # device advertised on the wire — `lights.set` and `deck.declare` were
+        # honored by their endpoints and published in `allowed_actions`, but
+        # absent from every in-process caller's view. STATUS_SPEC §6.2 asks for
+        # one helper feeding both surfaces; this is that helper.
+        #
+        # Lights are a convenience control, not gated on equipment_status, so
+        # advertise lights.set whenever the robot answered the lights read.
+        # `_lights_component` is cache-only, so /status stays side-effect-free.
+        if self._lights_component().connected and "lights.set" not in actions:
+            actions.append("lights.set")
+        # Declaring the deck layout is pure metadata (no hardware), so it is a
+        # convenience action available in every state except EXTERNAL_CONTROL,
+        # where the gateway advertises nothing while an external app owns the robot.
+        if self.state != OT2ServiceState.EXTERNAL_CONTROL and "deck.declare" not in actions:
+            actions.append("deck.declare")
+        return actions
 
     def _blocked_by_activity(self, action: str) -> bool:
         """§2.3: while ``activity == "running"``, omit anything that would
@@ -1609,16 +1623,20 @@ class OT2Service:
             self.refresh_snapshot()
         except (socket.timeout, paramiko.SSHException, OSError) as exc:
             if idempotent:
-                self._set_error(f"{name}_transport_failed", str(exc), severity="error")
+                self._set_error(
+                    "command_transport_failed", f"{name}: {exc}", severity="error"
+                )
                 self._emit_control_action(name, "transport_failed", started, str(exc))
             else:
                 self.state = OT2ServiceState.UNKNOWN_OUTCOME
-                self._set_error(f"{name}_unknown_outcome", str(exc), severity="critical")
+                self._set_error(
+                    "command_unknown_outcome", f"{name}: {exc}", severity="critical"
+                )
                 self._emit_control_action(name, "unknown_outcome", started, str(exc))
                 raise UnknownOutcomeError(str(exc)) from exc
             raise
         except Exception as exc:
-            self._set_error(f"{name}_failed", str(exc), severity="error")
+            self._set_error("command_failed", f"{name}: {exc}", severity="error")
             self._emit_control_action(name, "failed", started, str(exc))
             raise
         finally:
@@ -1634,7 +1652,17 @@ class OT2Service:
             raise RuntimeError("OT-2 is not initialized")
         return self.control
 
-    def _set_error(self, code: str, message: str, *, severity: str) -> None:
+    def _set_error(self, code: ErrorCode, message: str, *, severity: str) -> None:
+        # The single mutation site for `last_error`, and the only place the
+        # taxonomy is enforced (STATUS_SPEC best practice #6 asks for exactly
+        # that). Raising rather than coercing is deliberate: a code outside the
+        # set is a bug in this file, and a silently-substituted "unknown" would
+        # ship it to every dashboard as a real device error.
+        if code not in ERROR_CODES:
+            raise ValueError(
+                f"last_error.code {code!r} is outside the taxonomy; "
+                f"add it to models.ErrorCode or reuse one of {sorted(ERROR_CODES)}"
+            )
         self.last_error = ErrorInfo(
             code=code,
             message=message,

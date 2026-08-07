@@ -6,8 +6,14 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
+from opentrons_server.gateway import service as service_module
 from opentrons_server.gateway.api import create_app
-from opentrons_server.gateway.models import EquipmentStatus, LiquidMoveRequest, WellLocation
+from opentrons_server.gateway.models import (
+    ERROR_CODES,
+    EquipmentStatus,
+    LiquidMoveRequest,
+    WellLocation,
+)
 from opentrons_server.gateway.service import OT2Service, OT2ServiceState, UnknownOutcomeError
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -54,7 +60,9 @@ def test_non_idempotent_transport_loss_sets_unknown_outcome():
 
     assert service.state == OT2ServiceState.UNKNOWN_OUTCOME
     assert service.last_error is not None
-    assert service.last_error.code == "aspirate_unknown_outcome"
+    assert service.last_error.code == "command_unknown_outcome"
+    # The code is the taxonomy's; which command it was lives in the message.
+    assert service.last_error.message.startswith("aspirate: ")
     assert service.get_status().equipment_status == "unknown"
 
 
@@ -311,6 +319,32 @@ def test_status_lights_on_fixture_matches_contract():
     assert "lights.set" in status.allowed_actions
 
 
+def test_status_ready_claim_held_fixture_matches_contract():
+    """STATUS_SPEC §9's v1.1 checklist asks for a `ready`-with-a-claim-held
+    snapshot alongside the no-claim one. It is the only fixture that pins the
+    serialized shape of `details.claimed_by` — the field a reader uses to show
+    who holds the device, and the one thing the no-claim fixtures cannot show."""
+    payload = json.loads((_FIXTURES / "status_ready_claim_held.json").read_text())
+    status = EquipmentStatus(**payload)
+
+    assert status.equipment_status == "ready"
+    assert status.activity == "idle"  # §2.3 invariant: ready => idle
+    claimed_by = status.details["claimed_by"]
+    assert set(claimed_by) == {"session_id", "owner", "expires_at"}
+    assert claimed_by["owner"] == "agent:solubility-screening"
+    # A held claim gates control but does not narrow what the device would
+    # honor for the holder, so allowed_actions is unchanged from the ready case.
+    assert "aspirate" in status.allowed_actions
+
+
+def test_no_claim_fixtures_omit_claimed_by():
+    """The complement of the above: `details.claimed_by` is absent (not a
+    stale object) whenever no claim is held."""
+    for name in ("status_lights_on.json", "status_requires_init.json"):
+        payload = json.loads((_FIXTURES / name).read_text())
+        assert "claimed_by" not in EquipmentStatus(**payload).details
+
+
 # ---------------------------------------------------------------------------
 # Guarded auto-reconnect on process start (probe + re-derive state)
 # ---------------------------------------------------------------------------
@@ -421,10 +455,8 @@ def test_boot_reconnect_idle_establishes_session(monkeypatch):
     service.boot_reconnect()
 
     assert service.state == OT2ServiceState.READY
-    assert service.equipment_version == "8.7.0"
     status = service.get_status()
     assert status.equipment_status == "ready"
-    assert status.equipment_version == "8.7.0"
     assert status.components["pipette_left"].state == "p300_multi_gen2"
     assert status.details["robot"]["robot_name"] == "ot2cytation"
 
@@ -835,3 +867,86 @@ def test_reclaiming_the_same_session_keeps_its_token():
 
     assert again == first
     assert client.post("/control/heartbeat", headers={"X-Claim-Token": first}).status_code == 200
+
+
+def test_equipment_version_is_the_gateway_not_the_robot(monkeypatch):
+    """`equipment_version` names the software answering /status.
+
+    It used to be overwritten with the robot's `api_version` on every probe,
+    so the dashboard's version column showed the robot's release and the
+    gateway's own was invisible on the wire. The robot's versions are a
+    property of the attached hardware and stay in `details.robot`.
+    """
+    from opentrons_server.version import __version__ as gateway_version
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", lambda **_: Mock())
+    monkeypatch.setattr("opentrons_server.gateway.service.requests.get", _fake_probe_get())
+
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9", password="pw")
+    service.boot_reconnect()  # probes the robot; must not touch equipment_version
+    status = service.get_status()
+
+    assert status.equipment_version == gateway_version
+    assert status.equipment_version != "8.7.0"
+    # The robot's own versions are still reported, just not as the gateway's.
+    assert status.details["robot"]["api_version"] == "8.7.0"
+
+
+def test_equipment_version_is_set_before_any_probe():
+    """A dry-run service never probes a robot, and previously reported
+    `equipment_version: null` for its whole life."""
+    from opentrons_server.version import __version__ as gateway_version
+
+    assert OT2Service(dry_run=True).get_status().equipment_version == gateway_version
+
+
+def test_package_version_matches_distribution_metadata():
+    """One number: `opentrons_server.__version__` is the installed dist's, not
+    a second hand-maintained copy that drifts from pyproject.toml."""
+    from importlib.metadata import version as dist_version
+
+    import opentrons_server
+
+    assert opentrons_server.__version__ == dist_version("opentrons_server")
+
+
+# ---------------------------------------------------------------------------
+# last_error.code taxonomy (STATUS_SPEC best practice #6)
+# ---------------------------------------------------------------------------
+
+
+def test_set_error_rejects_a_code_outside_the_taxonomy():
+    """The setter is the taxonomy's only enforcement point, so it must refuse
+    rather than coerce — a substituted code ships a bug to every dashboard."""
+    service = OT2Service(dry_run=True)
+
+    with pytest.raises(ValueError, match="outside the taxonomy"):
+        service._set_error("aspirate_failed", "boom", severity="error")
+
+    assert service.last_error is None
+
+
+def test_every_last_error_code_in_the_source_is_in_the_taxonomy():
+    """Guards the drift this taxonomy exists to prevent: the gateway used to
+    build codes as f-strings (`f"{name}_failed"`), so the code space grew a new
+    member per protocol command and no client could enumerate it. Every call
+    site must pass a bare literal drawn from ERROR_CODES."""
+    import ast
+
+    source = Path(service_module.__file__).read_text(encoding="utf-8")
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_set_error"
+    ]
+
+    assert calls, "expected _set_error call sites in service.py"
+    for call in calls:
+        first = call.args[0]
+        assert isinstance(first, ast.Constant) and isinstance(first.value, str), (
+            "last_error.code must be a literal, not a computed string — "
+            f"got {ast.dump(first)}"
+        )
+        assert first.value in ERROR_CODES, f"{first.value!r} is not in ERROR_CODES"

@@ -54,12 +54,14 @@ Pick these before starting; everything below is written in terms of them.
 
 - [ ] Robot on the network and reachable:
       `curl -fsS -H 'Opentrons-Version: 3' http://<robot-ip>:31950/health`.
-- [ ] **Transport decision.** SSH is the production default: the service user
-      needs an SSH config alias `<ssh-alias>` → `<robot-ip>` with the AC key
-      working (`ssh <ssh-alias> echo ok`). The HTTP run-engine transport
-      (`OT2_TRANSPORT=http`) needs no SSH at all — but note it has no
-      simulation mode, and set `OT2_HTTP_BASE_URL=http://<robot-ip>:31950`
-      explicitly (a bare host alias has been observed not to reach `:31950`).
+- [ ] **Transport decision.** HTTP is what both existing robots run, so it is
+      the default choice for a new one: set `OT2_TRANSPORT=http` and
+      `OT2_HTTP_BASE_URL=http://<robot-ip>:31950` explicitly (a bare host alias
+      has been observed not to reach `:31950`). It needs no SSH at all, but has
+      no simulation mode. Choosing SSH instead (the code default for an unset
+      `OT2_TRANSPORT`) means the service user needs an SSH config alias
+      `<ssh-alias>` → `<robot-ip>` with the AC key working
+      (`ssh <ssh-alias> echo ok`).
       Trade-offs: [`TRANSPORT_TRADEOFFS.md`](TRANSPORT_TRADEOFFS.md).
 - [ ] Read the attached pipettes — they parameterize the motion test:
       `curl -fsS -H 'Opentrons-Version: 3' http://<robot-ip>:31950/pipettes`.
