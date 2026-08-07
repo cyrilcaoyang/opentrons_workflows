@@ -7,7 +7,9 @@ SkillDef) shipped in `ac-organic-lab`. Both gateways (`ot2_hte` :8020,
 dashboard stopgap layouts were migrated into the gateways' declared stores.
 HTTP-transport deck parity (including idle-persistence across restart) was
 hardware-validated 2026-07-14 — see
-[`HTTP_DRIVE_VALIDATION.md`](HTTP_DRIVE_VALIDATION.md).
+[`HTTP_DRIVE_VALIDATION.md`](HTTP_DRIVE_VALIDATION.md). Tip-rack registration
+was rekeyed onto the deck slot 2026-08-07 (`4a7faf3`) and extended to gateway
+boot (`6c46e57`); both gateways redeployed and verified live the same day.
 
 > This document replaces the retired **`DECK_STATE_PLAN.md`** (the phased
 > implementation plan, removed 2026-07-19 once its tasks completed; full
@@ -94,6 +96,17 @@ sources with precedence **run > repl > declared > empty**:
   `session_recipe` from `/control/setup`.
 - **empty** — the fallback.
 
+**Only `declared` survives a restart.** `run` and `repl` are session-scoped —
+the run probe's cache and the REPL snapshot both die with the process — so a
+deck that was *only ever observed* comes back `empty` after a service restart
+and stays that way until the next protocol loads labware. Declaring is what
+makes a layout durable, which matters most on a robot whose deck is set up by
+hand rather than by a `/control/setup` recipe. Observed live 2026-08-07:
+restarting `ot2_hte` blanked a deck that had only ever been observed, while
+`ot2_complexation`'s declared deck came back intact. Note the direction of the
+precedence — declaring can never override what a run observes, so declaring a
+hand-set deck is safe even while protocols come and go.
+
 ### Slot-state decision table
 
 Let `observed = run[s] or repl[s]` (run wins), `declared = declared[s]`,
@@ -127,6 +140,31 @@ than silently resolved.
   `repl` source (SSH) or the run-derived shape (HTTP — see the snapshot-shape
   section of [`HTTP_SSH_PARITY.md`](HTTP_SSH_PARITY.md)).
 
+### Tip-rack registration follows the deck
+
+`TipStateStore` is keyed by **deck slot**, not by a recipe nickname: a tip rack
+carries no sample and no history worth naming, and what an operator points at —
+and refills — is "the rack in slot 4" (`4a7faf3`). Registration happens at
+three points, all non-destructive (a slot already tracked keeps its used-tip
+statuses):
+
+| When | Why |
+|---|---|
+| `/control/setup` | the recipe places tip racks |
+| `/control/deck/declare` | declaring a rack *is* the fact the tracker needs — before this, a declared rack was invisible to the tracker |
+| gateway boot (`OT2Service.__init__`) | the persisted deck outlives the process; without it a rack declared in an earlier session came back untracked (`6c46e57`) |
+
+Boot registration reads `_build_deck_state`, which is cache-only — no HTTP, no
+REPL — so it cannot block or slow startup. It follows the *declared* deck by
+construction, so a robot with no declared layout registers nothing at boot and
+falls back to whatever the tip store itself persisted. That asymmetry is worth
+knowing: the tip store and the deck can disagree after a restart, with the
+store asserting racks the deck no longer shows.
+
+The store and the deck are joined on the slot, which is why the join always
+resolves — `labware.nickname` is `null` on every slot until a setup runs, and
+keying on it was why a tracked rack could still render as untracked.
+
 ## Declared-layout endpoints
 
 Control-class, claim-gated, audited when proxied through the dashboard's
@@ -152,7 +190,29 @@ happens in the status path (enforced by test).
   observed shown separately, mismatches badged ≠). The tile keeps a
   read-only legacy fallback to the old dashboard store for gateways that
   don't publish a deck yet; final deletion of the `api/app/deck.py` stopgap
-  is tracked in that repo (`EQUIP_STATUS.md` §11).
+  is tracked in that repo (`EQUIP_STATUS.md` §11). **That legacy store is
+  stale and must not be used to seed a declaration** — for `ot2_hte` it still
+  claims slot 7 is a 24-well plate, where the robot reports a 1000 µL tip
+  rack.
+
+**Deck view conventions.** `DeckPanel` exists in two copies — this repo's
+`/ui` and the dashboard's tile — kept deliberately in step, so a change to one
+is ported to the other (`6c46e57` here, `6b95e86` / `a35ad41` there):
+
+- slot number in the cell's top-left corner, as bare text — a pill background
+  there reads as an overlay covering A1;
+- a `declared` slot carries a solid orange border, named **once** by a legend
+  above the deck rather than by a badge on every slot (on a typical deck most
+  slots are declared);
+- `busy` / `≠` badges in the cell's top-right corner, in both variants;
+- tip-rack wells tinted green (fresh) / amber (touched) / grey. Grey covers
+  both an emptied well *and* an untracked rack: "no tip" and "no idea" are
+  both "do not count on it", and the tooltip carries the distinction. Green
+  therefore means "known available", so a rack with no green is either spent
+  or unregistered — both worth a closer look.
+- The declared outline and legend are `page`-variant only. On the compact
+  tile nearly every slot is declared, so outlining them all would say nothing
+  while shouting.
 - **Workflow repos** consume `details.loaded_plate` (unchanged contract) and
   gain the per-slot deck + mismatch flags.
 - **xArm** never reports placements — the OT-2 owns its own loaded truth;

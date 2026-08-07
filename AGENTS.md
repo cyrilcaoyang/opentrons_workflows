@@ -101,6 +101,15 @@ lab-skills / dashboard / agents          this repo                        robot
   instance-specific value is an env var (`OT2_EQUIPMENT_ID`, `OT2_HOST_ALIAS`,
   and **distinct** `OT2_PLATE_STATE_PATH` / `OT2_DECK_STATE_PATH` /
   `OT2_TIP_STATE_PATH` — shared state files corrupt each other).
+- **A commit is not a deployment — check the wire before believing the code.**
+  Both services run `uv run --project` from this checkout, so a merged fix goes
+  live only when each NSSM service restarts, and the two can sit on *different*
+  builds indefinitely. On 2026-08-07 a fix stayed committed-but-unrestarted for
+  a day and presented as a live bug (ghost tip racks in the panel), sending the
+  first look at the source rather than at the deployment. Confirm with
+  `/status` and `/openapi.json` — a request-body schema that still shows the
+  old shape means the old code is running. Restarting is the fix; `nssm restart
+  <svc>` is enough when no dependency changed.
 - **`uv sync` can break a running service.** If a release adds or bumps a
   dependency, uv must replace the console-script `.exe` the running service
   holds open, aborts the whole transaction on `os error 32`, and can leave the

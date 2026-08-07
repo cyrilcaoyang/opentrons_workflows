@@ -44,6 +44,14 @@ See `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
    (`68c0803`). Optional follow-up: tune the p300 volumes so A12 doesn't deplete
    (source-refill), for a liquid-accurate — not just motion — run.
 
+3. **Confirm HTE's slot 7 tip count.** The tracker carries `96/96` for the
+   1000 µL filter rack on `ot2_hte` slot 7 — inherited from the registration
+   made when that rack was first observed, and never checked against the
+   physical rack. If it is not actually full, `POST /control/tips/reset` with
+   the real state; the gateway cannot infer a refill and will not guess (a
+   wrong "full" sends the head onto bare holes). Slot 8's `80/96` *is*
+   trustworthy — it was tracked through the picks that produced it.
+
 ## Desk work — unblocked (can do remotely now)
 
 - ✅ **Aspirate flow default lowered** 150 → 90 µL/s (`e0566bf`). Per-call override
