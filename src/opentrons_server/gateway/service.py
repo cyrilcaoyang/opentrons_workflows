@@ -288,6 +288,13 @@ class OT2Service:
         # Stamp the opening span so `activity_since` is a real instant from the
         # first poll on, rather than "unknown until someone asks".
         self._sync_activity()
+        # Pick tip racks back up from the persisted deck. Registration otherwise
+        # only happens when a deck is declared or a setup runs, so a restart
+        # left an already-declared rack untracked until the operator re-declared
+        # it — the panel would show no racks at all for a deck full of them.
+        # Safe here: `_build_deck_state` is cache-only (no HTTP, no REPL), and
+        # `register_rack` never overwrites a rack the store just loaded.
+        self.register_tiprack_slots()
 
     def startup(
         self,

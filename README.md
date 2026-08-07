@@ -771,8 +771,9 @@ Useful control endpoints:
 - `POST /control/dispense`
 - `POST /control/drop-tip`
 - `POST /control/move-labware`
-- `POST /control/tips/reset` — body `{"nickname": str, "wells"?: [str]}`;
+- `POST /control/tips/reset` — body `{"slot": str, "wells"?: [str]}`;
   (re)registers a tip rack with every tip fresh (a physical rack swap).
+  `{"nickname": ...}` is accepted as a legacy alias.
   Metadata-only, works in any state including dry-run.
 - `POST /control/lights` — body `{"on": bool}`; toggles the deck (rail) lights
   by proxying to the robot's own `POST /robot/lights`. A convenience control:
@@ -899,7 +900,10 @@ transports:
   UI join always resolves, with no dependency on `labware.nickname`, which is
   null on every slot until a setup runs.
 - `/control/setup` and `/control/deck/declare` both register the tipracks they
-  place (non-destructive: a slot already tracked keeps its used-tip statuses).
+  place, and **boot re-registers from the persisted deck** — so a rack declared
+  in an earlier session is tracked again without the operator re-declaring a
+  slot they already declared. All three are non-destructive: a slot already
+  tracked keeps its used-tip statuses.
   Protocol calls still address labware by **nickname** — only the tracker uses
   slots, and the two are resolved through the session recipe.
 - `/control/pick-up-tip` validates the pick: fresh tips are free; a

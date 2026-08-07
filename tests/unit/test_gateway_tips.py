@@ -450,6 +450,37 @@ def test_tracking_survives_a_restart_without_a_setup(service, tmp_path):
     assert reborn.tips.status("7", "A1") == "empty"
 
 
+def test_a_declared_rack_is_picked_up_at_boot_with_an_empty_tip_store(service):
+    """The deck outlives the tip store, so boot has to read it.
+
+    Live case on ot2_complexation: the deck had racks on 4 / 7 / 9 declared
+    sessions ago, and the tip store held nothing that survived the legacy-key
+    drop. Registration only ran on declare / setup, so the panel came back with
+    no racks at all for a deck full of them — until the operator re-declared a
+    slot they had already declared.
+    """
+
+    service.declare_deck(
+        {
+            "4": "opentrons_96_filtertiprack_20ul",
+            "7": "opentrons_96_filtertiprack_10ul",
+            "9": "opentrons_96_tiprack_300ul",
+        }
+    )
+
+    reborn = OT2Service(
+        dry_run=False,
+        plates=PlateStateStore(state_path=service.plates.state_path),
+        decks=DeckDeclarationStore(state_path=service.decks.state_path),
+        # A store that knows nothing — as after the legacy nickname-keyed
+        # ghosts are dropped on load.
+        tips=TipStateStore(state_path=service.tips.state_path.parent / "fresh.json"),
+    )
+
+    assert sorted(reborn.tips.racks()) == ["4", "7", "9"]
+    assert reborn.tips.summary()["7"]["available"] == 96
+
+
 def test_a_protocol_call_still_addresses_labware_by_nickname(service):
     # The robot is driven by nickname; only the tracker uses slots. Both must
     # hold at once, or the pick lands on the wrong labware.
