@@ -30,6 +30,22 @@ from opentrons_server.gateway.service import OT2Service
 CLAIM = {"owner": "ada@lab", "session_id": "s1", "ttl_s": 30.0}
 
 
+@pytest.fixture(autouse=True)
+def _isolate_env_file(tmp_path, monkeypatch):
+    """Point the ``.env`` lookup at a path that does not exist.
+
+    Without this, a real repo-root ``.env`` — which is the documented way to
+    configure the assistant, so it exists on any machine where someone has
+    turned it on — silently supplies a key to the tests that assert the
+    assistant is *un*configured. They passed until the moment the feature was
+    actually used, which is the worst time for a test to start lying.
+
+    Tests that want a file set ``OT2_ENV_FILE`` themselves; a later setenv
+    overrides this one.
+    """
+    monkeypatch.setenv("OT2_ENV_FILE", str(tmp_path / "absent.env"))
+
+
 def _config(**over):
     base = dict(
         enabled=True,
@@ -364,3 +380,17 @@ def test_a_malformed_file_does_not_take_the_gateway_down(tmp_path, monkeypatch):
 
     assert client.get("/status").status_code == 200
     assert client.get("/assistant/health").json()["configured"] is False
+
+
+def test_searched_paths_are_deduped(monkeypatch):
+    """Run from a checkout — how the NSSM services run — and both candidates
+    are the same file. /assistant/health publishes this list, and one path
+    listed twice reads like a bug to whoever is hunting for where the key goes."""
+    monkeypatch.delenv("OT2_ENV_FILE", raising=False)
+    paths = assistant_mod.env_file_candidates()
+    assert len(paths) == len(set(paths))
+
+
+def test_explicit_env_file_is_the_only_candidate(monkeypatch, tmp_path):
+    monkeypatch.setenv("OT2_ENV_FILE", str(tmp_path / "custom.env"))
+    assert assistant_mod.env_file_candidates() == [tmp_path / "custom.env"]

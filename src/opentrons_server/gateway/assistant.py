@@ -125,7 +125,14 @@ def env_file_candidates() -> List[Path]:
     explicit = os.environ.get("OT2_ENV_FILE")
     if explicit:
         return [Path(explicit)]
-    return [Path.cwd() / ".env", Path(__file__).resolve().parents[3] / ".env"]
+    # Deduped: run from a checkout — which is how the NSSM services run, with
+    # AppDirectory set to the repo — and both candidates are the same file.
+    # /assistant/health publishes this list, and showing one path twice reads
+    # like a bug to whoever is trying to work out where to put their key.
+    seen: Dict[Path, None] = {}
+    for candidate in (Path.cwd() / ".env", Path(__file__).resolve().parents[3] / ".env"):
+        seen.setdefault(candidate.resolve() if candidate.parent.exists() else candidate, None)
+    return list(seen)
 
 
 def load_env_file(path: Optional[Path] = None) -> Dict[str, str]:
