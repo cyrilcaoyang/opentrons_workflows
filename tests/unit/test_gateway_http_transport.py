@@ -7,6 +7,7 @@ robot is touched.
 
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -222,20 +223,59 @@ def test_http_snapshot_keys_entries_by_slot_with_id_fallback(fake_http):
     assert snapshot["labwares"]["plate"]["location"] == "offDeck"
 
 
-def test_http_transport_ssh_component_message_names_run_engine(fake_http):
+def test_http_transport_reports_no_ssh_session(fake_http):
+    """Under the HTTP transport there is no SSH session, so the component
+    named after one must not claim to be connected.
+
+    It used to: `connected` was `self.control is not None`, so the pill read
+    "SSH connected" on a gateway that had never opened an SSH socket. The
+    transport in use is now carried by the `control` component instead.
+    """
     service = OT2Service(dry_run=False, transport="http")
     service.startup()
 
     components = service.get_status().components
-    assert components["ssh"].connected is True
+    assert components["ssh"].connected is False
+    assert components["ssh"].state == "disconnected"
     assert "run engine" in (components["ssh"].message or "")
     assert "no SSH session" in components["ssh"].message
+
+    assert components["control"].state == "http"
+    # The `fake_http` fixture stubs probe_robot to unreachable, and the HTTP
+    # transport holds no session — so the robot answering a probe is the only
+    # liveness evidence there is, and here there is none. Reporting `False`
+    # rather than "an object exists, so we're fine" is the whole point.
+    assert components["control"].connected is False
 
 
 def test_ssh_transport_ssh_component_message_names_repl():
     service = OT2Service(dry_run=False)  # default transport: ssh
     components = service.get_status().components
     assert "SSH REPL" in (components["ssh"].message or "")
+    assert components["control"].state == "disconnected"  # no session yet
+
+
+def test_control_component_reports_observed_ssh_liveness():
+    """A dropped session must read as down. The object outlives the socket, so
+    asking paramiko is the only honest answer."""
+    service = OT2Service(dry_run=False)
+    service.control = Mock()
+    service.control.client.is_alive.return_value = True
+    assert service.get_status().components["control"].connected is True
+    assert service.get_status().components["ssh"].state == "connected"
+
+    service.control.client.is_alive.return_value = False
+    assert service.get_status().components["control"].connected is False
+    assert service.get_status().components["ssh"].state == "disconnected"
+
+
+def test_dry_run_reports_its_simulation_as_the_transport():
+    """A simulated device behaves identically on every axis (STATUS_SPEC
+    Appendix B.1), so the session reads connected — but `control` says plainly
+    that it is a simulation rather than a real backend."""
+    components = OT2Service(dry_run=True).get_status().components
+    assert components["control"].state == "dry_run"
+    assert components["ssh"].connected is True
 
 
 def test_http_shutdown_stops_and_closes(fake_http):

@@ -1778,21 +1778,66 @@ class OT2Service:
             return ["startup"]
         return []
 
+    def _control_liveness(self) -> tuple[bool, str]:
+        """``(connected, transport)`` for the control backend, observed where
+        the transport allows it.
+
+        This used to be ``self.control is not None`` — true whenever a control
+        *object* existed, which is not the same claim. A dropped SSH session
+        leaves the object in place, so ``/status`` went on reporting a live
+        session until something tried to use it and failed. AGENTS.md §1: never
+        report a state the gateway has not observed.
+
+        What can honestly be observed differs by transport:
+
+        - **ssh** — paramiko knows whether the socket is up, and asking costs
+          no I/O (:meth:`SSHClient.is_alive`).
+        - **http** — the run engine holds no persistent session, so there is
+          nothing to be "connected" to. The robot answering the last probe is
+          the closest available evidence, and it is a real observation.
+        """
+        if self.dry_run:
+            return True, "dry_run"
+        if self.control is None:
+            return False, "disconnected"
+        if self.transport == "http":
+            return bool(self._last_probe.get("reachable")), "http"
+        client = getattr(self.control, "client", None)
+        if hasattr(client, "is_alive"):
+            return bool(client.is_alive()), "ssh"
+        # A control backend that cannot be asked. Report the session as up (it
+        # was established) rather than inventing a "down" nobody observed.
+        return True, "ssh"
+
     def _components(self, lights: ComponentStatus) -> Dict[str, ComponentStatus]:
-        connected = self.control is not None or self.dry_run
-        # The "ssh" component key predates the HTTP transport and means "control
-        # backend session" — renaming it would break dashboards (STATUS_SPEC #14),
-        # so the message carries the actual transport instead.
+        connected, transport = self._control_liveness()
         if self.dry_run:
             transport_note = "dry run (no robot connection)"
-        elif self.transport == "http":
+        elif transport == "http":
             transport_note = "control via HTTP run engine (no SSH session)"
         else:
             transport_note = "control via SSH REPL"
+
+        # An SSH session exists only when SSH is the transport. Both gateways
+        # currently run OT2_TRANSPORT=http, where this key was reporting
+        # `connected` with no SSH session anywhere — a component named after a
+        # protocol the device was not speaking. It is now scoped to what it
+        # literally names; `control` below carries the transport actually in
+        # use. The key stays for compatibility (STATUS_SPEC #14 forbids
+        # renaming a published component).
+        ssh_up = connected and transport in {"ssh", "dry_run"}
         components: Dict[str, ComponentStatus] = {
-            "ssh": ComponentStatus(
+            "control": ComponentStatus(
                 connected=connected,
-                state="connected" if connected else "disconnected",
+                # Names the backend rather than restating connectivity, which
+                # `connected` already carries. Small closed enum:
+                # ssh | http | dry_run | disconnected.
+                state=transport,
+                message=transport_note,
+            ),
+            "ssh": ComponentStatus(
+                connected=ssh_up,
+                state="connected" if ssh_up else "disconnected",
                 message=transport_note,
             ),
             "protocol": ComponentStatus(

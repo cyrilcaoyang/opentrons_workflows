@@ -172,6 +172,7 @@ export function ControlPanel({
   const pipLeft = components["pipette_left"];
   const pipRight = components["pipette_right"];
   const ssh = components["ssh"];
+  const control = components["control"];
   const protocol = components["protocol"];
 
   // Drive the transport buttons off the device's own `allowed_actions` rather
@@ -555,9 +556,21 @@ export function ControlPanel({
                 v={robot?.run_active == null ? "—" : robot.run_active ? "yes" : "no"}
               />
               <div className="mt-1 flex items-center gap-3">
-                <span className="flex items-center gap-1.5 text-xs text-ink-subtle dark:text-slate-400">
-                  <Dot ok={ssh?.state === "connected" || ssh?.state === "ready"} /> SSH{" "}
-                  <span className="font-mono">{ssh?.state ?? "—"}</span>
+                {/* Show the transport actually in use, not a protocol name. The
+                    old pill read "SSH connected" on a gateway running
+                    OT2_TRANSPORT=http, where no SSH socket exists — it was
+                    reporting that a control object had been constructed. Reads
+                    `control` (ssh | http | dry_run | disconnected) and takes
+                    `connected` from the device rather than string-matching a
+                    state value, so it stays right as states are added. Falls
+                    back to the legacy `ssh` key for a gateway too old to
+                    publish `control`. */}
+                <span
+                  className="flex items-center gap-1.5 text-xs text-ink-subtle dark:text-slate-400"
+                  title={control?.message ?? ssh?.message ?? undefined}
+                >
+                  <Dot ok={(control ?? ssh)?.connected === true} /> Control{" "}
+                  <span className="font-mono">{(control ?? ssh)?.state ?? "—"}</span>
                 </span>
                 <span className="flex items-center gap-1.5 text-xs text-ink-subtle dark:text-slate-400">
                   <Dot ok={protocol?.state === "connected" || protocol?.state === "ready"} />{" "}
