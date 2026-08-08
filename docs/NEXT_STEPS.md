@@ -45,12 +45,16 @@ See `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
    (source-refill), for a liquid-accurate — not just motion — run.
 
 3. **Confirm HTE's slot 7 tip count.** The tracker carries `96/96` for the
-   1000 µL filter rack on `ot2_hte` slot 7 — inherited from the registration
-   made when that rack was first observed, and never checked against the
-   physical rack. If it is not actually full, `POST /control/tips/reset` with
-   the real state; the gateway cannot infer a refill and will not guess (a
-   wrong "full" sends the head onto bare holes). Slot 8's `80/96` *is*
-   trustworthy — it was tracked through the picks that produced it.
+   1000 µL filter rack on `ot2_hte` slot 7 — inherited from the auto
+   registration made when the deck first showed that rack (`registered_at`
+   12:53 on 2026-08-07) and never checked against the physical rack. The
+   history holds **zero** pick/drop events against rack 7 and no `tips_reset`
+   for it, so nothing has ever corroborated the number. If the rack is not
+   actually full, `POST /control/tips/reset` with the real state: the gateway
+   cannot infer a refill and will not guess, because a wrong "full" sends the
+   head onto bare holes. Slot 8 needs no such check — it was reset to `96/96`
+   on 2026-08-07 by the operator *after a physical rack swap*, which is
+   exactly the assertion `tips/reset` exists to record.
 
 ## Desk work — unblocked (can do remotely now)
 
