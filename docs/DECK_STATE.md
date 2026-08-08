@@ -154,6 +154,17 @@ statuses):
 | `/control/deck/declare` | declaring a rack *is* the fact the tracker needs — before this, a declared rack was invisible to the tracker |
 | gateway boot (`OT2Service.__init__`) | the persisted deck outlives the process; without it a rack declared in an earlier session came back untracked (`6c46e57`) |
 
+**Registration asserts a *full* rack.** `_fresh_rack` marks every well `new`,
+so a count that came from registration alone is an assumption — "a rack
+appeared on this slot, presume it is untouched" — not an observation. Three
+things corroborate a count, in descending strength: pick/drop events (evidence
+the gateway itself recorded), an operator `POST /control/tips/reset` (a human
+asserting a physical refill or swap), and nothing at all. Treat a rack with no
+history and no reset as unverified, however confident its `96/96` looks; the
+device cannot see tips and will never correct itself. Registration is
+deliberately non-destructive for the same reason — re-declaring or restarting
+must never silently "refill" a rack that has been used.
+
 Boot registration reads `_build_deck_state`, which is cache-only — no HTTP, no
 REPL — so it cannot block or slow startup. It follows the *declared* deck by
 construction, so a robot with no declared layout registers nothing at boot and
