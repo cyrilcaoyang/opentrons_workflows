@@ -1,10 +1,27 @@
-"""Human-authorized plan machinery for agent-proposed OT-2 operation.
+"""Human-approved step lists for agent-proposed OT-2 operation.
 
 An agent (Hermes, `lab-skills`, anything else) may *propose* an ordered list of
 control actions. That is the whole of its reach. A human then reviews the
-proposal in the operator UI, authorizes it, and runs it — both of those last
-two steps require the device claim, which an agent never holds. This module is
-that gate.
+proposal in the operator UI, approves it, and runs it — both of those last two
+steps require the device claim, which an agent never holds. This module is that
+gate.
+
+**Not a "run authorization".** That term is taken, and the collision is worth
+avoiding deliberately: ``ac-organic-lab/docs/AGENTIC_ELN_DESIGN.md`` §12 defines
+a *Run Authorization* as a campaign-level gate that pins a merged commit SHA, a
+protocol schema version and a compiled-package digest, revalidates inventory and
+device readiness, and lands an immutable ``authorization_id`` in AnaliticaDB.
+
+What lives here is a smaller, device-local thing — a **step approval**: one
+operator, holding the claim, agreeing to one ad-hoc list of actions on one
+robot, for the next few minutes. It governs the work a run authorization does
+*not* cover: bring-up, homing, a manual tip pickup, turning the lights off.
+
+The two compose rather than compete — layer 4 decides which validated protocols
+may run at all; this decides whether the person at the bench meant to press the
+button. Calling both "authorization" would conflate a durable scientific record
+with an ephemeral operator gesture in exactly the conversation where the
+difference matters.
 
 Why the gate has to live here, in the gateway
 ---------------------------------------------
@@ -14,26 +31,26 @@ the robot. It is therefore not trustworthy as a safety layer, and nothing in
 this module assumes it behaves. Every rule below is enforced device-side, on
 the only machine that can actually see the deck.
 
-The three rules that make authorization mean something:
+The three rules that make an approval mean something:
 
-1. **The step list is hashed, and the human authorizes the hash.** Editing any
-   step after approval changes the hash and silently voids the authorization
+1. **The step list is hashed, and the human approves the hash.** Editing any
+   step after approval changes the hash and silently voids the approval
    (:meth:`PlanStore.replace_steps`). An agent cannot get approval for a
    harmless plan and then swap the steps.
-2. **Authorization requires a live claim, and execution requires the *same*
+2. **Approval requires a live claim, and execution requires the *same*
    claim session.** The claim is held by the operator's browser, and its TTL
-   only refreshes while that page is heartbeating. So "a human authorized
+   only refreshes while that page is heartbeating. So "a human approved
    this" degrades correctly into "a human is still present": if they walk away
    and the claim lapses, the approval dies with it.
-3. **Nothing here can authorize or start itself.** :meth:`PlanStore.authorize`
+3. **Nothing here can approve or start itself.** :meth:`PlanStore.approve`
    takes a ``ClaimedBy`` — an identity the caller cannot mint — and the API
-   layer only ever passes one obtained from a real claim. Both ``authorize``
+   layer only ever passes one obtained from a real claim. Both ``approve``
    and ``execute`` are claim-gated in ``api.py``, so every path that moves the
    robot begins with a human clicking in the UI. An agent can draft work at
    3am; it cannot start it.
 
 Plans are held in memory on purpose. A claim does not survive a gateway
-restart (``claims.ClaimManager``), so an *authorization* must not either —
+restart (``claims.ClaimManager``), so an *approval* must not either —
 otherwise a restart would leave an approved plan executable with no human
 attached to it. Losing a draft on restart is a mild annoyance; keeping a stale
 approval is a hazard.
@@ -64,16 +81,16 @@ from .models import (
     WellUpdateRequest,
 )
 
-# How long an authorization stays good. Short on purpose: it is a standing
+# How long an approval stays good. Short on purpose: it is a standing
 # permission to move a robot, and the operator who granted it is expected to be
 # watching. The claim-session binding (rule 2 above) is the primary guard; this
 # is the backstop for a page that keeps heartbeating in an empty room.
-AUTHORIZATION_TTL_S = 600.0
+APPROVAL_TTL_S = 600.0
 
 
 PlanStatus = Literal[
     "draft",       # proposed, not approved — the only state an agent can create
-    "authorized",  # a human approved this exact step hash
+    "approved",  # a human approved this exact step hash
     "executing",
     "executed",
     "failed",
@@ -183,8 +200,8 @@ class PlanHashMismatch(PlanError):
     """
 
 
-class AuthorizationRequiresClaim(PlanError):
-    """Authorizing (or executing) needs a live claim held by a human."""
+class ApprovalRequiresClaim(PlanError):
+    """Approving (or executing) needs a live claim held by a human."""
 
 
 class StepNotAllowed(PlanError):
@@ -237,13 +254,13 @@ class StepResult(BaseModel):
     finished_at: Optional[datetime] = None
 
 
-class Authorization(BaseModel):
+class StepApproval(BaseModel):
     """Proof a human approved one exact step list."""
 
     owner: str
     session_id: str
     step_hash: str
-    authorized_at: datetime
+    approved_at: datetime
     expires_at: datetime
 
     def expired(self, *, now: Optional[datetime] = None) -> bool:
@@ -258,7 +275,7 @@ class Plan(BaseModel):
     created_at: datetime
     created_by: str
     results: List[StepResult] = []
-    authorization: Optional[Authorization] = None
+    approval: Optional[StepApproval] = None
     # Set when a plan stops early, so the operator sees why without digging
     # through per-step results.
     halt_reason: Optional[str] = None
@@ -279,22 +296,22 @@ class PlanCreateRequest(BaseModel):
     steps: List[PlanStep]
     # Who proposed this, for the review UI and the audit row. Free-form because
     # the proposer is not authenticated at this layer; it is a label, never a
-    # permission. Authorization identity comes from the claim, not from here.
+    # permission. Approval identity comes from the claim, not from here.
     created_by: str = "agent"
     notes: Optional[str] = None
 
 
 class PlanReviseRequest(BaseModel):
-    """``PUT /plans/{id}/steps`` — an edit, which voids any authorization."""
+    """``PUT /plans/{id}/steps`` — an edit, which voids any approval."""
 
     steps: List[PlanStep]
 
 
-class PlanAuthorizeRequest(BaseModel):
-    """``POST /plans/{id}/authorize`` — the human gate.
+class PlanApproveRequest(BaseModel):
+    """``POST /plans/{id}/approve`` — the human gate.
 
     ``step_hash`` must be the hash the operator was shown. See
-    :meth:`PlanStore.authorize`.
+    :meth:`PlanStore.approve`.
     """
 
     step_hash: str
@@ -371,12 +388,12 @@ class PlanStore:
         plan.step_hash = compute_step_hash(steps)
         plan.results = [StepResult(action=s.action) for s in steps]
         plan.status = "draft"
-        plan.authorization = None
+        plan.approval = None
         return plan
 
     # -- the gate ----------------------------------------------------------
 
-    def authorize(
+    def approve(
         self,
         plan_id: str,
         *,
@@ -393,25 +410,25 @@ class PlanStore:
         plan = self.get(plan_id)
         if plan.status != "draft":
             raise PlanStateError(
-                f"plan {plan_id} is {plan.status}; only a draft can be authorized"
+                f"plan {plan_id} is {plan.status}; only a draft can be approved"
             )
         if claimed_by is None:
-            raise AuthorizationRequiresClaim(
-                "authorizing a plan requires holding the device claim"
+            raise ApprovalRequiresClaim(
+                "approving a plan requires holding the device claim"
             )
         if step_hash != plan.step_hash:
             raise PlanHashMismatch(
-                "the plan changed since it was displayed — re-read it and authorize again"
+                "the plan changed since it was displayed — re-read it and approve again"
             )
         now = datetime.now(timezone.utc)
-        plan.authorization = Authorization(
+        plan.approval = StepApproval(
             owner=claimed_by.owner,
             session_id=claimed_by.session_id,
             step_hash=plan.step_hash,
-            authorized_at=now,
-            expires_at=now + timedelta(seconds=AUTHORIZATION_TTL_S),
+            approved_at=now,
+            expires_at=now + timedelta(seconds=APPROVAL_TTL_S),
         )
-        plan.status = "authorized"
+        plan.status = "approved"
         return plan
 
     def check_executable(self, plan_id: str, *, claimed_by: Optional[ClaimedBy]) -> Plan:
@@ -421,22 +438,22 @@ class PlanStore:
         UI can grey out "Execute" with the real reason rather than guessing.
         """
         plan = self.get(plan_id)
-        if plan.status != "authorized":
-            raise PlanStateError(f"plan {plan_id} is {plan.status}, not authorized")
-        auth = plan.authorization
+        if plan.status != "approved":
+            raise PlanStateError(f"plan {plan_id} is {plan.status}, not approved")
+        auth = plan.approval
         if auth is None:  # pragma: no cover — status invariant
-            raise PlanStateError("authorized plan has no authorization record")
+            raise PlanStateError("approved plan has no approval record")
         if auth.expired():
             plan.status = "draft"
-            plan.authorization = None
-            raise PlanStateError("authorization expired; have an operator review it again")
+            plan.approval = None
+            raise PlanStateError("approval expired; have an operator review it again")
         if auth.step_hash != plan.step_hash:  # pragma: no cover — replace_steps resets
-            raise PlanHashMismatch("plan changed after authorization")
+            raise PlanHashMismatch("plan changed after approval")
         if claimed_by is None:
-            raise AuthorizationRequiresClaim("no live claim; the authorizing operator is gone")
+            raise ApprovalRequiresClaim("no live claim; the approving operator is gone")
         if claimed_by.session_id != auth.session_id:
-            raise AuthorizationRequiresClaim(
-                "the claim is held by a different session than the one that authorized "
+            raise ApprovalRequiresClaim(
+                "the claim is held by a different session than the one that approved "
                 "this plan; have the current holder review it"
             )
         return plan
@@ -450,7 +467,7 @@ class PlanStore:
                 result.outcome = "skipped"
         plan.status = "aborted"
         plan.halt_reason = reason
-        plan.authorization = None
+        plan.approval = None
         return plan
 
 
@@ -460,7 +477,7 @@ class PlanStore:
 
 
 class PlanExecutor:
-    """Runs an authorized plan, one step at a time, against the live device."""
+    """Runs an approved plan, one step at a time, against the live device."""
 
     def __init__(self, service: Any, store: PlanStore) -> None:
         self._service = service
@@ -493,9 +510,9 @@ class PlanExecutor:
             result.finished_at = datetime.now(timezone.utc)
 
         plan.status = "executed"
-        # An authorization is spent once used. Re-running the same steps is a
+        # An approval is spent once used. Re-running the same steps is a
         # new decision, so it needs a new approval.
-        plan.authorization = None
+        plan.approval = None
         return plan
 
     def _assert_allowed(self, step: PlanStep) -> None:
@@ -523,4 +540,4 @@ class PlanExecutor:
                 result.outcome = "skipped"
         plan.status = "failed"
         plan.halt_reason = reason
-        plan.authorization = None
+        plan.approval = None

@@ -14,7 +14,7 @@ import type { AssistantMessage } from "../lib/types";
  * harness required.
  *
  * The assistant can only propose. Anything it drafts shows up in the Proposed
- * plans panel as a draft for the operator to authorize and run, so this box
+ * plans panel as a draft for the operator to approve and run, so this box
  * has no path to the hardware that the panel does not already gate.
  */
 
@@ -114,7 +114,7 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
         <div className="flex flex-col">
           <span className="text-xs font-semibold text-ink dark:text-slate-100">Assistant</span>
           <span className="text-[10px] text-ink-subtle dark:text-slate-500">
-            Proposes only — you authorize and run
+            Proposes only — you approve and run
           </span>
         </div>
         <button

@@ -171,14 +171,14 @@ export interface LabwareSummary {
 // ---------------------------------------------------------------------------
 // Agent-proposed plans (see gateway/plans.py)
 //
-// An agent may create and revise a plan. Authorizing and running it are
+// An agent may create and revise a plan. Approving and running it are
 // claim-gated, so they happen here, in the operator's browser, and nowhere
 // else.
 // ---------------------------------------------------------------------------
 
 export type PlanStatus =
   | "draft"
-  | "authorized"
+  | "approved"
   | "executing"
   | "executed"
   | "failed"
@@ -199,25 +199,27 @@ export interface StepResult {
   finished_at: string | null;
 }
 
-export interface PlanAuthorization {
+export interface StepApproval {
   owner: string;
   session_id: string;
   step_hash: string;
-  authorized_at: string;
+  approved_at: string;
   expires_at: string;
 }
 
 export interface Plan {
   plan_id: string;
   steps: PlanStep[];
-  /** Digest of the exact step list. Authorizing sends this back, so an edit
+  /** Digest of the exact step list. Approving sends this back, so an edit
    *  between render and click is caught instead of silently approved. */
   step_hash: string;
   status: PlanStatus;
   created_at: string;
   created_by: string;
   results: StepResult[];
-  authorization: PlanAuthorization | null;
+  /** Not a 'run authorization' (AGENTIC_ELN_DESIGN.md §12) — a device-local
+   *  operator approval of one ad-hoc step list. */
+  approval: StepApproval | null;
   halt_reason: string | null;
   /** Steps that cannot be safely repeated after a transport loss. */
   non_idempotent_actions: string[];

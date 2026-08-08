@@ -4,7 +4,7 @@ Two things are worth pinning. First that it is genuinely optional — a gateway
 with no key must behave exactly as it did before, because the repo's promise is
 that installing it alone gives you a working device service. Second that it is
 a *proposer*: its only write tool is propose_plan, so it comes through the same
-human-authorization gate as an agent harness and cannot move the robot.
+human-approval gate as an agent harness and cannot move the robot.
 
 No network and no hardware — the OpenAI client is faked throughout.
 """
@@ -152,7 +152,7 @@ def test_health_endpoint_is_open_and_leaks_nothing(monkeypatch):
 
 
 def test_no_tool_can_move_the_robot():
-    """The load-bearing absence, mirroring the MCP surface. Authorizing and
+    """The load-bearing absence, mirroring the MCP surface. Approving and
     running are claim-gated clicks; offering them here would only produce
     refusals and tempt the model to claim it had started work."""
     names = {t["function"]["name"] for t in _tool_schemas()}
@@ -163,7 +163,14 @@ def test_no_tool_can_move_the_robot():
         "list_actions",
         "propose_plan",
     }
-    for forbidden in ("authorize_plan", "execute_plan", "abort_plan", "startup", "home"):
+    for forbidden in (
+        "approve_plan",   # the current name
+        "authorize_plan",  # and the pre-rename one, so an old spelling cannot sneak back
+        "execute_plan",
+        "abort_plan",
+        "startup",
+        "home",
+    ):
         assert forbidden not in names
 
 
@@ -174,7 +181,7 @@ def test_proposing_creates_a_draft_the_operator_must_approve(monkeypatch):
         monkeypatch,
         [
             _tool_call("propose_plan", {"steps": [{"action": "lights.set", "args": {"on": True}}]}),
-            _text("Proposed one step. Authorize it in the panel to run it."),
+            _text("Proposed one step. Approve it in the panel to run it."),
         ],
     )
 
@@ -182,8 +189,8 @@ def test_proposing_creates_a_draft_the_operator_must_approve(monkeypatch):
 
     assert result["plan_id"]
     plan = store.get(result["plan_id"])
-    assert plan.status == "draft"          # not authorized
-    assert plan.authorization is None      # and not runnable
+    assert plan.status == "draft"          # not approved
+    assert plan.approval is None      # and not runnable
     assert plan.created_by == "assistant"  # attributable in the panel
 
 

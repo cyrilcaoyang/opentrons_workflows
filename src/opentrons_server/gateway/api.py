@@ -52,9 +52,9 @@ from .assistant import (
 )
 from .plans import (
     PLAN_ACTIONS,
-    AuthorizationRequiresClaim,
+    ApprovalRequiresClaim,
     Plan,
-    PlanAuthorizeRequest,
+    PlanApproveRequest,
     PlanCreateRequest,
     PlanError,
     PlanExecutor,
@@ -247,9 +247,11 @@ def create_app(
         ),
     )
 
-    # Agent-proposed plans and their human-authorization gate. In-memory and
-    # per-process on purpose: an authorization must not outlive the claim it
-    # was granted under, and a claim does not survive a restart either.
+    # Agent-proposed plans and their human-approval gate. In-memory and
+    # per-process on purpose: an approval must not outlive the claim it was
+    # granted under, and a claim does not survive a restart either. (Not a
+    # "run authorization" — that is the campaign-level, AnaliticaDB-recorded
+    # gate in AGENTIC_ELN_DESIGN.md §12. See gateway/plans.py.)
     plans = PlanStore()
     executor = PlanExecutor(service, plans)
 
@@ -680,22 +682,22 @@ def create_app(
         return CommandResponse(message="State reconciled", state=service.state.value)
 
     # -----------------------------------------------------------------
-    # Agent-proposed, human-authorized plans
+    # Agent-proposed, human-approved plans
     #
     # The split across these five routes IS the safety design, so it is worth
     # stating plainly where the line falls:
     #
     #   propose / revise / read            — reachable by an agent
-    #   authorize / execute / abort        — NOT reachable by an agent
+    #   approve / execute / abort          — NOT reachable by an agent
     #
-    # An agent's reach ends at the proposal. Authorizing AND running both
+    # An agent's reach ends at the proposal. Approving AND running both
     # require the claim token, which lives in the operator's browser and is
     # never handed out, so every path that moves the robot begins with a human
     # clicking in the UI. A harness with cron and a chat interface can draft
     # work at 3am; it cannot start it.
     #
-    # Authorize and execute stay two separate calls even though both are now
-    # human-only. Authorize pins the hash the operator actually read; execute
+    # Approve and execute stay two separate calls even though both are now
+    # human-only. Approve pins the hash the operator actually read; execute
     # is the go. Collapsing them would lose the record of *what was reviewed*,
     # which is the thing that makes a later audit meaningful.
     # -----------------------------------------------------------------
@@ -705,7 +707,7 @@ def create_app(
             return 404
         if isinstance(exc, StepValidationError):
             return 422
-        if isinstance(exc, AuthorizationRequiresClaim):
+        if isinstance(exc, ApprovalRequiresClaim):
             return 423
         if isinstance(exc, PlanHashMismatch):
             return 409
@@ -735,7 +737,7 @@ def create_app(
     #
     # It is a proposer, not a driver: its only write tool is propose_plan, so
     # it comes through the same gate as an agent harness. Nothing here can
-    # authorize or run anything.
+    # approve or run anything.
     # -----------------------------------------------------------------
 
     @app.get("/assistant/health", tags=["assistant"])
@@ -854,7 +856,7 @@ def create_app(
     ) -> dict[str, Any]:
         """Replace the step list — which drops the plan back to draft.
 
-        Any prior authorization is discarded, by design: the human approved
+        Any prior approval is discarded, by design: the human approved
         different steps.
         """
         if require_login:
@@ -864,10 +866,10 @@ def create_app(
         except PlanError as exc:
             raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
 
-    @app.post("/plans/{plan_id}/authorize", tags=["plans"])
-    def authorize_plan(
+    @app.post("/plans/{plan_id}/approve", tags=["plans"])
+    def approve_plan(
         plan_id: str,
-        request: PlanAuthorizeRequest,
+        request: PlanApproveRequest,
         _claim: None = Depends(require_claim),
     ) -> dict[str, Any]:
         """The human gate. Requires the claim token, so only the operator's
@@ -877,18 +879,36 @@ def create_app(
         changed under the reviewer and is refused with 409.
         """
         try:
-            plan = plans.authorize(
+            plan = plans.approve(
                 plan_id,
                 step_hash=request.step_hash,
                 claimed_by=service.claims.current(),
             )
         except PlanError as exc:
             raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
+        # Make the approval durable. Plans live in memory and die with the
+        # process, which is right for the *permission* — but it meant the one
+        # audit-relevant fact, that a named human agreed to this exact step
+        # list, vanished on restart. The per-step `control_action` rows record
+        # what ran; only this records who said yes to it, and to what.
+        service.events.emit(
+            "plan_approved",
+            message=f"{plan.approval.owner} approved {len(plan.steps)} step(s)",
+            plan_id=plan.plan_id,
+            step_hash=plan.step_hash,
+            owner=plan.approval.owner,
+            session_id=plan.approval.session_id,
+            proposed_by=plan.created_by,
+            steps=[s.action for s in plan.steps],
+            non_idempotent=plan.non_idempotent_actions,
+            expires_at=plan.approval.expires_at.isoformat(),
+            source="device",
+        )
         return _plan_view(plan)
 
     @app.post("/plans/{plan_id}/execute", tags=["plans"])
     def execute_plan(plan_id: str, _claim: None = Depends(require_claim)) -> dict[str, Any]:
-        """Run an already-authorized plan, one step at a time.
+        """Run an already-approved plan, one step at a time.
 
         Claim-gated, so only the operator's browser can start it — an agent
         proposes, a human runs. Re-checks the device's live `allowed_actions`
@@ -897,10 +917,35 @@ def create_app(
         Fail-fast: the first refusal or error halts the plan and marks the rest
         skipped.
         """
+        # Read the approving owner before executing: execute() spends the
+        # approval, so afterwards `plan.approval` is None and the person who
+        # authorised the run would be missing from its own completion record.
+        pending = plans.get(plan_id)
+        approver = pending.approval.owner if pending.approval else None
         try:
             plan = executor.execute(plan_id, claimed_by=service.claims.current())
         except PlanError as exc:
             raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
+        # Closes the pair: `plan_approved` says who agreed to what,
+        # `plan_executed` says what actually became of it. Per-step outcomes are
+        # summarised rather than enumerated — the individual `control_action`
+        # rows already carry each step in full.
+        outcomes = [r.outcome for r in plan.results]
+        service.events.emit(
+            "plan_executed",
+            message=(
+                f"plan {plan.plan_id} {plan.status}: "
+                f"{outcomes.count('ok')}/{len(outcomes)} step(s) ok"
+                + (f" — {plan.halt_reason}" if plan.halt_reason else "")
+            ),
+            plan_id=plan.plan_id,
+            step_hash=plan.step_hash,
+            status=plan.status,
+            owner=approver,
+            outcomes=outcomes,
+            halt_reason=plan.halt_reason,
+            source="device",
+        )
         return _plan_view(plan)
 
     @app.post("/plans/{plan_id}/abort", tags=["plans"])

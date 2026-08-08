@@ -230,12 +230,12 @@ export function listPlans(): Promise<Plan[]> {
 /** Approve one exact step list. `stepHash` must be the digest the operator was
  *  shown — the gateway refuses (409) if the plan changed since it rendered,
  *  which is what makes this a review rather than a rubber stamp. */
-export function authorizePlan(
+export function approvePlan(
   planId: string,
   stepHash: string,
   token: string | null,
 ): Promise<Plan> {
-  return fetchJson<Plan>(`/plans/${encodeURIComponent(planId)}/authorize`, {
+  return fetchJson<Plan>(`/plans/${encodeURIComponent(planId)}/approve`, {
     method: "POST",
     headers: withToken(token),
     body: JSON.stringify({ step_hash: stepHash }),

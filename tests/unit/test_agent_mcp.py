@@ -1,7 +1,7 @@
 """The agent-facing MCP surface (``tools/ot2_agent_mcp.py``).
 
 The property worth a regression test is what the surface does *not* have. An
-agent's reach must end at the proposal, so a tool that authorizes, runs, or
+agent's reach must end at the proposal, so a tool that approves, runs, or
 aborts a plan must never appear here — and it must stay absent as tools are
 added later.
 
@@ -33,13 +33,19 @@ async def _tool_names() -> set[str]:
 async def test_no_tool_can_move_the_robot():
     """The load-bearing absence.
 
-    Authorizing and running are claim-gated in the gateway, and an agent never
+    Approving and running are claim-gated in the gateway, and an agent never
     holds the claim — so these would only ever return 423. Exposing them would
     invite the model to try, and to report to the operator that it had started
     work it cannot start.
     """
     names = await _tool_names()
-    for forbidden in ("authorize_plan", "execute_plan", "abort_plan", "run_plan"):
+    for forbidden in (
+        "approve_plan",   # the current name
+        "authorize_plan",  # and the pre-rename one, so an old spelling cannot sneak back
+        "execute_plan",
+        "abort_plan",
+        "run_plan",
+    ):
         assert forbidden not in names
 
 

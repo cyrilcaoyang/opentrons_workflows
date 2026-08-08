@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiError, abortPlan, authorizePlan, executePlan, listPlans } from "../lib/api";
+import { ApiError, abortPlan, approvePlan, executePlan, listPlans } from "../lib/api";
 import type { ClaimState } from "../lib/use-claim";
 import type { Plan, StepOutcome } from "../lib/types";
 
@@ -14,12 +14,12 @@ import type { Plan, StepOutcome } from "../lib/types";
  *
  * Two things here are load-bearing rather than cosmetic:
  *
- *  - **Authorize sends back the hash that was rendered.** If the plan changed
+ *  - **Approve sends back the hash that was rendered.** If the plan changed
  *    between the operator reading it and clicking, the gateway returns 409 and
  *    the approval is refused. That is what makes this a review and not a
  *    rubber stamp, so the button must never re-fetch and approve the *current*
  *    hash — it approves the one on screen.
- *  - **Authorize and Run stay two clicks.** Merging them would lose the record
+ *  - **Approve and Run stay two clicks.** Merging them would lose the record
  *    of what was reviewed, and would make the last thing before a pipette
  *    moves a single click on a screen the operator may not have read.
  */
@@ -33,7 +33,7 @@ const STEP_TONE: Record<StepOutcome, string> = {
 
 const STATUS_TONE: Record<string, string> = {
   draft: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
-  authorized: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
+  approved: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
   executing: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
   executed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
   failed: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300",
@@ -101,7 +101,7 @@ export function PlanReviewPanel({ claim }: { claim: ClaimState }) {
           Proposed plans
         </h2>
         <p className="text-xs text-ink-muted dark:text-slate-400">
-          Proposed by an agent. Nothing runs until you authorize it here.
+          Proposed by an agent. Nothing runs until you approve it here.
         </p>
       </header>
 
@@ -208,16 +208,16 @@ export function PlanReviewPanel({ claim }: { claim: ClaimState }) {
                     // holds now. A mismatch is a 409 the operator must re-read.
                     onClick={() =>
                       run(plan.plan_id, () =>
-                        authorizePlan(plan.plan_id, plan.step_hash, claim.token),
+                        approvePlan(plan.plan_id, plan.step_hash, claim.token),
                       )
                     }
                     className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
                   >
-                    Authorize these {plan.steps.length} steps
+                    Approve these {plan.steps.length} steps
                   </button>
                 )}
 
-                {plan.status === "authorized" && (
+                {plan.status === "approved" && (
                   <button
                     type="button"
                     disabled={!claim.held || busy || !plan.executable}

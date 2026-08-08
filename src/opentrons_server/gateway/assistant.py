@@ -13,7 +13,7 @@ reason: a venv without it still serves a healthy gateway.
 
 **It cannot move the robot.** Its entire tool surface is reads plus
 ``propose_plan`` — the same door an agent harness comes through
-(``tools/ot2_agent_mcp.py``). A proposal is a draft; authorizing and running it
+(``tools/ot2_agent_mcp.py``). A proposal is a draft; approving and running it
 are claim-gated clicks in the operator panel (``gateway/plans.py``). So adding
 a chat box widens the safety surface by nothing at all: it is one more
 proposer behind the same gate, not a new path to the hardware.
@@ -65,7 +65,7 @@ What you can do:
 
 What you cannot do, and must never imply otherwise:
 - You cannot run anything. `propose_plan` creates a DRAFT. A human then \
-reviews it in the operator panel, authorizes it, and runs it. Never say you \
+reviews it in the operator panel, approves it, and runs it. Never say you \
 have started, run, or completed an operation — say you have proposed it and \
 that it is waiting for their approval.
 - You cannot connect or disconnect the robot, pause or resume a run, or \
@@ -239,7 +239,7 @@ class AssistantConfig:
 def _tool_schemas() -> List[Dict[str, Any]]:
     """The assistant's entire capability, as OpenAI-style tool definitions.
 
-    Reads plus ``propose_plan``. There is deliberately no authorize, execute or
+    Reads plus ``propose_plan``. There is deliberately no approve, execute or
     abort tool — those are claim-gated and the assistant holds no claim, so
     offering them would only produce refusals and tempt the model to report
     work it cannot start.
@@ -292,7 +292,7 @@ def _tool_schemas() -> List[Dict[str, Any]]:
                 "name": "propose_plan",
                 "description": (
                     "Propose an ordered plan for the operator to review. Creates a "
-                    "DRAFT — it does not run. The operator authorizes and runs it "
+                    "DRAFT — it does not run. The operator approves and runs it "
                     "in the panel."
                 ),
                 "parameters": {
@@ -379,7 +379,7 @@ class Assistant:
             "plan_id": plan.plan_id,
             "status": plan.status,
             "steps": [{"action": s.action, "args": s.args} for s in plan.steps],
-            "note": "Draft created. The operator must authorize and run it in the panel.",
+            "note": "Draft created. The operator must approve and run it in the panel.",
         }
 
     # -- the turn ----------------------------------------------------------

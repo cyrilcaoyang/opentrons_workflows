@@ -18,11 +18,11 @@ checkout and one ``.venv`` on this PC, and adding ``mcp`` there would mean a
 stop/sync/start on both (``mcp`` pulls ~10 packages including pywin32).
 
 **It cannot move the robot.** The tool list below is reads plus
-propose/revise. There is no authorize, execute, or abort tool — not because
+propose/revise. There is no approve, execute, or abort tool — not because
 they are hidden, but because the gateway refuses them without the claim token,
 which lives in the operator's browser and is never given to an agent. Exposing
 them would only produce confusing 423s. An agent drafts; a human at
-``…/ui/`` reviews, authorizes, and runs.
+``…/ui/`` reviews, approves, and runs.
 
 The action catalog is fetched from the device at startup
 (``GET /plans/actions``) rather than hard-coded, so a gateway that gains an
@@ -150,7 +150,7 @@ def build_server(gateway: Gateway, *, instance: str) -> Any:
         here rather than failing at the robot.
 
         The operator sees the proposal in the gateway UI and decides. You
-        cannot authorize or run it — say so plainly rather than implying the
+        cannot approve or run it — say so plainly rather than implying the
         work is underway.
         """
         return gateway.post(
@@ -161,7 +161,7 @@ def build_server(gateway: Gateway, *, instance: str) -> Any:
     def revise_plan(plan_id: str, steps: list[dict]) -> dict:
         """Replace a plan's steps after operator feedback.
 
-        Any existing authorization is discarded and the plan returns to draft —
+        Any existing approval is discarded and the plan returns to draft —
         the human approved different steps, so their approval does not carry
         over. Expect to ask them to review again.
         """
@@ -176,7 +176,7 @@ def build_server(gateway: Gateway, *, instance: str) -> Any:
     @mcp.tool()
     def list_plans() -> list:
         """Every plan this gateway is holding, newest first. Use it to check
-        whether the operator has authorized or run something you proposed."""
+        whether the operator has approved or run something you proposed."""
         return gateway.get("/plans")
 
     return mcp

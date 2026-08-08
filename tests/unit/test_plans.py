@@ -1,4 +1,4 @@
-"""The human-authorization gate for agent-proposed plans.
+"""The human-approval gate for agent-proposed plans.
 
 These tests are the specification of the gate, not incidental coverage. The
 property each one pins is the reason the gate exists: an autonomous agent may
@@ -19,7 +19,7 @@ from opentrons_server.gateway.api import create_app
 from opentrons_server.gateway.models import ClaimedBy
 from opentrons_server.gateway.plans import (
     PLAN_ACTIONS,
-    AuthorizationRequiresClaim,
+    ApprovalRequiresClaim,
     PlanExecutor,
     PlanHashMismatch,
     PlanNotFound,
@@ -70,7 +70,7 @@ def test_unknown_action_is_refused_at_proposal():
 
 def test_bad_arguments_are_refused_at_proposal():
     """The step's args are parsed with the same model the matching /control/*
-    endpoint uses, so a malformed step never reaches an authorization screen."""
+    endpoint uses, so a malformed step never reaches an approval screen."""
     store = PlanStore()
     with pytest.raises(StepValidationError, match="aspirate"):
         store.create(
@@ -115,30 +115,30 @@ def test_non_idempotent_actions_are_surfaced_for_review():
 def test_a_draft_cannot_execute():
     store = PlanStore()
     plan = store.create(_steps("home"), created_by="agent")
-    with pytest.raises(PlanStateError, match="not authorized"):
+    with pytest.raises(PlanStateError, match="not approved"):
         store.check_executable(plan.plan_id, claimed_by=_claimed_by())
 
 
-def test_authorization_requires_a_live_claim():
+def test_approval_requires_a_live_claim():
     """No claim means no human present, so there is nobody to approve."""
     store = PlanStore()
     plan = store.create(_steps("home"), created_by="agent")
-    with pytest.raises(AuthorizationRequiresClaim):
-        store.authorize(plan.plan_id, step_hash=plan.step_hash, claimed_by=None)
+    with pytest.raises(ApprovalRequiresClaim):
+        store.approve(plan.plan_id, step_hash=plan.step_hash, claimed_by=None)
     assert store.get(plan.plan_id).status == "draft"
 
 
-def test_authorizing_a_stale_hash_is_refused():
+def test_approving_a_stale_hash_is_refused():
     """The reviewer sends back the hash they were shown. If it no longer
     matches, they reviewed something else."""
     store = PlanStore()
     plan = store.create(_steps("home"), created_by="agent")
     with pytest.raises(PlanHashMismatch):
-        store.authorize(plan.plan_id, step_hash="0" * 64, claimed_by=_claimed_by())
+        store.approve(plan.plan_id, step_hash="0" * 64, claimed_by=_claimed_by())
     assert store.get(plan.plan_id).status == "draft"
 
 
-def test_editing_after_authorization_voids_it():
+def test_editing_after_approval_voids_it():
     """The property the whole design exists for.
 
     An agent must not be able to get a harmless plan approved and then swap in
@@ -147,19 +147,19 @@ def test_editing_after_authorization_voids_it():
     """
     store = PlanStore()
     plan = store.create(_steps("lights.set"), created_by="agent")
-    store.authorize(plan.plan_id, step_hash=plan.step_hash, claimed_by=_claimed_by())
-    assert store.get(plan.plan_id).status == "authorized"
+    store.approve(plan.plan_id, step_hash=plan.step_hash, claimed_by=_claimed_by())
+    assert store.get(plan.plan_id).status == "approved"
 
     store.replace_steps(plan.plan_id, _steps("aspirate"))
 
     revised = store.get(plan.plan_id)
     assert revised.status == "draft"
-    assert revised.authorization is None
+    assert revised.approval is None
     with pytest.raises(PlanStateError):
         store.check_executable(plan.plan_id, claimed_by=_claimed_by())
 
 
-def test_execution_requires_the_same_claim_session_that_authorized():
+def test_execution_requires_the_same_claim_session_that_approved():
     """Approval is bound to a session, not just to a person.
 
     A fresh claim — even by the same operator in a new tab — is a different
@@ -168,23 +168,23 @@ def test_execution_requires_the_same_claim_session_that_authorized():
     """
     store = PlanStore()
     plan = store.create(_steps("home"), created_by="agent")
-    store.authorize(plan.plan_id, step_hash=plan.step_hash, claimed_by=_claimed_by("sess-1"))
+    store.approve(plan.plan_id, step_hash=plan.step_hash, claimed_by=_claimed_by("sess-1"))
 
-    with pytest.raises(AuthorizationRequiresClaim, match="different session"):
+    with pytest.raises(ApprovalRequiresClaim, match="different session"):
         store.check_executable(plan.plan_id, claimed_by=_claimed_by("sess-2"))
-    with pytest.raises(AuthorizationRequiresClaim, match="no live claim"):
+    with pytest.raises(ApprovalRequiresClaim, match="no live claim"):
         store.check_executable(plan.plan_id, claimed_by=None)
 
     assert store.check_executable(plan.plan_id, claimed_by=_claimed_by("sess-1"))
 
 
-def test_expired_authorization_falls_back_to_draft():
+def test_expired_approval_falls_back_to_draft():
     """A standing permission to move a robot should not outlive the operator's
     attention. On expiry the plan reverts to draft rather than lingering."""
     store = PlanStore()
     plan = store.create(_steps("home"), created_by="agent")
-    store.authorize(plan.plan_id, step_hash=plan.step_hash, claimed_by=_claimed_by())
-    plan.authorization.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    store.approve(plan.plan_id, step_hash=plan.step_hash, claimed_by=_claimed_by())
+    plan.approval.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
 
     with pytest.raises(PlanStateError, match="expired"):
         store.check_executable(plan.plan_id, claimed_by=_claimed_by())
@@ -201,17 +201,17 @@ def test_missing_plan_is_a_lookup_error():
 # ---------------------------------------------------------------------------
 
 
-def _authorized(store: PlanStore, *actions: str):
+def _approved(store: PlanStore, *actions: str):
     plan = store.create(_steps(*actions), created_by="agent")
-    store.authorize(plan.plan_id, step_hash=plan.step_hash, claimed_by=_claimed_by())
+    store.approve(plan.plan_id, step_hash=plan.step_hash, claimed_by=_claimed_by())
     return plan
 
 
-def test_executes_every_step_in_order_then_spends_the_authorization():
+def test_executes_every_step_in_order_then_spends_the_approval():
     store = PlanStore()
     service = Mock()
     service.allowed_actions.return_value = ["lights.set", "plate.unload"]
-    plan = _authorized(store, "lights.set", "plate.unload")
+    plan = _approved(store, "lights.set", "plate.unload")
 
     done = PlanExecutor(service, store).execute(plan.plan_id, claimed_by=_claimed_by())
 
@@ -220,7 +220,7 @@ def test_executes_every_step_in_order_then_spends_the_authorization():
     service.set_lights.assert_called_once_with(True)
     service.unload_plate.assert_called_once()
     # Spent: re-running the same steps is a new decision needing new approval.
-    assert done.authorization is None
+    assert done.approval is None
     with pytest.raises(PlanStateError):
         store.check_executable(plan.plan_id, claimed_by=_claimed_by())
 
@@ -231,7 +231,7 @@ def test_a_step_the_device_now_refuses_halts_the_plan():
     store = PlanStore()
     service = Mock()
     service.allowed_actions.return_value = ["lights.set"]  # plate.unload withdrawn
-    plan = _authorized(store, "lights.set", "plate.unload")
+    plan = _approved(store, "lights.set", "plate.unload")
 
     done = PlanExecutor(service, store).execute(plan.plan_id, claimed_by=_claimed_by())
 
@@ -248,7 +248,7 @@ def test_a_failing_step_halts_and_skips_the_rest():
     service = Mock()
     service.allowed_actions.return_value = ["lights.set", "plate.unload"]
     service.set_lights.side_effect = RuntimeError("robot said no")
-    plan = _authorized(store, "lights.set", "plate.unload")
+    plan = _approved(store, "lights.set", "plate.unload")
 
     done = PlanExecutor(service, store).execute(plan.plan_id, claimed_by=_claimed_by())
 
@@ -258,7 +258,7 @@ def test_a_failing_step_halts_and_skips_the_rest():
     service.unload_plate.assert_not_called()
 
 
-def test_execute_refuses_an_unauthorized_plan_without_touching_the_device():
+def test_execute_refuses_an_unapproved_plan_without_touching_the_device():
     store = PlanStore()
     service = Mock()
     plan = store.create(_steps("lights.set"), created_by="agent")
@@ -272,11 +272,11 @@ def test_execute_refuses_an_unauthorized_plan_without_touching_the_device():
 
 def test_abort_marks_pending_steps_skipped():
     store = PlanStore()
-    plan = _authorized(store, "lights.set", "plate.unload")
+    plan = _approved(store, "lights.set", "plate.unload")
     aborted = store.abort(plan.plan_id, reason="aborted by operator")
     assert aborted.status == "aborted"
     assert [r.outcome for r in aborted.results] == ["skipped", "skipped"]
-    assert aborted.authorization is None
+    assert aborted.approval is None
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +297,7 @@ def _propose(client: TestClient, action: str = "lights.set", args=None) -> dict:
     return resp.json()
 
 
-def test_proposing_needs_no_claim_but_authorizing_does():
+def test_proposing_needs_no_claim_but_approving_does():
     """The load-bearing asymmetry.
 
     An agent has no claim token — the token lives in the operator's browser
@@ -307,29 +307,29 @@ def test_proposing_needs_no_claim_but_authorizing_does():
     client = _client()
     plan = _propose(client)  # no claim, no token: accepted
 
-    unauthorized = client.post(
-        f"/plans/{plan['plan_id']}/authorize", json={"step_hash": plan["step_hash"]}
+    unapproved = client.post(
+        f"/plans/{plan['plan_id']}/approve", json={"step_hash": plan["step_hash"]}
     )
-    assert unauthorized.status_code == 423  # claim token required
+    assert unapproved.status_code == 423  # claim token required
 
     token = client.post("/control/claim", json=CLAIM).json()["claim_token"]
     ok = client.post(
-        f"/plans/{plan['plan_id']}/authorize",
+        f"/plans/{plan['plan_id']}/approve",
         json={"step_hash": plan["step_hash"]},
         headers={"X-Claim-Token": token},
     )
     assert ok.status_code == 200
-    assert ok.json()["status"] == "authorized"
+    assert ok.json()["status"] == "approved"
     assert ok.json()["executable"] is True
 
 
-def test_authorize_over_http_rejects_a_stale_hash():
+def test_approve_over_http_rejects_a_stale_hash():
     client = _client()
     plan = _propose(client)
     token = client.post("/control/claim", json=CLAIM).json()["claim_token"]
 
     resp = client.post(
-        f"/plans/{plan['plan_id']}/authorize",
+        f"/plans/{plan['plan_id']}/approve",
         json={"step_hash": "0" * 64},
         headers={"X-Claim-Token": token},
     )
@@ -337,7 +337,7 @@ def test_authorize_over_http_rejects_a_stale_hash():
     assert "re-read" in resp.json()["detail"]
 
 
-def test_an_agent_cannot_run_even_an_authorized_plan():
+def test_an_agent_cannot_run_even_an_approved_plan():
     """Hermes proposes; the human runs.
 
     `execute` is claim-gated, so a tokenless caller is refused even when the
@@ -348,7 +348,7 @@ def test_an_agent_cannot_run_even_an_authorized_plan():
     plan = _propose(client)
     token = client.post("/control/claim", json=CLAIM).json()["claim_token"]
     client.post(
-        f"/plans/{plan['plan_id']}/authorize",
+        f"/plans/{plan['plan_id']}/approve",
         json={"step_hash": plan["step_hash"]},
         headers={"X-Claim-Token": token},
     )
@@ -375,15 +375,15 @@ def test_the_operator_still_cannot_run_an_unapproved_plan():
         f"/plans/{plan['plan_id']}/execute", headers={"X-Claim-Token": token}
     )
     assert refused.status_code == 409
-    assert "not authorized" in refused.json()["detail"]
+    assert "not approved" in refused.json()["detail"]
 
 
-def test_revising_over_http_voids_an_existing_authorization():
+def test_revising_over_http_voids_an_existing_approval():
     client = _client()
     plan = _propose(client)
     token = client.post("/control/claim", json=CLAIM).json()["claim_token"]
     client.post(
-        f"/plans/{plan['plan_id']}/authorize",
+        f"/plans/{plan['plan_id']}/approve",
         json={"step_hash": plan["step_hash"]},
         headers={"X-Claim-Token": token},
     )
@@ -410,7 +410,7 @@ def test_plan_view_explains_why_it_cannot_run():
     plan = _propose(client)
     body = client.get(f"/plans/{plan['plan_id']}").json()
     assert body["executable"] is False
-    assert "not authorized" in body["blocked_reason"]
+    assert "not approved" in body["blocked_reason"]
 
 
 def test_invalid_steps_are_rejected_by_the_http_surface():
@@ -423,3 +423,82 @@ def test_invalid_steps_are_rejected_by_the_http_surface():
         == 422
     )
     assert client.post("/plans", json={"steps": []}).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Durable audit
+#
+# The approval itself lives in memory and dies with the process — right for a
+# permission, wrong for a record. These two events are the only durable trace
+# that a named human agreed to one exact step list. The per-step
+# `control_action` rows say what ran; only these say who said yes, and to what.
+# ---------------------------------------------------------------------------
+
+
+def test_approval_and_execution_are_audited(monkeypatch):
+    """Both halves of the pair, with the approver named on each."""
+    from opentrons_server.gateway.events_exporter import EventsExporter
+
+    emitted: list = []
+    monkeypatch.setattr(
+        EventsExporter, "emit", lambda self, event, **kw: emitted.append((event, kw)) or True
+    )
+    client = TestClient(create_app(dry_run=True, enforce_claims=True, ui=False))
+
+    plan = client.post(
+        "/plans", json={"steps": [{"action": "lights.set", "args": {"on": True}}]}
+    ).json()
+    token = client.post("/control/claim", json=CLAIM).json()["claim_token"]
+    client.post(
+        f"/plans/{plan['plan_id']}/approve",
+        json={"step_hash": plan["step_hash"]},
+        headers={"X-Claim-Token": token},
+    )
+
+    approved = [e for e in emitted if e[0] == "plan_approved"]
+    assert len(approved) == 1
+    payload = approved[0][1]
+    assert payload["owner"] == "ada@lab"
+    assert payload["step_hash"] == plan["step_hash"]
+    assert payload["steps"] == ["lights.set"]
+    assert payload["proposed_by"]
+
+    client.post(f"/plans/{plan['plan_id']}/execute", headers={"X-Claim-Token": token})
+
+    executed = [e for e in emitted if e[0] == "plan_executed"]
+    assert len(executed) == 1
+    done = executed[0][1]
+    assert done["status"] == "executed"
+    assert done["outcomes"] == ["ok"]
+    # The approval is spent by execute(), so the owner has to be captured
+    # beforehand — otherwise the completion record loses the person who
+    # authorised it.
+    assert done["owner"] == "ada@lab"
+    assert done["step_hash"] == plan["step_hash"]
+
+
+def test_a_halted_plan_still_records_why(monkeypatch):
+    """A refusal is exactly when someone will read the audit trail."""
+    from opentrons_server.gateway.events_exporter import EventsExporter
+
+    emitted: list = []
+    monkeypatch.setattr(
+        EventsExporter, "emit", lambda self, event, **kw: emitted.append((event, kw)) or True
+    )
+    client = TestClient(create_app(dry_run=True, enforce_claims=True, ui=False))
+
+    # `home` is not offered in dry run, so the pre-step re-check refuses it.
+    plan = client.post("/plans", json={"steps": [{"action": "move_to", "args": {
+        "pipette": "p300", "coordinates": {"x": 1, "y": 2, "z": 3}}}]}).json()
+    token = client.post("/control/claim", json=CLAIM).json()["claim_token"]
+    client.post(
+        f"/plans/{plan['plan_id']}/approve",
+        json={"step_hash": plan["step_hash"]},
+        headers={"X-Claim-Token": token},
+    )
+    client.post(f"/plans/{plan['plan_id']}/execute", headers={"X-Claim-Token": token})
+
+    done = [e for e in emitted if e[0] == "plan_executed"][0][1]
+    assert done["status"] == "failed"
+    assert done["outcomes"] == ["skipped"]
+    assert "move_to" in done["halt_reason"]
