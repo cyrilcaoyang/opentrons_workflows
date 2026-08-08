@@ -263,3 +263,104 @@ def test_message_history_is_bounded():
     too_many = {"messages": [{"role": "user", "content": "x"} for _ in range(41)]}
     assert client.post("/assistant/chat", json=too_many).status_code == 422
     assert client.post("/assistant/chat", json={"messages": []}).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# .env fallback
+#
+# It exists so switching the assistant on needs no `nssm set
+# AppEnvironmentExtra`, which replaces the ENTIRE variable block — get that
+# wrong and you wipe the three state paths that stop two robots from
+# overwriting each other's plate and tip records.
+# ---------------------------------------------------------------------------
+
+
+def _write_env(tmp_path, body: str):
+    p = tmp_path / ".env"
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+def test_missing_env_file_is_a_no_op(tmp_path):
+    assert assistant_mod.load_env_file(tmp_path / "nope.env") == {}
+
+
+def test_reads_an_allowlisted_key(tmp_path):
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=k-from-file\n")
+    assert assistant_mod.load_env_file(env) == {"OPENROUTER_API_KEY": "k-from-file"}
+
+
+def test_ignores_comments_blanks_export_and_quotes(tmp_path):
+    env = _write_env(
+        tmp_path,
+        "\n# a comment\n\nexport OPENROUTER_API_KEY=\"k-quoted\"\nnot-a-pair\n",
+    )
+    assert assistant_mod.load_env_file(env) == {"OPENROUTER_API_KEY": "k-quoted"}
+
+
+def test_non_allowlisted_keys_are_refused(tmp_path):
+    """The load-bearing restriction. This file sits at the repo root, which BOTH
+    gateway instances share, so it must not be able to hand two robots the same
+    host alias or the same state path — shared state files corrupt each other.
+    Anything instance-specific stays in the NSSM env, which a file cannot reach.
+    """
+    env = _write_env(
+        tmp_path,
+        "OT2_HOST_ALIAS=wrong-robot\n"
+        "OT2_TIP_STATE_PATH=/shared/tips.json\n"
+        "OT2_EQUIPMENT_ID=ot2\n"
+        "OPENROUTER_API_KEY=k-ok\n",
+    )
+    assert assistant_mod.load_env_file(env) == {"OPENROUTER_API_KEY": "k-ok"}
+
+
+def test_environment_beats_the_file(tmp_path, monkeypatch):
+    _write_env(tmp_path, "OPENROUTER_API_KEY=k-file\nOT2_ASSISTANT_MODEL=file/model\n")
+    monkeypatch.setenv("OT2_ENV_FILE", str(tmp_path / ".env"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k-env")
+    monkeypatch.delenv("OT2_ASSISTANT_MODEL", raising=False)
+
+    cfg = AssistantConfig.from_env()
+
+    assert cfg.api_key == "k-env"          # environment wins
+    assert cfg.key_source == "environment"
+    assert cfg.model == "file/model"       # ...per setting, not all-or-nothing
+
+
+def test_the_file_alone_configures_the_assistant(tmp_path, monkeypatch):
+    _write_env(tmp_path, "OPENROUTER_API_KEY=k-file\n")
+    monkeypatch.setenv("OT2_ENV_FILE", str(tmp_path / ".env"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    cfg = AssistantConfig.from_env()
+
+    assert cfg.unavailable_reason() is None
+    assert cfg.key_source == "file"
+
+
+def test_health_reports_where_the_key_came_from_but_never_the_key(tmp_path, monkeypatch):
+    """The only question an operator asks when the bubble stays hidden after
+    they dropped a key somewhere: did it see it?"""
+    _write_env(tmp_path, "OPENROUTER_API_KEY=k-secret-value\n")
+    monkeypatch.setenv("OT2_ENV_FILE", str(tmp_path / ".env"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client = TestClient(create_app(dry_run=True, enforce_claims=True, ui=False))
+
+    body = client.get("/assistant/health").json()
+
+    assert body["configured"] is True
+    assert body["key_source"] == "file"
+    assert "k-secret-value" not in json.dumps(body)
+
+
+def test_a_malformed_file_does_not_take_the_gateway_down(tmp_path, monkeypatch):
+    _write_env(tmp_path, "\x00\x01 garbage ===== \nOPENROUTER_API_KEY\n")
+    monkeypatch.setenv("OT2_ENV_FILE", str(tmp_path / ".env"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client = TestClient(create_app(dry_run=True, enforce_claims=True, ui=False))
+
+    assert client.get("/status").status_code == 200
+    assert client.get("/assistant/health").json()["configured"] is False

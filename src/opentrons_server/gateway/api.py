@@ -48,6 +48,7 @@ from .assistant import (
     AssistantChatRequest,
     AssistantConfig,
     AssistantDisabled,
+    env_file_candidates,
 )
 from .plans import (
     PLAN_ACTIONS,
@@ -751,6 +752,11 @@ def create_app(
             "configured": reason is None,
             "reason": reason,
             "model": cfg.model if reason is None else None,
+            # Where the key was found ("environment" | "file" | null). The one
+            # thing an operator needs when the bubble stays hidden after they
+            # dropped a key somewhere. Never the key itself.
+            "key_source": cfg.key_source,
+            "env_file_searched": [str(p) for p in env_file_candidates()],
         }
 
     @app.post("/assistant/chat", tags=["assistant"])

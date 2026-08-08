@@ -30,6 +30,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -93,6 +94,83 @@ class AssistantDisabled(Exception):
         self.reason = reason
 
 
+# Settings a `.env` file may supply. An allowlist, not a general loader, and
+# the reason is specific to this deployment: the file lives at the repo root,
+# which BOTH gateway instances share. A general loader would let it provide an
+# instance-specific value — a host alias, one of the three state paths — to two
+# robots at once, and shared state files corrupt each other. Everything that
+# distinguishes one robot from the other stays in its NSSM service env, which
+# a file can never reach.
+ENV_FILE_KEYS = frozenset(
+    {
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "OT2_ASSISTANT_ENABLED",
+        "OT2_ASSISTANT_MODEL",
+        "OT2_ASSISTANT_BASE_URL",
+        "OT2_ASSISTANT_MAX_TOKENS",
+        "OT2_ASSISTANT_TIMEOUT_S",
+    }
+)
+
+
+def env_file_candidates() -> List[Path]:
+    """Where a ``.env`` is looked for, in order.
+
+    ``OT2_ENV_FILE`` wins when set. Otherwise the working directory, which is
+    the repo root under NSSM (``AppDirectory``) and when running from a
+    checkout — then a package-relative guess so an editable install started
+    from elsewhere still finds it.
+    """
+    explicit = os.environ.get("OT2_ENV_FILE")
+    if explicit:
+        return [Path(explicit)]
+    return [Path.cwd() / ".env", Path(__file__).resolve().parents[3] / ".env"]
+
+
+def load_env_file(path: Optional[Path] = None) -> Dict[str, str]:
+    """Allowlisted settings from a ``.env``, or ``{}`` if there is none.
+
+    Deliberately does **not** mutate ``os.environ``: the caller uses this as a
+    *fallback*, so a real environment variable always wins and the precedence
+    is visible at the point it matters rather than depending on import order.
+
+    Not cached, on purpose — it is read per request, so dropping a key into the
+    file takes effect on the next poll with no restart. That is the whole point
+    of having it: `nssm set AppEnvironmentExtra` replaces the entire variable
+    block, and getting that wrong wipes the state paths that keep two robots
+    from overwriting each other's plate and tip records.
+
+    Malformed lines are skipped rather than raising. A typo in an optional
+    config file must not take the gateway down.
+    """
+    paths = [path] if path is not None else env_file_candidates()
+    for candidate in paths:
+        try:
+            if not candidate.is_file():
+                continue
+            found: Dict[str, str] = {}
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export ") :].lstrip()
+                key, sep, value = line.partition("=")
+                if not sep:
+                    continue
+                key = key.strip()
+                if key not in ENV_FILE_KEYS:
+                    continue
+                value = value.strip().strip('"').strip("'")
+                if value:
+                    found[key] = value
+            return found
+        except OSError as exc:  # unreadable file is not a reason to fail
+            logger.warning("could not read %s: %s", candidate, exc)
+    return {}
+
+
 @dataclass(frozen=True)
 class AssistantConfig:
     enabled: bool
@@ -102,16 +180,40 @@ class AssistantConfig:
     max_tokens: int
     timeout_s: float
 
+    # Where the key came from, for /assistant/health. Answers the only question
+    # an operator asks when the bubble stays hidden: "did it see my key?"
+    key_source: Optional[str] = None
+
     @classmethod
     def from_env(cls) -> "AssistantConfig":
+        from_file = load_env_file()
+
+        def setting(key: str, default: Optional[str] = None) -> Optional[str]:
+            """Environment first, then the file, then the default."""
+            value = os.environ.get(key)
+            if value:
+                return value
+            return from_file.get(key, default)
+
+        key = setting("OPENROUTER_API_KEY") or setting("OPENAI_API_KEY")
+        source: Optional[str] = None
+        if key:
+            source = (
+                "environment"
+                if (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+                else "file"
+            )
         return cls(
-            enabled=os.environ.get("OT2_ASSISTANT_ENABLED", "true").lower()
+            enabled=(setting("OT2_ASSISTANT_ENABLED", "true") or "true").lower()
             not in {"0", "false", "no", "off"},
-            api_key=os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY"),
-            model=os.environ.get("OT2_ASSISTANT_MODEL", DEFAULT_MODEL),
-            base_url=os.environ.get("OT2_ASSISTANT_BASE_URL", DEFAULT_BASE_URL),
-            max_tokens=int(os.environ.get("OT2_ASSISTANT_MAX_TOKENS", DEFAULT_MAX_TOKENS)),
-            timeout_s=float(os.environ.get("OT2_ASSISTANT_TIMEOUT_S", DEFAULT_TIMEOUT_S)),
+            api_key=key,
+            model=setting("OT2_ASSISTANT_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL,
+            base_url=setting("OT2_ASSISTANT_BASE_URL", DEFAULT_BASE_URL) or DEFAULT_BASE_URL,
+            max_tokens=int(setting("OT2_ASSISTANT_MAX_TOKENS", str(DEFAULT_MAX_TOKENS)) or 0)
+            or DEFAULT_MAX_TOKENS,
+            timeout_s=float(setting("OT2_ASSISTANT_TIMEOUT_S", str(DEFAULT_TIMEOUT_S)) or 0)
+            or DEFAULT_TIMEOUT_S,
+            key_source=source,
         )
 
     def unavailable_reason(self) -> Optional[str]:
