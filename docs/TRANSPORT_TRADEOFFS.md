@@ -116,7 +116,8 @@ action → `unknown_outcome`, never a silent retry).
 - **Newer, less proven.** Core cycle + custom labware + idle-persistence are
   hardware-validated (2026-07-14); the full parity surface (trash default,
   coordinate liquid handling, module verbs, geometry readbacks) is
-  offline-tested only. Production still defaults to SSH.
+  offline-tested only — now exercised in production rather than ahead of it
+  (both robots run HTTP as of 2026-08-07).
 - **No simulation mode.** `simulation` is accepted for signature parity and
   ignored; there is no run-engine equivalent of `simulate.get_protocol_api()`.
 
@@ -137,17 +138,28 @@ action → `unknown_outcome`, never a silent retry).
 | Credentials | SSH key + passphrase + root | none (network reachability only) |
 | `opentrons-ot2` connector coexistence | no | yes |
 | Robot-side footprint | REPL session + shipped reader source | none |
-| Maturity | production default, months on bench | core validated; parity surface offline-only |
+| Maturity | months on bench; now the fallback | both robots since 2026-08-07 |
 
-## Recommendation (as of 2026-07-18)
+## Recommendation (as of 2026-08-07)
 
-Keep **SSH as the production default** until the parity surface passes a bench
-run (see the bench-unverified list in `HTTP_SSH_PARITY.md`). Prefer **HTTP for
-new work** — deck-state durability, structured errors, and connector
-coexistence are architectural wins the SSH path can never match, and the
-remaining gaps are validation effort, not design blockers. The switch is
-env-only and fully reversible (`OT2_TRANSPORT=http` ↔ unset), so the migration
-can proceed robot-by-robot.
+**HTTP is what both robots run.** `ot2_complexation` has been on it since its
+bring-up; `ot2_hte` switched 2026-08-07 (`OT2_TRANSPORT=http` +
+`OT2_HTTP_BASE_URL=http://172.31.60.10:31950` in the service env). SSH is now
+the fallback, not the default-in-practice — the code default is still `ssh`
+(`service.py`), so an unset env still gets the old path.
+
+The earlier recommendation held SSH as production default until the parity
+surface passed a bench run. That reservation stands where it always did: the
+core cycle, custom labware and idle-persistence are hardware-validated
+(2026-07-14, on `ot2_hte` itself), while the rest of the parity surface —
+trash default, coordinate liquid handling, module verbs, geometry readbacks —
+is still offline-tested only (`HTTP_SSH_PARITY.md`). Those paths are now
+exercised in production rather than ahead of it; treat a first live use of any
+of them as the bench run it hasn't had.
+
+Reverting is env-only: unset `OT2_TRANSPORT` (or set `ssh`) and restart —
+**but delete the leftover `current` run on the robot first**, or the SSH
+gateway will be blocked by it (see the interference note above).
 
 Flex remains out of scope for the HTTP transport: its absolute-motion/gripper
 surface has no run-engine equivalent (`HTTP_TRANSPORT.md`).

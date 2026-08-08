@@ -88,7 +88,8 @@ def test_move_to_transport_loss_is_idempotent_error_not_unknown_outcome():
     assert service.state == OT2ServiceState.ERROR
     assert service.state != OT2ServiceState.UNKNOWN_OUTCOME
     assert service.last_error is not None
-    assert service.last_error.code == "move_to_transport_failed"
+    assert service.last_error.code == "command_transport_failed"
+    assert service.last_error.message.startswith("move_to: ")
 
 
 def test_ready_allowed_actions_advertise_move_to():

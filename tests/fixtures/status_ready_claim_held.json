@@ -1,0 +1,171 @@
+{
+  "protocol_version": "1.2",
+  "equipment_id": "ot2",
+  "equipment_name": "Opentrons OT-2",
+  "equipment_kind": "liquid_handler",
+  "equipment_version": null,
+  "host": null,
+  "equipment_status": "ready",
+  "message": "OT-2 service state: ready",
+  "required_actions": [],
+  "allowed_actions": [
+    "shutdown",
+    "home",
+    "setup",
+    "pause",
+    "move_to",
+    "pick_up_tip",
+    "aspirate",
+    "dispense",
+    "drop_tip",
+    "move_labware",
+    "plate.load",
+    "plate.unload",
+    "well.update",
+    "tips.reset",
+    "lights.set",
+    "deck.declare"
+  ],
+  "activity": "idle",
+  "activity_since": "2026-05-08T22:49:44Z",
+  "device_time": "2026-05-08T22:50:01Z",
+  "uptime_seconds": 0.0,
+  "components": {
+    "ssh": {
+      "connected": true,
+      "state": "connected",
+      "message": null,
+      "last_event_at": null
+    },
+    "protocol": {
+      "connected": true,
+      "state": "ready",
+      "message": null,
+      "last_event_at": null
+    },
+    "lights": {
+      "connected": true,
+      "state": "off",
+      "message": null,
+      "last_event_at": null
+    }
+  },
+  "metrics": {
+    "cycles_total": {
+      "value": 12,
+      "unit": "count",
+      "timestamp": null
+    }
+  },
+  "last_error": null,
+  "details": {
+    "service_state": "ready",
+    "dry_run": false,
+    "simulation": false,
+    "snapshot": {
+      "deck": {
+        "source": "empty",
+        "slots": {
+          "1": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "2": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "3": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "4": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "5": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "6": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "7": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "8": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "9": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "10": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "11": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          },
+          "12": {
+            "labware": null,
+            "module": null,
+            "slot_state": "empty",
+            "source": "empty",
+            "declared": null
+          }
+        },
+        "timestamp": "2026-05-08T22:50:01Z"
+      },
+      "pipettes": {},
+      "labwares": {},
+      "modules": {}
+    },
+    "session_recipe": {
+      "labware": [],
+      "instruments": [],
+      "modules": []
+    },
+    "claimed_by": {
+      "session_id": "3f2b1c9e-7a44-4f0e-9c31-2b8d5e6a1f70",
+      "owner": "agent:solubility-screening",
+      "expires_at": "2026-05-08T22:50:31Z"
+    }
+  }
+}

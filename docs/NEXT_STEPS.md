@@ -44,6 +44,15 @@ See `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
    (`68c0803`). Optional follow-up: tune the p300 volumes so A12 doesn't deplete
    (source-refill), for a liquid-accurate — not just motion — run.
 
+3. **HTE tip counts — DONE** (2026-08-07). Both racks on `ot2_hte` were
+   reconciled against the physical deck after the restart-and-declare work:
+   slot 7's 1000 µL filter rack confirmed full by eye (its `96/96` had come
+   from auto-registration alone — no pick/drop events, no reset — so it was an
+   assumption until checked), and slot 8 reset to `96/96` by the operator after
+   swapping in a fresh 300 µL rack. No leftover work; the general rule this
+   produced is in [`DECK_STATE.md`](DECK_STATE.md) ("Registration asserts a
+   *full* rack").
+
 ## Desk work — unblocked (can do remotely now)
 
 - ✅ **Aspirate flow default lowered** 150 → 90 µL/s (`e0566bf`). Per-call override

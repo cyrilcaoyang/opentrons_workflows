@@ -19,10 +19,14 @@
  */
 
 import type {
+  AssistantHealth,
+  AssistantMessage,
+  AssistantReply,
   ClaimResponse,
   DeviceDeck,
   EquipmentStatus,
   LabwareSummary,
+  Plan,
 } from "./types";
 
 /** Server-root prefix for API calls, derived from the SPA's own URL. */
@@ -208,5 +212,72 @@ export function deleteDeckDeclare(token: string | null): Promise<DeviceDeck> {
   return fetchJson<DeviceDeck>("/control/deck/declare", {
     method: "DELETE",
     headers: withToken(token),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Agent-proposed plans
+//
+// `listPlans` is a read. The other three are the human gate: all claim-token
+// gated server-side, which is exactly why they live in the operator UI and
+// have no agent-reachable equivalent.
+// ---------------------------------------------------------------------------
+
+export function listPlans(): Promise<Plan[]> {
+  return fetchJson<Plan[]>("/plans");
+}
+
+/** Approve one exact step list. `stepHash` must be the digest the operator was
+ *  shown — the gateway refuses (409) if the plan changed since it rendered,
+ *  which is what makes this a review rather than a rubber stamp. */
+export function authorizePlan(
+  planId: string,
+  stepHash: string,
+  token: string | null,
+): Promise<Plan> {
+  return fetchJson<Plan>(`/plans/${encodeURIComponent(planId)}/authorize`, {
+    method: "POST",
+    headers: withToken(token),
+    body: JSON.stringify({ step_hash: stepHash }),
+  });
+}
+
+export function executePlan(planId: string, token: string | null): Promise<Plan> {
+  return fetchJson<Plan>(`/plans/${encodeURIComponent(planId)}/execute`, {
+    method: "POST",
+    headers: withToken(token),
+  });
+}
+
+export function abortPlan(planId: string, token: string | null): Promise<Plan> {
+  return fetchJson<Plan>(`/plans/${encodeURIComponent(planId)}/abort`, {
+    method: "POST",
+    headers: withToken(token),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Optional chat assistant
+// ---------------------------------------------------------------------------
+
+/** Open (no claim, no identity) so the UI can decide whether to render the
+ *  bubble before anyone logs in. Returns only a boolean and a reason. */
+export function getAssistantHealth(): Promise<AssistantHealth> {
+  return fetchJson<AssistantHealth>("/assistant/health");
+}
+
+/** One turn. Claim-gated server-side: a proposal is only useful to whoever
+ *  holds the device, and it keeps a passer-by from spending the API budget. */
+export function assistantChat(
+  messages: AssistantMessage[],
+  token: string | null,
+): Promise<AssistantReply> {
+  return fetchJson<AssistantReply>("/assistant/chat", {
+    method: "POST",
+    headers: withToken(token),
+    // `planId` is a UI-side annotation; the gateway's schema rejects extras.
+    body: JSON.stringify({
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    }),
   });
 }

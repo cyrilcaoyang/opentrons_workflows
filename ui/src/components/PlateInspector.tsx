@@ -378,10 +378,21 @@ export function PlateInspector({ slot, view, tipRacks, mountedTips }: PlateInspe
   const loadName = view?.loadName;
   const { geometry, state: geometryState } = useLabwareGeometry(loadName);
 
-  if (slot == null || view == null || view.state === "empty") {
+  if (slot == null || view == null) {
     return (
       <p className="text-xs text-ink-subtle dark:text-slate-500">
         Select a deck slot to inspect its labware.
+      </p>
+    );
+  }
+  // A selected-but-empty slot is a different answer from "nothing selected".
+  // The two shared a message while these lived in separate panels; merged
+  // under a "Slot 5" heading, "select a deck slot" would contradict the
+  // heading directly above it.
+  if (view.state === "empty") {
+    return (
+      <p className="text-xs text-ink-subtle dark:text-slate-500">
+        Slot {slot} is empty — nothing to inspect.
       </p>
     );
   }

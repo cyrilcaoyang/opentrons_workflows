@@ -43,6 +43,28 @@ from .models import (
     WellSample,
     WellUpdateRequest,
 )
+from .assistant import (
+    Assistant,
+    AssistantChatRequest,
+    AssistantConfig,
+    AssistantDisabled,
+    env_file_candidates,
+)
+from .plans import (
+    PLAN_ACTIONS,
+    AuthorizationRequiresClaim,
+    Plan,
+    PlanAuthorizeRequest,
+    PlanCreateRequest,
+    PlanError,
+    PlanExecutor,
+    PlanHashMismatch,
+    PlanNotFound,
+    PlanReviseRequest,
+    PlanStateError,
+    PlanStore,
+    StepValidationError,
+)
 from .plate_state import PlateStateStore
 from .service import OT2Service, UnknownOutcomeError
 from .tip_state import TipStateStore, TipUnavailable
@@ -225,6 +247,12 @@ def create_app(
         ),
     )
 
+    # Agent-proposed plans and their human-authorization gate. In-memory and
+    # per-process on purpose: an authorization must not outlive the claim it
+    # was granted under, and a claim does not survive a restart either.
+    plans = PlanStore()
+    executor = PlanExecutor(service, plans)
+
     app = FastAPI(
         title="Opentrons OT-2 Gateway",
         # Tracks the STATUS_SPEC revision this gateway speaks.
@@ -237,9 +265,20 @@ def create_app(
             "since the gateway started."
         ),
     )
+    # STATUS_SPEC best practice #10 asks for the dashboard's origin, not `*`.
+    # `*` stays the default because it is what keeps a device debuggable from a
+    # browser when the aggregator is down — the reason the practice exists — and
+    # narrowing it unilaterally would break every deployment that relies on it.
+    # `OT2_CORS_ORIGINS` (comma-separated) is how an operator tightens it; with
+    # OT2_REQUIRE_LOGIN on, setting it is the documented next step.
+    cors_origins = [
+        origin.strip()
+        for origin in os.environ.get("OT2_CORS_ORIGINS", "*").split(",")
+        if origin.strip()
+    ] or ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -639,6 +678,238 @@ def create_app(
     def reconcile(snapshot: Optional[dict[str, Any]] = None, _claim: None = Depends(require_claim)) -> CommandResponse:
         service.reconcile(snapshot)
         return CommandResponse(message="State reconciled", state=service.state.value)
+
+    # -----------------------------------------------------------------
+    # Agent-proposed, human-authorized plans
+    #
+    # The split across these five routes IS the safety design, so it is worth
+    # stating plainly where the line falls:
+    #
+    #   propose / revise / read            — reachable by an agent
+    #   authorize / execute / abort        — NOT reachable by an agent
+    #
+    # An agent's reach ends at the proposal. Authorizing AND running both
+    # require the claim token, which lives in the operator's browser and is
+    # never handed out, so every path that moves the robot begins with a human
+    # clicking in the UI. A harness with cron and a chat interface can draft
+    # work at 3am; it cannot start it.
+    #
+    # Authorize and execute stay two separate calls even though both are now
+    # human-only. Authorize pins the hash the operator actually read; execute
+    # is the go. Collapsing them would lose the record of *what was reviewed*,
+    # which is the thing that makes a later audit meaningful.
+    # -----------------------------------------------------------------
+
+    def _plan_error_status(exc: Exception) -> int:
+        if isinstance(exc, PlanNotFound):
+            return 404
+        if isinstance(exc, StepValidationError):
+            return 422
+        if isinstance(exc, AuthorizationRequiresClaim):
+            return 423
+        if isinstance(exc, PlanHashMismatch):
+            return 409
+        return 409  # PlanStateError and anything else in the family
+
+    def _plan_view(plan: Plan) -> dict[str, Any]:
+        """A plan plus the answer to 'could this run right now, and if not, why'.
+
+        Computed here rather than left to the caller so the review UI and an
+        agent see the same reason string, and neither has to re-derive the
+        rules.
+        """
+        body = plan.model_dump(mode="json")
+        body["non_idempotent_actions"] = plan.non_idempotent_actions
+        try:
+            plans.check_executable(plan.plan_id, claimed_by=service.claims.current())
+            body["executable"] = True
+            body["blocked_reason"] = None
+        except Exception as exc:
+            body["executable"] = False
+            body["blocked_reason"] = str(exc)
+        return body
+
+    # -----------------------------------------------------------------
+    # Optional in-page chat assistant. Off unless an API key is configured;
+    # with none, /assistant/health reports it and the UI hides the bubble.
+    #
+    # It is a proposer, not a driver: its only write tool is propose_plan, so
+    # it comes through the same gate as an agent harness. Nothing here can
+    # authorize or run anything.
+    # -----------------------------------------------------------------
+
+    @app.get("/assistant/health", tags=["assistant"])
+    def assistant_health() -> dict[str, Any]:
+        """Whether the bubble should render, and if not, why.
+
+        Read openly (no claim, no identity): the UI needs it before login to
+        decide whether to show anything at all, and it exposes only a boolean
+        and a reason string — never the key or the provider URL.
+        """
+        cfg = AssistantConfig.from_env()
+        reason = cfg.unavailable_reason()
+        return {
+            "configured": reason is None,
+            "reason": reason,
+            "model": cfg.model if reason is None else None,
+            # Where the key was found ("environment" | "file" | null). The one
+            # thing an operator needs when the bubble stays hidden after they
+            # dropped a key somewhere. Never the key itself.
+            "key_source": cfg.key_source,
+            "env_file_searched": [str(p) for p in env_file_candidates()],
+        }
+
+    @app.post("/assistant/chat", tags=["assistant"])
+    def assistant_chat(request: AssistantChatRequest, http_request: Request) -> dict[str, Any]:
+        """One conversation turn.
+
+        Claim-gated. Not because the assistant can move anything — it cannot —
+        but because a proposal is only useful to whoever is holding the device,
+        and it keeps an unauthenticated visitor from spending the lab's API
+        budget by talking to a robot they do not control.
+        """
+        if require_login:
+            _require_identity(http_request)
+        # Availability before the claim gate, deliberately. On a gateway with
+        # no assistant configured, "take control of the device" is advice that
+        # leads nowhere — taking the claim would change nothing. Answer the
+        # question the caller actually hit. Nothing is disclosed by ordering it
+        # this way: /assistant/health already reports configured-ness openly.
+        config = AssistantConfig.from_env()
+        unavailable = config.unavailable_reason()
+        if unavailable:
+            raise HTTPException(status_code=503, detail=unavailable)
+        if enforce_claims and not service.claims.current():
+            raise ClaimHTTPError(
+                status_code=423,
+                payload={
+                    "detail": "take control of the device before using the assistant",
+                    "claimed_by": None,
+                    "retry_after_s": None,
+                },
+            )
+        try:
+            return Assistant(service, plans, config).chat(
+                [m.model_dump() for m in request.messages]
+            )
+        except AssistantDisabled as exc:
+            raise HTTPException(status_code=503, detail=exc.reason)
+        except Exception as exc:
+            logger.warning("assistant turn failed: %s", exc)
+            raise HTTPException(status_code=502, detail=f"assistant request failed: {exc}")
+
+    @app.get("/plans/actions", tags=["plans"])
+    def plan_actions() -> dict[str, Any]:
+        """The catalog a proposer may draw from, with each action's arg schema.
+
+        Published so an agent-side tool surface (the MCP server in
+        ``tools/ot2_agent_mcp.py``) can be *generated* from the device rather
+        than hand-transcribed. A second copy of this catalog would drift the
+        first time an action gained a field, and the drift would show up as an
+        agent proposing steps the gateway rejects.
+        """
+        return {
+            "actions": [
+                {
+                    "action": name,
+                    "idempotent": spec.idempotent,
+                    # None for actions that take no body (home, plate.unload).
+                    "args_schema": spec.model.model_json_schema() if spec.model else None,
+                }
+                for name, spec in sorted(PLAN_ACTIONS.items())
+            ]
+        }
+
+    @app.get("/plans", tags=["plans"])
+    def list_plans() -> list[dict[str, Any]]:
+        return [_plan_view(p) for p in plans.list()]
+
+    @app.post("/plans", status_code=201, tags=["plans"])
+    def create_plan(request: PlanCreateRequest, http_request: Request) -> dict[str, Any]:
+        """Propose a plan. Creates a draft — never touches the robot.
+
+        No claim required: an agent should be able to draft while the operator
+        holds the claim. Every step's arguments are validated here against the
+        same request model the matching /control/* endpoint uses, so a bad
+        volume is refused while it is still text.
+        """
+        if require_login:
+            _require_identity(http_request)
+        try:
+            plan = plans.create(request.steps, created_by=request.created_by)
+        except PlanError as exc:
+            raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
+        return _plan_view(plan)
+
+    @app.get("/plans/{plan_id}", tags=["plans"])
+    def get_plan(plan_id: str) -> dict[str, Any]:
+        try:
+            return _plan_view(plans.get(plan_id))
+        except PlanError as exc:
+            raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
+
+    @app.put("/plans/{plan_id}/steps", tags=["plans"])
+    def revise_plan(
+        plan_id: str, request: PlanReviseRequest, http_request: Request
+    ) -> dict[str, Any]:
+        """Replace the step list — which drops the plan back to draft.
+
+        Any prior authorization is discarded, by design: the human approved
+        different steps.
+        """
+        if require_login:
+            _require_identity(http_request)
+        try:
+            return _plan_view(plans.replace_steps(plan_id, request.steps))
+        except PlanError as exc:
+            raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
+
+    @app.post("/plans/{plan_id}/authorize", tags=["plans"])
+    def authorize_plan(
+        plan_id: str,
+        request: PlanAuthorizeRequest,
+        _claim: None = Depends(require_claim),
+    ) -> dict[str, Any]:
+        """The human gate. Requires the claim token, so only the operator's
+        browser can reach it.
+
+        ``step_hash`` must match what was displayed; a mismatch means the plan
+        changed under the reviewer and is refused with 409.
+        """
+        try:
+            plan = plans.authorize(
+                plan_id,
+                step_hash=request.step_hash,
+                claimed_by=service.claims.current(),
+            )
+        except PlanError as exc:
+            raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
+        return _plan_view(plan)
+
+    @app.post("/plans/{plan_id}/execute", tags=["plans"])
+    def execute_plan(plan_id: str, _claim: None = Depends(require_claim)) -> dict[str, Any]:
+        """Run an already-authorized plan, one step at a time.
+
+        Claim-gated, so only the operator's browser can start it — an agent
+        proposes, a human runs. Re-checks the device's live `allowed_actions`
+        before every step, so a plan approved against a ready robot cannot fire
+        into one that has since faulted or been seized by an external run.
+        Fail-fast: the first refusal or error halts the plan and marks the rest
+        skipped.
+        """
+        try:
+            plan = executor.execute(plan_id, claimed_by=service.claims.current())
+        except PlanError as exc:
+            raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
+        return _plan_view(plan)
+
+    @app.post("/plans/{plan_id}/abort", tags=["plans"])
+    def abort_plan(plan_id: str, _claim: None = Depends(require_claim)) -> dict[str, Any]:
+        """Operator stop. Claim-gated so only the person at the device can do it."""
+        try:
+            return _plan_view(plans.abort(plan_id, reason="aborted by operator"))
+        except PlanError as exc:
+            raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
 
     def _run_non_idempotent(func: Any, success_message: str) -> CommandResponse:
         try:

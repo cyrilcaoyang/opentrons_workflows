@@ -268,6 +268,16 @@ class SSHClient:
             logger.error(f"Failed to switch to shell: {e}")
             raise Exception(f"Failed to switch to shell: {e}")
 
+    def is_alive(self) -> bool:
+        """Public liveness check, for callers that need to *report* the state.
+
+        Same answer as :meth:`_is_connection_alive`, exposed because ``/status``
+        must be able to say whether the session is actually up rather than
+        whether an object exists. Inspects the paramiko transport only — no
+        I/O — so it is safe on the side-effect-free status path.
+        """
+        return self._is_connection_alive()
+
     def _is_connection_alive(self) -> bool:
         """Check if SSH connection is still alive."""
         try:
