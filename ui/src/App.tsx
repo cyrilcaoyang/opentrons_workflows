@@ -1,3 +1,4 @@
+import { AssistantBubble } from "./components/AssistantBubble";
 import { ControlPanel } from "./components/ControlPanel";
 import { PlanReviewPanel } from "./components/PlanReviewPanel";
 import { useClaim } from "./lib/use-claim";
@@ -20,6 +21,7 @@ export function App() {
       )}
       {snapshot && <PlanReviewPanel claim={claim} />}
       {snapshot && <ControlPanel snapshot={snapshot} refetch={refetch} claim={claim} />}
+      <AssistantBubble claim={claim} />
     </main>
   );
 }

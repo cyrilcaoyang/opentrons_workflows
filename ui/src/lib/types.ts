@@ -226,3 +226,25 @@ export interface Plan {
   /** ...and if not, why — same string the agent sees. */
   blocked_reason: string | null;
 }
+
+// --- Optional chat assistant (see gateway/assistant.py) ---------------------
+
+export interface AssistantMessage {
+  role: "user" | "assistant";
+  content: string;
+  /** Set when this turn produced a draft plan, so the bubble can point at it. */
+  planId?: string;
+}
+
+export interface AssistantHealth {
+  configured: boolean;
+  reason: string | null;
+  model: string | null;
+}
+
+export interface AssistantReply {
+  reply: string;
+  tools_used: string[];
+  plan_id: string | null;
+  model: string;
+}

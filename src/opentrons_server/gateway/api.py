@@ -43,6 +43,12 @@ from .models import (
     WellSample,
     WellUpdateRequest,
 )
+from .assistant import (
+    Assistant,
+    AssistantChatRequest,
+    AssistantConfig,
+    AssistantDisabled,
+)
 from .plans import (
     PLAN_ACTIONS,
     AuthorizationRequiresClaim,
@@ -721,6 +727,70 @@ def create_app(
             body["executable"] = False
             body["blocked_reason"] = str(exc)
         return body
+
+    # -----------------------------------------------------------------
+    # Optional in-page chat assistant. Off unless an API key is configured;
+    # with none, /assistant/health reports it and the UI hides the bubble.
+    #
+    # It is a proposer, not a driver: its only write tool is propose_plan, so
+    # it comes through the same gate as an agent harness. Nothing here can
+    # authorize or run anything.
+    # -----------------------------------------------------------------
+
+    @app.get("/assistant/health", tags=["assistant"])
+    def assistant_health() -> dict[str, Any]:
+        """Whether the bubble should render, and if not, why.
+
+        Read openly (no claim, no identity): the UI needs it before login to
+        decide whether to show anything at all, and it exposes only a boolean
+        and a reason string — never the key or the provider URL.
+        """
+        cfg = AssistantConfig.from_env()
+        reason = cfg.unavailable_reason()
+        return {
+            "configured": reason is None,
+            "reason": reason,
+            "model": cfg.model if reason is None else None,
+        }
+
+    @app.post("/assistant/chat", tags=["assistant"])
+    def assistant_chat(request: AssistantChatRequest, http_request: Request) -> dict[str, Any]:
+        """One conversation turn.
+
+        Claim-gated. Not because the assistant can move anything — it cannot —
+        but because a proposal is only useful to whoever is holding the device,
+        and it keeps an unauthenticated visitor from spending the lab's API
+        budget by talking to a robot they do not control.
+        """
+        if require_login:
+            _require_identity(http_request)
+        # Availability before the claim gate, deliberately. On a gateway with
+        # no assistant configured, "take control of the device" is advice that
+        # leads nowhere — taking the claim would change nothing. Answer the
+        # question the caller actually hit. Nothing is disclosed by ordering it
+        # this way: /assistant/health already reports configured-ness openly.
+        config = AssistantConfig.from_env()
+        unavailable = config.unavailable_reason()
+        if unavailable:
+            raise HTTPException(status_code=503, detail=unavailable)
+        if enforce_claims and not service.claims.current():
+            raise ClaimHTTPError(
+                status_code=423,
+                payload={
+                    "detail": "take control of the device before using the assistant",
+                    "claimed_by": None,
+                    "retry_after_s": None,
+                },
+            )
+        try:
+            return Assistant(service, plans, config).chat(
+                [m.model_dump() for m in request.messages]
+            )
+        except AssistantDisabled as exc:
+            raise HTTPException(status_code=503, detail=exc.reason)
+        except Exception as exc:
+            logger.warning("assistant turn failed: %s", exc)
+            raise HTTPException(status_code=502, detail=f"assistant request failed: {exc}")
 
     @app.get("/plans/actions", tags=["plans"])
     def plan_actions() -> dict[str, Any]:

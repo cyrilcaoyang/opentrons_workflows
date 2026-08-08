@@ -32,6 +32,13 @@ dependencies = [                          # List runtime dependencies
     "asyncssh>=2.14.0",                 # Async SSH support
     "websocket-client>=1.6.4",         # WebSocket support
     "python-multipart>=0.0.6",         # Form data parsing
+    # Optional in-page chat assistant, over any OpenAI-compatible endpoint
+    # (OpenRouter by default). A main dep rather than an extra so a plain
+    # `uv sync --extra labware` deploy cannot silently strip it — the trap that
+    # disarmed the Cytation's driver. The assistant is still OFF unless a key
+    # is configured, and gateway/assistant.py imports openai defensively, so a
+    # venv without it serves a healthy gateway either way.
+    "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]
