@@ -44,6 +44,29 @@ import { TileButton } from "./TileButton";
 // Small presentational helpers
 // ---------------------------------------------------------------------------
 
+/* Tape-player transport glyphs. Inline SVG rather than a unicode character
+   (⏸/▶): the unicode ones render at wildly different weights and baselines
+   across platforms, and several fall back to an emoji font that ignores
+   `currentColor` — so a disabled or danger-variant button would keep a full
+   colour glyph. `currentColor` + `aria-hidden` keeps them tinted by the
+   button variant and silent to screen readers, which read the ariaLabel. */
+function PauseGlyph() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden>
+      <rect x="1" y="0.5" width="3" height="9" rx="0.5" />
+      <rect x="6" y="0.5" width="3" height="9" rx="0.5" />
+    </svg>
+  );
+}
+
+function PlayGlyph() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden>
+      <path d="M1.5 0.8 A0.5 0.5 0 0 1 2.3 0.4 L9 4.6 A0.5 0.5 0 0 1 9 5.4 L2.3 9.6 A0.5 0.5 0 0 1 1.5 9.2 Z" />
+    </svg>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="rounded-xl border border-slate-200 bg-surface-raised p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -150,6 +173,14 @@ export function ControlPanel({
   const pipRight = components["pipette_right"];
   const ssh = components["ssh"];
   const protocol = components["protocol"];
+
+  // Drive the transport buttons off the device's own `allowed_actions` rather
+  // than off local guesses. The gateway offers `pause` only in ready/busy and
+  // `resume` only in paused, so mirroring the list means a button is live
+  // exactly when pressing it would work — the §6.2 "allowed_actions and the
+  // endpoint must never disagree" rule, applied to the UI.
+  const allowedActions = status.allowed_actions ?? [];
+  const isPaused = protocol?.state === "paused";
 
   const lightsRaw = components["lights"]?.state;
   const lightsOn = lightsRaw === "on";
@@ -277,83 +308,6 @@ export function ControlPanel({
         </p>
       )}
 
-      {/* Session controls. The toggle connects/disconnects the GATEWAY control
-          session (NOT robot power); PAUSE pauses a running protocol (not an
-          e-stop). */}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-surface-raised p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <TileButton
-          onClick={() =>
-            deviceOn
-              ? runControl("shutdown", () => postShutdown(token))
-              : runControl("startup", () => postStartup(token))
-          }
-          disabled={locked || pending}
-          variant={deviceOn ? "primary" : "default"}
-          title={
-            controlHint ??
-            (deviceOn
-              ? "Gateway session connected — click to disconnect (does NOT power off the robot)"
-              : "Click to connect & initialize the gateway session")
-          }
-        >
-          <span
-            className={[
-              "mr-1 inline-block h-2 w-2 rounded-full",
-              deviceOn ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]" : "bg-slate-400",
-            ].join(" ")}
-            aria-hidden
-          />
-          {deviceOn ? "CONNECTED" : "DISCONNECTED"}
-        </TileButton>
-        <TileButton
-          onClick={() => runControl("home", () => postHome(token))}
-          disabled={locked || pending}
-          title={controlHint ?? "Home the gantry (requires a connected session)"}
-        >
-          HOME
-        </TileButton>
-        <TileButton
-          onClick={() => runControl("pause", () => postPause(token))}
-          disabled={locked || pending}
-          variant="danger"
-          title={
-            controlHint ??
-            "Pause a running protocol — not an emergency stop (use the robot's physical e-stop); does not disconnect"
-          }
-        >
-          PAUSE
-        </TileButton>
-        <TileButton
-          onClick={() => runControl("resume", () => postResume(token))}
-          disabled={locked || pending}
-          title={controlHint ?? "Resume a paused protocol"}
-        >
-          RESUME
-        </TileButton>
-        <TileButton
-          onClick={() => runControl("lights.set", () => postSetLights(token, !lightsOn))}
-          disabled={locked || pending}
-          title={
-            controlHint ??
-            (lightsKnown
-              ? lightsOn
-                ? "Lights on — click to turn off"
-                : "Lights off — click to turn on"
-              : "Lights state not reported — click to turn on")
-          }
-        >
-          <span
-            className={[
-              "mr-1.5 inline-block h-2.5 w-2.5 rounded-full",
-              lightsOn
-                ? "bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]"
-                : "bg-slate-900 dark:bg-black",
-            ].join(" ")}
-            aria-hidden
-          />
-          Light
-        </TileButton>
-      </div>
 
       {claimedBy && !claimedByMe && (
         <p className="rounded-md border border-sky-200 bg-sky-50 px-4 py-2 text-xs text-sky-900 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-200">
@@ -379,8 +333,19 @@ export function ControlPanel({
       {snapshot.fetch_error && <FetchErrorBand error={snapshot.fetch_error} />}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        {/* Left column: deck + declare */}
-        <div className="flex flex-col gap-4">
+        {/* Left column: deck + declare.
+
+            Capped below `lg`, on the COLUMN rather than on the deck inside it.
+            The deck's cells are aspect-[4/3] at w-full in a 3-column grid, so
+            its height tracks its width — roughly square. Once the two-column
+            layout collapses, an uncapped deck takes the full page width and
+            becomes a screen-tall wall of slots. Capping the deck alone fixed
+            that but left the tile itself full-bleed, so a small deck floated in
+            a very wide card; the border has to move with the content.
+            max-w-xl is about what the 3fr column gives it at `lg`, so the
+            column looks the same at every breakpoint rather than inflating at
+            the narrow one. */}
+        <div className="mx-auto flex w-full max-w-xl flex-col gap-4 lg:mx-0 lg:max-w-none">
           <Section title="Deck — declared intent vs observed hardware">
             <DeckPanel
               deviceDeck={deviceDeck}
@@ -397,33 +362,6 @@ export function ControlPanel({
               </p>
             )}
           </Section>
-
-          {selectedView && selectedSlot != null && (
-            <Section title={`Slot ${selectedSlot} detail`}>
-              <div className="flex flex-col gap-1">
-                <KV k="State" v={selectedView.state} />
-                {selectedView.moduleName && <KV k="Module" v={selectedView.moduleName} />}
-                {selectedView.label && <KV k="Labware" v={selectedView.label} />}
-                {selectedView.loadName && (
-                  <KV k="Load name (observed)" v={selectedView.loadName} mono />
-                )}
-                {selectedDeclare && <KV k="Declared as" v={selectedDeclare} mono />}
-                {selectedView.state === "mismatch" && selectedView.declared && (
-                  <p className="mt-1 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-                    Mismatch: declared{" "}
-                    <span className="font-mono">
-                      {selectedView.declared.load_name || selectedView.declared.kind}
-                    </span>{" "}
-                    but observed{" "}
-                    <span className="font-mono">
-                      {selectedView.loadName || selectedView.kind || "?"}
-                    </span>
-                    .
-                  </p>
-                )}
-              </div>
-            </Section>
-          )}
 
           <Section title="Declare deck intent">
             <DeclarePicker
@@ -447,15 +385,165 @@ export function ControlPanel({
           </Section>
         </div>
 
-        {/* Right column: selected plate / robot / pipettes / modules / tips / claim */}
-        <div className="flex flex-col gap-4">
-          <Section title="Selected plate">
-            <PlateInspector
-              slot={selectedSlot}
-              view={selectedView}
-              tipRacks={tipRacks}
-              mountedTips={mountedTips}
-            />
+        {/* Right column: selected slot / robot / pipettes / modules / tips / claim.
+            Capped to match the left column — stacked, the two columns render as
+            one sequence, so capping only one would step the page width
+            mid-scroll. */}
+        <div className="mx-auto flex w-full max-w-xl flex-col gap-4 lg:mx-0 lg:max-w-none">
+          {/* Session controls. The toggle connects/disconnects the GATEWAY control
+              session (NOT robot power); PAUSE pauses a running protocol (not an
+              e-stop).
+
+              Sits at the top of the right column rather than spanning the page:
+              as a full-width banner it was the widest thing on screen while
+              holding five small buttons, pushing the deck below the fold. Kept
+              as one group — the connect toggle is the precondition for the
+              other four, and separating them would put a control above the
+              thing that enables it. Tighter padding and gaps than a Section
+              since it is a control strip, not a panel. */}
+          <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 bg-surface-raised p-2 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <TileButton
+              onClick={() =>
+                deviceOn
+                  ? runControl("shutdown", () => postShutdown(token))
+                  : runControl("startup", () => postStartup(token))
+              }
+              disabled={locked || pending}
+              variant={deviceOn ? "primary" : "default"}
+              title={
+                controlHint ??
+                (deviceOn
+                  ? "Gateway session connected — click to disconnect (does NOT power off the robot)"
+                  : "Click to connect & initialize the gateway session")
+              }
+            >
+              <span
+                className={[
+                  "mr-1 inline-block h-2 w-2 rounded-full",
+                  deviceOn ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]" : "bg-slate-400",
+                ].join(" ")}
+                aria-hidden
+              />
+              {deviceOn ? "CONNECTED" : "DISCONNECTED"}
+            </TileButton>
+            <TileButton
+              onClick={() => runControl("home", () => postHome(token))}
+              disabled={locked || pending}
+              title={controlHint ?? "Home the gantry (requires a connected session)"}
+            >
+              HOME
+            </TileButton>
+            {/* Transport-control glyphs rather than words: they are the two
+                narrowest buttons in the strip and the symbols are universal.
+                Icon-only, so each carries an ariaLabel — a title alone is not
+                exposed to a screen reader as an accessible name.
+
+                Neither is tinted at rest. Pause was `danger` red, which read as
+                a warning on an idle robot and made the strip look alarmed when
+                nothing was wrong; red here should mean "something happened",
+                not "this button exists". Instead the pair behaves like a tape
+                player: exactly one is live at a time, and once paused the play
+                button goes primary so the way out is the only thing lit. */}
+            <TileButton
+              onClick={() => runControl("pause", () => postPause(token))}
+              disabled={locked || pending || !allowedActions.includes("pause")}
+              ariaLabel="Pause the running protocol"
+              title={
+                controlHint ??
+                (allowedActions.includes("pause")
+                  ? "Pause a running protocol — not an emergency stop (use the robot's physical e-stop); does not disconnect"
+                  : isPaused
+                    ? "Already paused"
+                    : "Nothing to pause")
+              }
+            >
+              <PauseGlyph />
+            </TileButton>
+            <TileButton
+              onClick={() => runControl("resume", () => postResume(token))}
+              disabled={locked || pending || !allowedActions.includes("resume")}
+              variant={isPaused ? "primary" : "default"}
+              ariaLabel="Resume the paused protocol"
+              title={
+                controlHint ??
+                (isPaused ? "Paused — click to resume" : "Nothing is paused")
+              }
+            >
+              <PlayGlyph />
+            </TileButton>
+            {isPaused && (
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
+                Paused
+              </span>
+            )}
+            <TileButton
+              onClick={() => runControl("lights.set", () => postSetLights(token, !lightsOn))}
+              disabled={locked || pending}
+              title={
+                controlHint ??
+                (lightsKnown
+                  ? lightsOn
+                    ? "Lights on — click to turn off"
+                    : "Lights off — click to turn on"
+                  : "Lights state not reported — click to turn on")
+              }
+            >
+              <span
+                className={[
+                  "mr-1.5 inline-block h-2.5 w-2.5 rounded-full",
+                  lightsOn
+                    ? "bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]"
+                    : "bg-slate-900 dark:bg-black",
+                ].join(" ")}
+                aria-hidden
+              />
+              Light
+            </TileButton>
+          </div>
+
+          {/* Slot metadata and the plate view are one thing: both answer "what
+              is on the slot I clicked". They used to sit in opposite columns,
+              so reading a mismatch meant looking left for the declared-vs-
+              observed line and right for the wells it applied to. */}
+          <Section title={selectedSlot != null ? `Slot ${selectedSlot}` : "Selected slot"}>
+            {selectedView && selectedSlot != null && (
+              <div className="mb-3 flex flex-col gap-1">
+                <KV k="State" v={selectedView.state} />
+                {selectedView.moduleName && <KV k="Module" v={selectedView.moduleName} />}
+                {selectedView.label && <KV k="Labware" v={selectedView.label} />}
+                {selectedView.loadName && (
+                  <KV k="Load name (observed)" v={selectedView.loadName} mono />
+                )}
+                {selectedDeclare && <KV k="Declared as" v={selectedDeclare} mono />}
+                {selectedView.state === "mismatch" && selectedView.declared && (
+                  <p className="mt-1 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                    Mismatch: declared{" "}
+                    <span className="font-mono">
+                      {selectedView.declared.load_name || selectedView.declared.kind}
+                    </span>{" "}
+                    but observed{" "}
+                    <span className="font-mono">
+                      {selectedView.loadName || selectedView.kind || "?"}
+                    </span>
+                    .
+                  </p>
+                )}
+              </div>
+            )}
+            <div
+              className={
+                selectedView && selectedSlot != null
+                  ? "border-t border-slate-100 pt-3 dark:border-slate-800"
+                  : ""
+              }
+            >
+              <PlateInspector
+                slot={selectedSlot}
+                view={selectedView}
+                tipRacks={tipRacks}
+                mountedTips={mountedTips}
+              />
+            </div>
           </Section>
 
           <Section title="Robot">
