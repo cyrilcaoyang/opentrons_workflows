@@ -278,6 +278,76 @@ cd ui && npm run dev
 cd ui && npm run build   # writes src/opentrons_server/ui_dist/
 ```
 
+## Chat assistant (optional)
+
+A chat bubble in the operator panel that can read this robot and **propose**
+work on it. Off unless you configure a key: with none, `/assistant/health`
+reports why, the UI renders no bubble, and every other surface behaves exactly
+as before.
+
+It exists so the package stays self-contained — install this gateway alone, with
+no dashboard, no central server and no agent harness, and you still get one.
+
+**It cannot move the robot.** Its whole tool surface is four reads plus
+`propose_plan`, the same door an agent harness comes through. A proposal is a
+*draft*; approving and running it are claim-gated clicks in the **Proposed
+plans** panel. See [`docs/AGENT_PROPOSALS.md`](docs/AGENT_PROPOSALS.md) for the
+gate itself. It is also scoped to *this* robot by construction — the tools close
+over one service instance, so there is no device to select and no shell.
+
+### Turning it on
+
+Any OpenAI-compatible endpoint works; OpenRouter is the default. Either put the
+key in the environment, or drop a `.env` at the repo root:
+
+```bash
+# opentrons-server/.env   (git-ignored)
+OPENROUTER_API_KEY=sk-or-v1-…
+```
+
+Read per request, so a key added here takes effect on the next poll — no
+restart. Prefer this to `nssm set … AppEnvironmentExtra`, which **replaces the
+entire variable block**: get it wrong and you wipe the three state paths that
+stop two gateways from overwriting each other's plate and tip records.
+
+> ⚠️ **A repo-root `.env` is shared by every gateway running from this
+> checkout.** Fine for an API key. It cannot supply anything instance-specific
+> — the reader takes an allowlist of assistant settings only, so
+> `OT2_EQUIPMENT_ID`, `OT2_HOST_ALIAS` and the state paths can never come from
+> it. Those stay in each service's own environment.
+
+| Setting | Purpose | Default |
+|---|---|---|
+| `OPENROUTER_API_KEY` / `OPENAI_API_KEY` | enables the assistant | unset → off |
+| `OT2_ASSISTANT_MODEL` | any OpenAI-compatible model slug | `z-ai/glm-5.2` |
+| `OT2_ASSISTANT_BASE_URL` | provider endpoint | OpenRouter |
+| `OT2_ASSISTANT_ENABLED` | `0` disables it even with a key — per-instance kill switch | `true` |
+| `OT2_ASSISTANT_MAX_TOKENS` / `_TIMEOUT_S` | per-reply cap, per-request wallclock | 1024 / 60 s |
+| `OT2_ENV_FILE` | explicit `.env` path | `./.env` |
+
+Environment variables win over the file, per setting. So a shared `.env` can
+carry the key while one instance turns itself off with
+`OT2_ASSISTANT_ENABLED=0` in its own service environment.
+
+**Pick a model that supports tool calling.** The assistant works by choosing a
+verb from the plan catalog and filling in its schema. Nous Hermes models on
+OpenRouter do *not* advertise tool support — point `OT2_ASSISTANT_MODEL` at one
+and you get text-only replies that never propose anything.
+
+### Checking it
+
+```bash
+curl http://<gateway>/assistant/health
+# {"configured": true, "model": "z-ai/glm-5.2", "key_source": "file",
+#  "env_file_searched": ["C:\\...\\opentrons-server\\.env"]}
+```
+
+`key_source` is `environment`, `file`, or `null` — the answer to "did it see my
+key?", which is the only question worth asking when the bubble stays hidden.
+The key itself is never returned. Chat requires a held claim: a proposal is only
+useful to whoever holds the device, and it stops a passer-by spending the API
+budget on a robot they do not control.
+
 ## Basic Python Control
 
 ```python
