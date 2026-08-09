@@ -95,7 +95,7 @@ lab-skills / dashboard / agents          this repo                        robot
 
 ## 4. Recurring pitfalls (project-specific)
 
-- **One checkout, one venv, two robots.** The `ot2-gateway` (:8020, HTE) and
+- **One checkout, one venv, two robots.** The `ot2-gateway-hte` (:8020, HTE) and
   `ot2-gateway-complexation` (:8021, Complexation) NSSM services run from *this
   same working tree and `.venv/`*. Every edit is a two-robot edit; every
   instance-specific value is an env var (`OT2_EQUIPMENT_ID`, `OT2_HOST_ALIAS`,

@@ -32,15 +32,15 @@ Pick these before starting; everything below is written in terms of them.
 | `<port>` | gateway listen port | next free on the PC: 8020 (HTE), 8021 (complexation), 8022… |
 | `<robot-ip>` | robot's reachable IP (tailnet preferred) | e.g. `100.64.254.91` |
 | `<ssh-alias>` | SSH config `Host` for the robot | the robot's name, e.g. `ot2training` |
-| `<service>` | NSSM service name | `ot2-gateway-<bench>` (the first instance is plain `ot2-gateway`) |
-| `<dir>` | repo clone directory | `C:\Users\sdl2\Projects\opentrons-server-<bench>` |
+| `<service>` | NSSM service name | `ot2-gateway-<bench>`, always suffixed |
+| `<dir>` | repo clone directory | `C:\Users\sdl2\Projects\opentrons-server` — **one clone serves every instance** on the PC (see the note below) |
 | state files | plate / deck / tip stores | `C:\SDL_State\<id>_state.json`, `<id>_deck_state.json`, `<id>_tip_state.json` |
 
 **Current fleet** (for port/name collision checks):
 
 | id | robot | robot IP | port | service |
 |---|---|---|---|---|
-| `ot2_hte` | `ot2cytation` | `100.64.254.90` | 8020 | `ot2-gateway` |
+| `ot2_hte` | `ot2cytation` | `100.64.254.90` | 8020 | `ot2-gateway-hte` |
 | `ot2_complexation` | `ot2training` | `100.64.254.91` | 8021 | `ot2-gateway-complexation` |
 
 > ⚠️ **Distinct state paths are mandatory.** The stores default to
@@ -74,13 +74,15 @@ Pick these before starting; everything below is written in terms of them.
 
 ## 3. Install the gateway service
 
-Follows `ac-organic-lab` `DEVICE_PC_SETUP.md` §3. Clone into a robot-specific
-directory so state files and checkouts can't collide:
+Follows `ac-organic-lab` `DEVICE_PC_SETUP.md` §3. **Every instance on the PC
+shares one clone and one `.venv`** — what keeps them apart is the environment
+block below (distinct id, robot, port, and the three state paths), not separate
+checkouts. Clone only when this is the PC's first instance:
 
 ```powershell
 cd C:\Users\sdl2\Projects
-git clone https://github.com/cyrilcaoyang/opentrons-server.git opentrons-server-<bench>
-cd opentrons-server-<bench>
+git clone https://github.com/cyrilcaoyang/opentrons-server.git   # first instance only
+cd opentrons-server
 C:\SDL_Tools\uv.exe sync --extra labware
 
 New-Item -ItemType Directory -Force C:\SDL_State | Out-Null
@@ -89,8 +91,9 @@ New-Item -ItemType Directory -Force C:\SDL_State | Out-Null
 # project environment at every service start, and without the extra it prunes
 # opentrons-shared-data, silently emptying the UI's GET /labware catalog.
 nssm install <service> C:\SDL_Tools\uv.exe `
-    run --extra labware uvicorn opentrons_server.gateway.api:app --host 0.0.0.0 --port <port>
-nssm set <service> AppDirectory   C:\Users\sdl2\Projects\opentrons-server-<bench>
+    run --project C:\Users\sdl2\Projects\opentrons-server --extra labware `
+    uvicorn opentrons_server.gateway.api:app --host 0.0.0.0 --port <port>
+nssm set <service> AppDirectory   C:\Users\sdl2\Projects\opentrons-server
 nssm set <service> DisplayName    "<name> gateway"
 nssm set <service> Start          SERVICE_AUTO_START
 nssm set <service> AppStdout      C:\SDL_Logs\<service>.out.log
@@ -236,10 +239,21 @@ work, not a bring-up exercise.
 
 ### `ot2_hte` — robot `ot2cytation` (100.64.254.90), port 8020
 
-The original instance (service `ot2-gateway`), brought up with the repo
-itself; it doubled as the hardware-validation robot for the HTTP transport
-(2026-07-14 — [`HTTP_DRIVE_VALIDATION.md`](HTTP_DRIVE_VALIDATION.md)).
+The original instance, brought up with the repo itself; it doubled as the
+hardware-validation robot for the HTTP transport (2026-07-14 —
+[`HTTP_DRIVE_VALIDATION.md`](HTTP_DRIVE_VALIDATION.md)).
 Pipettes: left `p300_multi_gen2` (8-ch), right `p1000_single_gen2`.
+
+Being first, its service was named plain `ot2-gateway` — which stopped being
+descriptive the moment a second robot arrived. **Renamed to `ot2-gateway-hte`
+on 2026-08-08**, so both services now say which bench they drive. NSSM has no
+rename: the service was re-created under the new name with the same
+`Application` / `AppParameters` / `AppDirectory` / `AppEnvironmentExtra`, and
+the old one removed. Two things do not survive such a copy and must be
+re-entered — the `ObjectName` password (readable back as an account name only)
+and, if you forget it, `OT2_EDGE_SECRET`, whose absence makes `/ui` 404 through
+the edge while `/status` keeps looking healthy. Logs moved to
+`C:\SDL_Logs\ot2-gateway-hte.{out,err}.log`; the pre-rename files remain.
 
 ### `ot2_complexation` — robot `ot2training` (100.64.254.91), port 8021 — COMPLETE (2026-07-14, operator: Cyril Cao)
 

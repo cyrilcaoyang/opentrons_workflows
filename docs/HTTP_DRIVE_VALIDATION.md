@@ -26,6 +26,10 @@ path proven by the transport-loss test, and is unit-tested (`CommandNotCompleted
 | **Robot** | `ot2cytation` — OT-2 Standard, Opentrons `8.7.0`, fw `v1.1.0-25e5cea`, tailnet `100.64.254.90` (SSH host `192.168.254.50`) |
 | **Gateway** | `ot2-gateway` NSSM service, port `8020`, host `sdl2-pc-03-cytation` (Windows hostname `DESKTOP-OVJ3SSL`) |
 
+> **Service name, as of 2026-08-08:** `ot2-gateway-hte`. This record — and the
+> `nssm` commands quoted below — keep the name the service had during the
+> session; substitute the current one when re-running anything here.
+
 > **Run this ON the gateway host, in Git Bash** (native Windows — `localhost:8020`
 > and the robot's `:31950` do not resolve from WSL). Use **`python`**, not `python3`.
 > Service is **NSSM**, not systemd. Have a person at the machine with the **e-stop in

@@ -471,13 +471,13 @@ host:
 
 ```powershell
 # On the OT-2 gateway host (run from an elevated PowerShell)
-nssm set ot2-gateway AppEnvironmentExtra `
+nssm set ot2-gateway-hte AppEnvironmentExtra `
     OT2_HOST_ALIAS=192.168.254.50 `
     "OT2_SSH_PASSWORD=<your key passphrase>"
-nssm restart ot2-gateway
+nssm restart ot2-gateway-hte
 
 # Verify the values are visible to the service:
-sc qenvironment ot2-gateway
+sc qenvironment ot2-gateway-hte
 ```
 
 After that, workflow callers should invoke `/control/startup`
@@ -540,10 +540,10 @@ Example: the HTE robot on port 8020 and the Complexation robot on 8021, both
 gateways on `sdl2-pc-03` as separate NSSM services:
 
 ```powershell
-# Instance 1 — HTE (matches equipment.yaml `ot2`; robot sdl2-ot2-hte,
+# Instance 1 — HTE (matches equipment.yaml `ot2_hte`; robot sdl2-ot2-hte,
 # 100.64.254.90, robot name "ot2cytation")
-nssm set ot2-gateway AppEnvironmentExtra `
-    OT2_EQUIPMENT_ID=ot2 `
+nssm set ot2-gateway-hte AppEnvironmentExtra `
+    OT2_EQUIPMENT_ID=ot2_hte `
     OT2_HOST_ALIAS=sdl2-ot2-hte `
     OT2_HTTP_BASE_URL=http://sdl2-ot2-hte.tail6a1dd7.ts.net:31950 `
     OT2_PLATE_STATE_PATH=C:\ProgramData\ot2\ot2_state.json `

@@ -10,7 +10,7 @@ see ``agilent-cytation-server/docs/PLATE_STATE.md`` for the cross-device
 strategy and the ownership split.
 
 The gateway is a long-running process; restarts (lab PC reboot,
-``nssm restart ot2-gateway``) must not lose the orchestrator's view of "which
+``nssm restart ot2-gateway-hte``) must not lose the orchestrator's view of "which
 plate is on the deck and what is in each well". This module serialises the
 loaded :class:`LoadedPlate` to a JSON file on every mutation and re-loads it on
 startup.
