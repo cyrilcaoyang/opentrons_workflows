@@ -120,7 +120,9 @@ lab-skills / dashboard / agents          this repo                        robot
   different commits indefinitely. Confirm on the wire (`/status`,
   `/openapi.json`) before believing a bug is in the source, and check where a
   service actually runs from with `nssm get <svc> AppDirectory`.
-- **Python is pinned to 3.12** (`.python-version`, `requires-python <3.13`).
+- **Python is pinned to 3.12** by `requires-python = ">=3.10,<3.13"` — the
+  upper bound is what makes `uv venv` choose 3.12 in a fresh deploy checkout
+  (`.python-version` is gitignored, so it does not travel).
   `opentrons-shared-data` pulls `numpy~=1.26.4`, which has no wheel past cp312;
   without the pin a fresh venv picks 3.14, tries to build numpy from source, and
   fails for want of MSVC. This broke the first deploy-checkout build.

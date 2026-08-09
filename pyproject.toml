@@ -15,7 +15,9 @@ description = "A package to control Opentrons OT-2 robots via SSH, with Prefect 
 readme = "README.md"                      # Assumes you have a README.md file
 requires-python = ">=3.10,<3.13"           # opentrons-shared-data pulls numpy~=1.26.4, which has NO wheel past
                                            # cp312 — a newer interpreter tries to build it from source and fails
-                                           # (no MSVC on the device PC). `.python-version` pins 3.12 for fresh venvs.
+                                           # (no MSVC on the device PC). This upper bound is what makes `uv venv` pick
+                                           # 3.12 on a fresh deploy checkout — verified; `.python-version` is
+                                           # gitignored, so it cannot be relied on.
 license = { text = "MIT" }                # Specify your license (e.g., MIT, Apache-2.0). Add a LICENSE file.
 classifiers = [                           # Standard classifiers for PyPI
     "Programming Language :: Python :: 3",
