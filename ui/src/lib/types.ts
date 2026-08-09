@@ -236,6 +236,9 @@ export interface AssistantMessage {
   content: string;
   /** Set when this turn produced a draft plan, so the bubble can point at it. */
   planId?: string;
+  /** The drafted steps, shown read-only inline. The panel remains authoritative;
+   *  this is a preview so the operator sees what was proposed in context. */
+  steps?: PlanStep[];
 }
 
 export interface AssistantHealth {

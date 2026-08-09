@@ -227,6 +227,12 @@ export function listPlans(): Promise<Plan[]> {
   return fetchJson<Plan[]>("/plans");
 }
 
+/** One plan — used by the chat bubble to show, read-only, the steps it just
+ *  proposed, so the operator sees what was drafted without leaving the chat. */
+export function getPlan(planId: string): Promise<Plan> {
+  return fetchJson<Plan>(`/plans/${encodeURIComponent(planId)}`);
+}
+
 /** Approve one exact step list. `stepHash` must be the digest the operator was
  *  shown — the gateway refuses (409) if the plan changed since it rendered,
  *  which is what makes this a review rather than a rubber stamp. */

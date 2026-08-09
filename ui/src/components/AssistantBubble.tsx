@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError, assistantChat, getAssistantHealth } from "../lib/api";
+import { ApiError, assistantChat, getAssistantHealth, getPlan } from "../lib/api";
 import type { ClaimState } from "../lib/use-claim";
-import type { AssistantMessage } from "../lib/types";
+import type { AssistantMessage, PlanStep } from "../lib/types";
 
 /**
  * Optional chat popup for simple operations on THIS OT-2.
@@ -66,14 +66,25 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
     setError(null);
     try {
       const res = await assistantChat(next.slice(-MAX_KEPT), claim.token);
+      // Fetch the steps of any plan it drafted so the operator sees what was
+      // proposed *in the chat*, not just "go look elsewhere". Best-effort: the
+      // panel is still the source of truth, so a failed fetch just omits the
+      // inline preview rather than failing the turn.
+      let steps: PlanStep[] | undefined;
+      if (res.plan_id) {
+        try {
+          steps = (await getPlan(res.plan_id)).steps;
+        } catch {
+          /* preview is a nicety; the panel has the authoritative copy */
+        }
+      }
       setThread((t) => [
         ...t,
         {
           role: "assistant" as const,
-          content:
-            res.reply ||
-            (res.plan_id ? "Proposed a plan — review it in Proposed plans above." : "…"),
+          content: res.reply || (res.plan_id ? "Proposed a plan for your review." : "…"),
           planId: res.plan_id ?? undefined,
+          steps,
         },
       ]);
     } catch (err) {
@@ -146,9 +157,44 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
             >
               <span className="whitespace-pre-wrap">{m.content}</span>
               {m.planId && (
-                <span className="mt-1 block text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-                  Draft created — approve it in Proposed plans.
-                </span>
+                <div className="mt-1.5 rounded border border-emerald-200 bg-emerald-50/60 p-1.5 dark:border-emerald-900/50 dark:bg-emerald-950/30">
+                  {m.steps && m.steps.length > 0 && (
+                    <ol className="mb-1 flex flex-col gap-0.5">
+                      {m.steps.map((s, si) => (
+                        <li key={si} className="font-mono text-[10px] text-ink dark:text-slate-200">
+                          {si + 1}. {s.action}
+                          {Object.keys(s.args).length > 0 && (
+                            <span className="text-ink-subtle dark:text-slate-400">
+                              {"  "}
+                              {Object.entries(s.args)
+                                .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
+                                .join(" ")}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  {/* This is a proposal, not an action taken — say so, then send
+                      the operator to the one place it can be approved. The panel
+                      is the source of truth; this preview is read-only. */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const el = document.getElementById(`plan-${m.planId}`);
+                      if (el) {
+                        // Re-trigger :target even if we're already there, so the
+                        // ring flashes on a repeat click.
+                        window.location.hash = "";
+                        window.location.hash = `plan-${m.planId}`;
+                        el.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }
+                    }}
+                    className="text-[10px] font-medium text-emerald-800 underline decoration-dotted hover:text-emerald-900 dark:text-emerald-300 dark:hover:text-emerald-200"
+                  >
+                    Review &amp; approve ↑
+                  </button>
+                </div>
               )}
             </li>
           ))}

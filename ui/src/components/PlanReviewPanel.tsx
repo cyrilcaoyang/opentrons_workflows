@@ -127,7 +127,12 @@ export function PlanReviewPanel({ claim }: { claim: ClaimState }) {
           return (
             <li
               key={plan.plan_id}
-              className="rounded-md border border-ink-line p-3 dark:border-slate-700"
+              // Stable id so the chat bubble's "Review & approve ↑" can scroll
+              // straight to the plan it just proposed; the target style briefly
+              // rings it (see styles.css :target rule) so a full panel doesn't
+              // leave the operator hunting.
+              id={`plan-${plan.plan_id}`}
+              className="scroll-mt-4 rounded-md border border-ink-line p-3 target:ring-2 target:ring-sky-400 dark:border-slate-700"
             >
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <span

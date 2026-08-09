@@ -1,5 +1,13 @@
 # HTTP-Drive Validation — Runbook & Results
 
+> **Naming note (2026-08-08).** This is a dated record of the 2026-07-14 bench
+> session, kept verbatim — the `ot2-gateway` service name and the
+> `nssm … ot2-gateway` commands below are what was actually run that day and are
+> **not** updated, so the record stays truthful. The HTE gateway service is now
+> **`ot2-gateway-hte`** and each robot runs from its own deploy checkout under
+> `C:\SDL_Deploy\`; see `AGENTS.md` §4 and `../ac-organic-lab/docs/DEVICE_PC_SETUP.md`
+> for the current layout.
+
 **Branch:** `develop-http-drive` · **Companion:** `docs/HTTP_TRANSPORT.md`
 **Goal:** validate the opt-in HTTP (run-engine) transport against the real robot
 (`ot2cytation`, Opentrons 8.7.0) for one full plate-in → aspirate/dispense →
