@@ -95,21 +95,38 @@ lab-skills / dashboard / agents          this repo                        robot
 
 ## 4. Recurring pitfalls (project-specific)
 
-- **One checkout, one venv, two robots.** The `ot2-gateway-hte` (:8020, HTE) and
-  `ot2-gateway-complexation` (:8021, Complexation) NSSM services run from *this
-  same working tree and `.venv/`*. Every edit is a two-robot edit; every
-  instance-specific value is an env var (`OT2_EQUIPMENT_ID`, `OT2_HOST_ALIAS`,
-  and **distinct** `OT2_PLATE_STATE_PATH` / `OT2_DECK_STATE_PATH` /
-  `OT2_TIP_STATE_PATH` — shared state files corrupt each other).
-- **A commit is not a deployment — check the wire before believing the code.**
-  Both services run `uv run --project` from this checkout, so a merged fix goes
-  live only when each NSSM service restarts, and the two can sit on *different*
-  builds indefinitely. On 2026-08-07 a fix stayed committed-but-unrestarted for
-  a day and presented as a live bug (ghost tip racks in the panel), sending the
-  first look at the source rather than at the deployment. Confirm with
-  `/status` and `/openapi.json` — a request-body schema that still shows the
-  old shape means the old code is running. Restarting is the fix; `nssm restart
-  <svc>` is enough when no dependency changed.
+- **This tree does not serve any robot.** Since 2026-08-08 each gateway runs
+  from its own deploy checkout, with its own venv:
+
+  | service | port | runs from |
+  |---|---|---|
+  | `ot2-gateway-hte` | 8020 | `C:\SDL_Deploy\ot2-hte` |
+  | `ot2-gateway-complexation` | 8021 | `C:\SDL_Deploy\ot2-complexation` |
+
+  Editing `Projects\opentrons-server` is therefore safe — it changes nothing a
+  robot runs. **Deploying is an explicit act**, in the deploy checkout:
+  `git pull` → `uv sync --extra labware` → `nssm restart <svc>`. Rollback is
+  `git checkout <old-ref>` there plus a restart, and it moves one robot without
+  touching the other.
+
+  Before this, both services ran `uv run --project` out of *this* tree, so a
+  restart — from a crash, a reboot, anyone's stray `uv run` — silently deployed
+  whatever was on disk, committed or not. On 2026-08-07 both robots picked up
+  uncommitted work mid-session and ended on *different* builds of it, because
+  they restarted at different moments; `git stash` was unsafe for the same
+  reason. Do not repoint a service back at this tree.
+- **A commit is still not a deployment.** A deploy checkout only moves when
+  someone pulls, so a merged fix can sit unshipped and the two robots can sit on
+  different commits indefinitely. Confirm on the wire (`/status`,
+  `/openapi.json`) before believing a bug is in the source, and check where a
+  service actually runs from with `nssm get <svc> AppDirectory`.
+- **Python is pinned to 3.12** (`.python-version`, `requires-python <3.13`).
+  `opentrons-shared-data` pulls `numpy~=1.26.4`, which has no wheel past cp312;
+  without the pin a fresh venv picks 3.14, tries to build numpy from source, and
+  fails for want of MSVC. This broke the first deploy-checkout build.
+- **`AppEnvironmentExtra` replaces the whole variable block.** It does not add
+  one variable — it replaces all of them, state paths included. Read the current
+  block, append, write it back, and verify the variable count before restarting.
 - **`uv sync` can break a running service.** If a release adds or bumps a
   dependency, uv must replace the console-script `.exe` the running service
   holds open, aborts the whole transaction on `os error 32`, and can leave the

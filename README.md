@@ -52,7 +52,7 @@ retired into feature docs (history stays in git).
 | [`docs/HTTP_SSH_PARITY.md`](docs/HTTP_SSH_PARITY.md) | feature | SSH ↔ HTTP method-by-method parity table, `/status` snapshot shapes per transport, bench-verification status |
 | [`docs/TRANSPORT_TRADEOFFS.md`](docs/TRANSPORT_TRADEOFFS.md) | feature | Pros/cons of the two transports + current default and recommendation |
 | [`docs/DECK_STATE.md`](docs/DECK_STATE.md) | feature | Normalized deck/labware state: model, run>repl>declared merge, mismatch flagging, declare endpoints |
-| [`docs/AGENT_PROPOSALS.md`](docs/AGENT_PROPOSALS.md) | feature | Agent-proposed, human-authorized plans: the propose/authorize/run boundary, what can be planned, and wiring an agent harness (Hermes) to it |
+| [`docs/AGENT_PROPOSALS.md`](docs/AGENT_PROPOSALS.md) | feature | Agent-proposed, human-approved plans: the propose/approve/run boundary, what can be planned, why this is *not* a "run authorization", and wiring an agent harness (Hermes) to it |
 | [`docs/HTTP_DRIVE_VALIDATION.md`](docs/HTTP_DRIVE_VALIDATION.md) | record | 2026-07-14 hardware validation of the HTTP transport |
 | [`docs/DEVICE_BRINGUP.md`](docs/DEVICE_BRINGUP.md) | runbook + records | Parameterized bring-up for any additional Opentrons gateway (install → verify → motion test → dashboard registration), plus the completed per-robot sign-offs |
 | [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md) | tracker | Open work items |
