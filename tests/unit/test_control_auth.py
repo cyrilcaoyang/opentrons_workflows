@@ -187,3 +187,90 @@ def test_api_key_parsing():
     assert _parse_api_keys("bare-key") == {"unnamed": "bare-key"}
     assert _parse_api_keys("") == {}
     assert _parse_api_keys(None) == {}
+
+
+# ---------------------------------------------------------------------------
+# Propose-only principals (OT2_PROPOSER_KEYS)
+#
+# The approval gate rests entirely on the claim: approving and running a plan
+# require nothing but a valid claim token. So a credential that can claim can
+# approve its own proposal, and the human review is decorative. Agents get a
+# credential that cannot claim.
+# ---------------------------------------------------------------------------
+
+
+def _proposer_client():
+    return TestClient(
+        create_app(
+            dry_run=True,
+            enforce_claims=True,
+            ui=False,
+            require_login=True,
+            api_keys={"workflow": "k-full"},
+            proposer_keys={"agent": "k-propose"},
+        )
+    )
+
+
+def test_a_propose_only_key_cannot_claim():
+    """The load-bearing refusal. Without it, handing an agent a key so it can
+    draft also hands it approve-and-run."""
+    resp = _proposer_client().post(
+        "/control/claim",
+        json={"owner": "agent", "session_id": "s1", "ttl_s": 30.0},
+        headers={"X-Api-Key": "k-propose"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "propose_only_principal"
+
+
+def test_a_propose_only_key_can_still_draft_a_plan():
+    """It has to remain useful — drafting is the whole point of the credential."""
+    resp = _proposer_client().post(
+        "/plans",
+        json={"steps": [{"action": "lights.set", "args": {"on": True}}]},
+        headers={"X-Api-Key": "k-propose"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "draft"
+
+
+def test_a_full_api_key_may_still_claim():
+    """Workflow drivers (lab-skills, execute_plan) legitimately hold a claim;
+    this restriction must not break the SDK path."""
+    resp = _proposer_client().post(
+        "/control/claim",
+        json={"owner": "workflow", "session_id": "s1", "ttl_s": 30.0},
+        headers={"X-Api-Key": "k-full"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["claim_token"]
+
+
+def test_a_propose_only_key_cannot_reach_approve_or_execute():
+    """Belt and braces: even the routes themselves refuse it, because it can
+    never obtain the token they require."""
+    client = _proposer_client()
+    plan = client.post(
+        "/plans",
+        json={"steps": [{"action": "lights.set", "args": {"on": True}}]},
+        headers={"X-Api-Key": "k-propose"},
+    ).json()
+    for path in ("approve", "execute", "abort"):
+        body = {"step_hash": plan["step_hash"]} if path == "approve" else None
+        resp = client.post(
+            f"/plans/{plan['plan_id']}/{path}", json=body, headers={"X-Api-Key": "k-propose"}
+        )
+        assert resp.status_code == 423, f"{path} -> {resp.status_code}"
+
+
+def test_full_and_propose_only_principals_are_named_distinctly_in_audit():
+    """`details.claimed_by.owner` must name the principal, so a later audit can
+    tell a workflow's action from a person's."""
+    client = _proposer_client()
+    client.post(
+        "/control/claim",
+        json={"owner": "ignored", "session_id": "s1", "ttl_s": 30.0},
+        headers={"X-Api-Key": "k-full"},
+    )
+    assert client.get("/status").json()["details"]["claimed_by"]["owner"] == "api:workflow"

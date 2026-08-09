@@ -156,6 +156,7 @@ def create_app(
     edge_secret: Optional[str] = None,
     require_login: Optional[bool] = None,
     api_keys: Optional[dict[str, str]] = None,
+    proposer_keys: Optional[dict[str, str]] = None,
 ) -> FastAPI:
     _configure_logging()
     if dry_run is None:
@@ -202,6 +203,17 @@ def create_app(
         }
     if api_keys is None:
         api_keys = _parse_api_keys(os.environ.get("OT2_API_KEYS"))
+    # Propose-only machine principals. Same `name:key` format, strictly less
+    # power: they may draft plans and read, but are refused a claim — and a
+    # claim is the only thing gating approve and execute.
+    #
+    # This exists because OT2_API_KEYS alone could not express "may propose".
+    # Handing an agent a full key to let it draft also handed it the ability to
+    # claim, hence to approve its own proposal and run it — which makes the
+    # human gate ornamental for anyone holding that key. Workflow drivers
+    # (lab-skills, execute_plan) still need a full key and keep one.
+    if proposer_keys is None:
+        proposer_keys = _parse_api_keys(os.environ.get("OT2_PROPOSER_KEYS"))
     if require_login and not edge_secret and not api_keys:
         # Fail-closed with no way in is a bricked device, not a secure one.
         raise RuntimeError(
@@ -286,20 +298,24 @@ def create_app(
         allow_headers=["*"],
     )
 
-    def _principal_for_api_key(supplied: str) -> Optional[str]:
+    def _principal_for_api_key(supplied: str) -> Optional[tuple[str, bool]]:
         """Match ``X-Api-Key`` against the configured keys, in constant time.
 
-        Every entry is compared even after a hit, so the response time does not
-        reveal which key matched (or how far down the list it was).
+        Returns ``(name, propose_only)``, or None. Every entry in both lists is
+        compared even after a hit, so the response time does not reveal which
+        key matched (or how far down the list it was).
         """
 
-        matched: Optional[str] = None
+        matched: Optional[tuple[str, bool]] = None
         for name, key in api_keys.items():
             if hmac.compare_digest(supplied, key):
-                matched = name
+                matched = (name, False)
+        for name, key in proposer_keys.items():
+            if hmac.compare_digest(supplied, key) and matched is None:
+                matched = (name, True)
         return matched
 
-    def _resolve_identity(request: Request) -> Optional[str]:
+    def _resolve_identity(request: Request) -> tuple[Optional[str], bool]:
         """The verified principal behind a control request, or ``None``.
 
         Two credentials, in order, and **no external auth service is
@@ -311,8 +327,14 @@ def create_app(
            Any reverse proxy that authenticates a human and sets two headers
            works: our Caddy edge, oauth2-proxy, Authelia, nginx auth_request.
         2. **Static API key** — ``X-Api-Key`` against ``OT2_API_KEYS``, for
-           machine principals (workflows, the SDK, agents) that have no browser
-           session and no proxy in front of them.
+           machine principals (workflows, the SDK) that have no browser session
+           and no proxy in front of them.
+        3. **Propose-only key** — ``X-Api-Key`` against ``OT2_PROPOSER_KEYS``.
+           Same identification, strictly less power: such a principal may draft
+           plans and read, but is refused a claim (see :func:`claim`), and a
+           claim is the only thing that gates approving or running one.
+
+        Returns ``(principal, propose_only)``.
 
         The returned string is what lands in ``details.claimed_by.owner`` and
         in the audit rows the events exporter writes, so it must name a real
@@ -323,13 +345,14 @@ def create_app(
         if _from_edge(request):
             edge_user = (request.headers.get("X-Auth-User") or "").strip()
             if edge_user:
-                return edge_user
+                return edge_user, False
         supplied = request.headers.get("X-Api-Key")
         if supplied:
-            name = _principal_for_api_key(supplied)
-            if name:
-                return f"api:{name}"
-        return None
+            found = _principal_for_api_key(supplied)
+            if found:
+                name, propose_only = found
+                return f"api:{name}", propose_only
+        return None, False
 
     def _require_identity(request: Request) -> Optional[str]:
         """Resolve the principal, refusing the request when login is required.
@@ -339,7 +362,7 @@ def create_app(
         the caller-supplied owner — which is a string the caller invents.
         """
 
-        identity = _resolve_identity(request)
+        identity, _propose_only = _resolve_identity(request)
         if require_login and not identity:
             raise HTTPException(
                 status_code=401,
@@ -476,6 +499,24 @@ def create_app(
         # principal rather than a string the caller typed. With
         # OT2_REQUIRE_LOGIN on, the absence of one is a 401 instead.
         identity = _require_identity(http_request)
+        # A propose-only principal is refused here, and that single refusal is
+        # what keeps the approval gate real. Approving and running a plan need
+        # nothing but a valid claim token, so a credential that can claim can
+        # approve its own proposal — the human review becomes decorative. An
+        # agent drafts; a person at the panel claims, reviews and runs.
+        _, propose_only = _resolve_identity(http_request)
+        if propose_only:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "propose_only_principal",
+                    "hint": (
+                        "This credential may draft plans but not hold the device "
+                        "claim. Approving and running a plan is an operator action "
+                        "in the gateway UI."
+                    ),
+                },
+            )
         if identity:
             request = request.model_copy(update={"owner": identity})
         held = service.claims.current()
