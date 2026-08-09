@@ -1,12 +1,21 @@
+import { useEffect } from "react";
+
 import { AssistantBubble } from "./components/AssistantBubble";
 import { ControlPanel } from "./components/ControlPanel";
 import { PlanReviewPanel } from "./components/PlanReviewPanel";
+import { panelTitle } from "./lib/format";
 import { useClaim } from "./lib/use-claim";
 import { useGatewayStatus } from "./lib/use-status";
 
 export function App() {
   const { snapshot, isPending, refetch } = useGatewayStatus(3000);
   const claim = useClaim("ot2-gateway-ui");
+
+  // Name the tab after this robot, so two open panels are told apart.
+  const name = snapshot?.name;
+  useEffect(() => {
+    if (name) document.title = panelTitle(name);
+  }, [name]);
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">

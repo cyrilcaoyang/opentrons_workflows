@@ -57,3 +57,16 @@ export function isStale(iso: string, thresholdSeconds = 10, now: Date = new Date
   if (Number.isNaN(then.getTime())) return true;
   return now.getTime() - then.getTime() > thresholdSeconds * 1000;
 }
+
+/**
+ * Browser-tab title for this instance, from the device's own
+ * `equipment_name`. One build serves every robot, so the static
+ * `<title>OT-2 Gateway</title>` in index.html reads the same on both tabs —
+ * useless when HTE and Complexation are open side by side. Shortened so the
+ * distinguishing word survives tab truncation: "Opentrons OT-2 (HTE)" ->
+ * "OT2 HTE". Any other name is used verbatim.
+ */
+export function panelTitle(equipmentName: string): string {
+  const match = /^Opentrons OT-2 \((.+)\)$/.exec(equipmentName.trim());
+  return match ? `OT2 ${match[1]}` : equipmentName;
+}
