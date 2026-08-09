@@ -197,7 +197,8 @@ unchanged.
 ```
 OT2_REQUIRE_LOGIN=true
 OT2_EDGE_SECRET=<shared secret>                    # for edge-injected identity
-OT2_API_KEYS=solubility-workflow:k1,agent-a:k2     # for machine principals
+OT2_API_KEYS=solubility-workflow:k1                # machine principals that ACT
+OT2_PROPOSER_KEYS=agent-a:k2                       # machine principals that only PROPOSE
 ```
 
 At least one credential source must be configured, or startup fails — a
@@ -211,7 +212,8 @@ deploys the gateway and not only by this lab:
 | credential | how it is verified | who it is for |
 |---|---|---|
 | `X-Auth-User` | trusted **only** with a matching `X-Edge-Key` *or* `X-Edge-Auth` (`OT2_EDGE_SECRET`) | humans behind any authenticating reverse proxy |
-| `X-Api-Key` | constant-time match against `OT2_API_KEYS` | workflows, the SDK, agents — no browser session |
+| `X-Api-Key` | constant-time match against `OT2_API_KEYS` | workflows and the SDK — machine principals that drive the robot |
+| `X-Api-Key` | constant-time match against `OT2_PROPOSER_KEYS` | agents that draft plans for a human to approve |
 
 The header pair is all a proxy has to produce, so this lab's Caddy edge,
 oauth2-proxy, Authelia, nginx `auth_request` and Cloudflare Access all work
@@ -252,11 +254,18 @@ self-declared string. An API key resolves to `api:<name>`, never to the key.
   stays `*` because keeping a device debuggable from a browser when the
   aggregator is down is the reason §10 exists; narrowing it is a deployment
   decision, not a library default.
-- **Direct API callers need a key.** `lab-skills`, `execute_plan` and agents
-  reach `/control/*` on the tailnet with no credential, so they get 401 once
-  the gate is on. Give them an `OT2_API_KEYS` entry before enabling it. The
-  framed operator panel is unaffected — it goes through the edge, which
-  injects both headers.
+- **Direct API callers need a key.** `lab-skills` and `execute_plan` reach
+  `/control/*` on the tailnet with no credential, so they get 401 once the gate
+  is on. Give them an `OT2_API_KEYS` entry before enabling it. The framed
+  operator panel is unaffected — it goes through the edge, which injects both
+  headers.
+- **Give an agent a proposer key, never a full one.** Approving and running a
+  plan need nothing but a valid claim token, and an `OT2_API_KEYS` entry can
+  claim. Hand one to an agent so it can draft and you have handed it
+  approve-and-run, making the human review decorative. `OT2_PROPOSER_KEYS`
+  names the principal with strictly less power — it may draft and read, and
+  `POST /control/claim` refuses it with 403 `propose_only_principal`. See
+  [`docs/AGENT_PROPOSALS.md`](docs/AGENT_PROPOSALS.md).
 - **The network is still the real boundary.** For a deployment that is not on
   a trusted tailnet, bind to loopback and put a reverse proxy in front — the
   pattern `kasa-tapo-services` uses — rather than relying on this gate alone.

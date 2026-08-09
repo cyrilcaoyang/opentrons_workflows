@@ -138,8 +138,25 @@ state, which is the wrong impression to give it.
 > campaigns and is off limits — see `AGENT_RULES.md` rule 4a.
 
 If the gateway runs with `OT2_REQUIRE_LOGIN`, pass `--api-key` (or
-`OT2_MCP_API_KEY`). It authenticates the proposer; it grants no ability to move
-the robot.
+`OT2_MCP_API_KEY`) — and make it an **`OT2_PROPOSER_KEYS`** entry, not an
+`OT2_API_KEYS` one.
+
+That distinction is the whole gate. Approving and running a plan require nothing
+but a valid claim token, so a credential that can claim can approve its own
+proposal and execute it. An `OT2_API_KEYS` entry *can* claim — it is the
+credential a workflow driver (`lab-skills`, `execute_plan`) legitimately uses to
+be the operator. Hand one to an agent so it can draft, and you have also handed
+it approve-and-run, leaving the human review decorative.
+
+`OT2_PROPOSER_KEYS` names the same principal with strictly less power: it may
+draft and revise plans and read status, and `POST /control/claim` refuses it
+with **403 `propose_only_principal`** — which transitively closes approve,
+execute, abort and every `/control/*` verb, since all of them need the token.
+
+```powershell
+# on the gateway host, alongside the existing OT2_API_KEYS
+OT2_PROPOSER_KEYS=agent:<key>
+```
 
 ## The operator's side
 
