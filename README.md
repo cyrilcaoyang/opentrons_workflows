@@ -660,7 +660,7 @@ negative usage.
 | `paused` | `degraded` | `idle` | A paused protocol is not performing its operation; only `resume` / `shutdown` are offered |
 | `external_control` | `busy` | `running` | A run the gateway found on the robot-server at boot and deliberately did not seize |
 | `unknown_outcome` | `unknown` | `unknown` | Transport died mid-command — whether the robot is still moving is precisely what we cannot determine |
-| `error` | `error` | `idle` | |
+| `error` | `error` | `idle` | With a live session, recovery actions (`home`, `move_to`, `drop_tip`, the bookkeeping verbs) stay advertised — a mounted tip after a failed step must have a way out; run-starting actions are withheld until the error clears (§2.2). Without a session, only `startup`. |
 | `dry_run` | `dry_run` | `idle` | The simulation reports its real activity; readers exclude simulated devices from utilization |
 
 While `activity` is `running`, `allowed_actions` omits every action that would
@@ -698,7 +698,7 @@ passes a computed string.
 |---|---|---|---|
 | `startup_failed` | `error` | The gateway could not reach or initialize the robot. | Fix connectivity, then `POST /control/startup`. |
 | `snapshot_failed` | `warning` | A deck/labware read failed. Non-blocking — `/status` keeps serving the last good `details.snapshot`. | Usually self-clears on the next successful read. |
-| `command_failed` | `error` | The robot rejected or failed a protocol command. It did not take effect. | Safe to retry. |
+| `command_failed` | `error` | The robot rejected or failed a protocol command. It did not take effect. | Safe to retry. Any successful `/control/*` action clears it (§6.4); the panel's **CLEAR ERROR** (`POST /control/reconcile`) acknowledges it without motion. |
 | `command_transport_failed` | `error` | The link dropped during an **idempotent** command. The effect is unknown but harmless to repeat. | Retry, or re-`startup` to re-establish the session. |
 | `command_unknown_outcome` | `critical` | The link dropped during a **non-idempotent** command (aspirate / dispense / tips). Whether it happened is genuinely unknowable. | Operator reconciliation via `POST /control/reconcile` — never an automatic retry. |
 
@@ -898,12 +898,16 @@ Useful control endpoints:
   Idempotent: a transport loss mid-move records an error (re-issue is safe),
   never `unknown_outcome`.
 - `POST /control/pick-up-tip` — on a tracked tip rack, omitting `position`
-  auto-picks the next available tip; `sample_id` / `force` drive the
-  contamination guard (see *State and Labware Tracking*). Refusals are
-  HTTP 412 with a structured body.
+  auto-picks the next available tip; omitting `labware_nickname` too
+  auto-selects a tracked, tip-size-compatible rack (slot order), so a bare
+  `{"pipette": "p300"}` works. `sample_id` / `force` drive the contamination
+  guard (see *State and Labware Tracking*). Refusals — no rack can serve the
+  pick, or an untracked rack named without a `position` — are HTTP 412 with a
+  structured body, issued before any hardware motion.
 - `POST /control/aspirate`
 - `POST /control/dispense`
-- `POST /control/drop-tip`
+- `POST /control/drop-tip` — no body location → the fixed trash, on both
+  transports (the HTTP session registers the fixed trash at setup time).
 - `POST /control/move-labware`
 - `POST /control/tips/reset` — body `{"slot": str, "wells"?: [str]}`;
   (re)registers a tip rack with every tip fresh (a physical rack swap).
@@ -914,7 +918,10 @@ Useful control endpoints:
   `lights.set` appears in `allowed_actions` and `components.lights`
   (`on`/`off`/`unknown`) is reported on `/status` whenever the robot is
   reachable, regardless of `equipment_status`.
-- `POST /control/reconcile`
+- `POST /control/reconcile` — operator acknowledgement: clears an
+  `unknown_outcome`, or an `error` while a control session is live (the
+  panel's **CLEAR ERROR** button). Optional body replaces the cached deck
+  snapshot after manual inspection.
 
 ## AC Organic Lab Dashboard Integration
 

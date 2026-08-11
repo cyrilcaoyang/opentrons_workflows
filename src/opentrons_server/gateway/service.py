@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -45,7 +46,7 @@ from .models import (
     WellSample,
 )
 from .plate_state import PlateStateStore
-from .tip_state import EMPTY, TipStateStore
+from .tip_state import EMPTY, TipStateStore, TipUnavailable
 
 # Snapshot is run on the OT-2's Python REPL in two invokes. The OT-2 runs
 # only the official Opentrons SDK — `opentrons_server` is NOT installed
@@ -455,6 +456,106 @@ class OT2Service:
             return str(slot)
         return None
 
+    def _auto_select_tiprack(
+        self, *, pipette: str, sample_id: Optional[str], channels: int
+    ) -> tuple[str, str]:
+        """Choose a rack for a ``pick_up_tip`` that named no rack at all.
+
+        Returns ``(nickname, slot)`` — the recipe nickname the control session
+        addresses the rack by, and the slot key the tracker uses. Scans tracked
+        racks in slot order and takes the first that (a) is addressable in the
+        current session (a declared-only rack is tracked but not loaded in the
+        run/REPL, so the transport cannot reach it), (b) holds tips this
+        pipette can physically take (a p300 sent onto a 20 µL rack picks the
+        wrong tip silently — worse than a refusal), and (c) has a tip this head
+        can pick. Raises :class:`TipUnavailable` — a §6.1 precondition refusal,
+        never an operational error — when no rack qualifies, naming why each
+        candidate was passed over so the refusal is actionable.
+        """
+
+        slot_to_nickname = {
+            slot: nick for nick, slot in self._nickname_to_slot().items()
+        }
+        # "1".."11" must order numerically, not lexically ("10" < "2").
+        slots = sorted(self.tips.racks(), key=lambda s: (len(s), s))
+        reasons: List[str] = []
+        for slot in slots:
+            addressed = slot_to_nickname.get(slot)
+            if addressed is None:
+                reasons.append(
+                    f"slot {slot}: tracked but not loaded in the control "
+                    "session (no /control/setup nickname)"
+                )
+                continue
+            if not self._rack_fits_pipette(addressed, pipette):
+                reasons.append(
+                    f"slot {slot}: tip size does not fit pipette {pipette!r}"
+                )
+                continue
+            try:
+                self.tips.next_available(slot, sample_id=sample_id, channels=channels)
+            except TipUnavailable as exc:
+                reasons.append(f"slot {slot}: {exc.body.get('detail')}")
+                continue
+            return addressed, slot
+        raise TipUnavailable(
+            {
+                "detail": (
+                    "No tip rack can serve this pick"
+                    + (f" for sample {sample_id!r}" if sample_id else "")
+                    + (
+                        f" ({'; '.join(reasons)})"
+                        if reasons
+                        else " (no tip racks are tracked; run /control/setup "
+                        "or declare a tip rack slot)"
+                    )
+                ),
+                "rack": None,
+                "well": None,
+                "tip_status": None,
+                "requested_sample_id": sample_id,
+                "channels": channels,
+                "retry_after_s": None,
+            }
+        )
+
+    def _rack_fits_pipette(self, rack_nickname: str, pipette: str) -> bool:
+        """Whether a rack's tips physically fit the pipette, when derivable.
+
+        Both volumes are parsed from names the recipe already carries (rack
+        loadname ``..._300ul``, instrument ``p300_single_gen2``). Opentrons'
+        GEN2 compatibility matrix — p20:{10,20}, p300:{200,300}, p1000:{1000}
+        — is exactly ``pipette/2 <= tip <= pipette``, so the rule is encoded
+        as that inequality rather than a table that would need editing for
+        every new pipette. Unparseable names (custom labware, unknown
+        instruments) return True: auto-selection must not silently exclude
+        gear it cannot classify, and a caller who needs precision names the
+        rack explicitly.
+        """
+
+        instrument = next(
+            (
+                inst
+                for inst in self.session_recipe.get("instruments", []) or []
+                if inst.get("nickname") == pipette
+            ),
+            None,
+        )
+        labware = next(
+            (
+                lw
+                for lw in self.session_recipe.get("labware", []) or []
+                if lw.get("nickname") == rack_nickname
+            ),
+            None,
+        )
+        pip_match = re.match(r"p(\d+)", str((instrument or {}).get("instrument_name", "")))
+        tip_match = re.search(r"_(\d+)ul", str((labware or {}).get("loadname", "")))
+        if pip_match is None or tip_match is None:
+            return True
+        pip_ul, tip_ul = int(pip_match.group(1)), int(tip_match.group(1))
+        return pip_ul / 2 <= tip_ul <= pip_ul
+
     def _bind_pipette_channels(self) -> None:
         """Bind each recipe pipette nickname to its channel count.
 
@@ -589,14 +690,44 @@ class OT2Service:
 
     def pick_up_tip(self, request: Any) -> None:
         # The tracker is keyed by slot; protocol calls name labware by nickname.
-        rack = self._tiprack_slot(request.labware_nickname)
+        nickname = request.labware_nickname
         well = request.position
         sample_id = getattr(request, "sample_id", None)
         force = bool(getattr(request, "force", False))
-        tracked = rack is not None
         # An N-channel head takes N wells per pick, so every tracking decision
         # below is made over the covered set, not the addressed well alone.
         channels = self._channels_for(request.pipette)
+        if nickname:
+            rack = self._tiprack_slot(nickname)
+            if rack is None and not well:
+                # Refuse BEFORE any hardware addressing. Without tracking there
+                # is no next-tip answer, and letting the transport discover
+                # that mid-action turns a plain precondition into an ERROR
+                # state (the HTTP run engine has no implicit next-tip either).
+                raise TipUnavailable(
+                    {
+                        "detail": (
+                            f"{nickname!r} is not a tracked tip rack, so the "
+                            "gateway cannot choose the next tip from it; pass "
+                            "an explicit position, or load the rack via "
+                            "/control/setup (or declare its slot) so it is "
+                            "tracked"
+                        ),
+                        "rack": nickname,
+                        "well": None,
+                        "tip_status": None,
+                        "requested_sample_id": sample_id,
+                        "retry_after_s": None,
+                    }
+                )
+        else:
+            # No rack named at all: the gateway owns tip tracking, so it — not
+            # the caller — answers "which rack, which tip". Deterministic scan
+            # over the tracked racks; raises TipUnavailable when none can serve.
+            nickname, rack = self._auto_select_tiprack(
+                pipette=request.pipette, sample_id=sample_id, channels=channels
+            )
+        tracked = rack is not None
 
         # Contamination guard + auto-pick, both only for tracked racks. Raises
         # TipUnavailable (HTTP 412 at the API layer) before any hardware motion.
@@ -611,12 +742,11 @@ class OT2Service:
             covered = self.tips.covered_wells(rack, well, channels=channels)
 
         def _pick_up_tip() -> None:
-            # The robot is addressed by the caller's own labware name — `rack`
-            # is the tracker's slot key and means nothing to the protocol API.
-            if request.labware_nickname and well:
-                self._require_control().get_location_from_labware(
-                    request.labware_nickname, well
-                )
+            # The robot is addressed by the labware nickname (caller-given or
+            # auto-selected) — `rack` is the tracker's slot key and means
+            # nothing to the protocol API.
+            if nickname and well:
+                self._require_control().get_location_from_labware(nickname, well)
             self._require_control().pick_up_tip(request.pipette)
 
         self._run_action("pick_up_tip", _pick_up_tip, idempotent=False)
@@ -641,9 +771,11 @@ class OT2Service:
 
     def drop_tip(self, request: Any) -> None:
         def _drop_tip() -> None:
-            # Optional explicit drop location (e.g. a loaded trash labware). When
-            # given, HTTP drops into that well; when omitted, HTTP drops in place
-            # and SSH auto-routes to the fixed trash. Mirrors pick_up_tip.
+            # Optional explicit drop location (e.g. a loaded trash labware).
+            # When omitted, both transports route to the OT-2 fixed trash: SSH
+            # implicitly, HTTP via the trash registered at setup_protocol time
+            # (drop-in-place remains only for an HTTP session whose recipe
+            # deliberately occupies slot 12). Mirrors pick_up_tip.
             if request.labware_nickname and request.position:
                 self._require_control().get_location_from_labware(
                     request.labware_nickname,
@@ -1462,8 +1594,29 @@ class OT2Service:
         return action in _RUN_STARTING_ACTIONS and self._observed_activity() == "running"
 
     def _allowed_for_state(self) -> list[str]:
-        if self.state in {OT2ServiceState.REQUIRES_INIT, OT2ServiceState.ERROR}:
+        if self.state == OT2ServiceState.REQUIRES_INIT:
             return ["startup"]
+        if self.state == OT2ServiceState.ERROR:
+            # §2.2 keeps run-starting actions (setup, pick_up_tip, aspirate,
+            # dispense, move_labware) withheld while the fault is active — but
+            # withholding *recovery* too used to strand exactly the operator
+            # who needs it (a mounted tip after a failed step had no advertised
+            # way to home or drop; the plateloc fleet hit the same trap).
+            # Recovery needs a live control session; without one, startup is
+            # genuinely the only way forward.
+            if self.control is None:
+                return ["startup"]
+            return [
+                "startup",
+                "shutdown",
+                "home",
+                "move_to",
+                "drop_tip",
+                "plate.load",
+                "plate.unload",
+                "well.update",
+                "tips.reset",
+            ]
         if self.state == OT2ServiceState.DRY_RUN:
             return [
                 "startup",
@@ -1502,11 +1655,20 @@ class OT2Service:
         return []
 
     def reconcile(self, snapshot: Optional[Dict[str, Any]] = None) -> None:
-        """Acknowledge an unknown outcome after manual or external inspection."""
+        """Acknowledge an unknown outcome — or a failed command — after manual
+        or external inspection.
+
+        For ERROR the acknowledgement requires a live control session: the
+        operator is saying "the fault is dealt with, the session is usable",
+        which cannot be true of a session that does not exist (a failed
+        startup stays ERROR until a startup succeeds).
+        """
 
         if snapshot is not None:
             self.last_snapshot = snapshot
-        if self.state == OT2ServiceState.UNKNOWN_OUTCOME:
+        if self.state == OT2ServiceState.UNKNOWN_OUTCOME or (
+            self.state == OT2ServiceState.ERROR and self.control is not None
+        ):
             self.last_error = None
             self.state = OT2ServiceState.READY
 
@@ -1775,7 +1937,10 @@ class OT2Service:
         if self.state == OT2ServiceState.UNKNOWN_OUTCOME:
             return ["manual_reconcile"]
         if self.state == OT2ServiceState.ERROR:
-            return ["startup"]
+            # With a live session the way out is acknowledging the failed
+            # command (or any successful recovery action, which auto-clears
+            # per §6.4); without one, only a fresh startup can help.
+            return ["reconcile"] if self.control is not None else ["startup"]
         return []
 
     def _control_liveness(self) -> tuple[bool, str]:

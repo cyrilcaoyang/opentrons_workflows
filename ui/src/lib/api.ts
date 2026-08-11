@@ -191,6 +191,13 @@ export const postResume = (token: string | null) => controlPost("resume", {}, to
 
 export const postHome = (token: string | null) => controlPost("home", {}, token);
 
+/** Acknowledge a failed command (or an unknown outcome) after inspecting the
+ *  robot — clears `last_error` and returns the gateway to ready. Sent with NO
+ *  body: the endpoint's optional body is a snapshot override, and an empty
+ *  object would clobber the cached snapshot rather than mean "no snapshot". */
+export const postReconcile = (token: string | null) =>
+  controlPost("reconcile", undefined, token);
+
 export const postSetLights = (token: string | null, on: boolean) =>
   controlPost("lights", { on }, token);
 

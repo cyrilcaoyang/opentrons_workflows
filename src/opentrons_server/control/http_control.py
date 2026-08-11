@@ -39,8 +39,9 @@ Semantic differences vs. the SSH REPL that remain by design:
   (does not consume) so move-then-aspirate works like SSH.
 - **Tips.** ``pickUpTip`` needs an explicit labware+well (no protocol-API
   next-tip tracking); the gateway's tip store provides auto-pick above this
-  layer. ``drop_tip`` without a location drops into the registered trash
-  (see :meth:`load_trash_bin`) when one is loaded, else in place.
+  layer. ``drop_tip`` without a location drops into the registered trash —
+  ``setup_protocol`` registers the OT-2 fixed trash automatically when the
+  recipe leaves slot 12 free (see :meth:`load_trash_bin`) — else in place.
 - **Object ids** are client-supplied and equal to the caller's nickname, so
   nicknames must stay unique within a run.
 """
@@ -164,6 +165,20 @@ class OT2HttpControl:
             self.load_instrument(instrument_config)
         for module_config in modules or []:
             self.load_module(module_config)
+        # The OT-2's fixed trash is always physically present, and on the SSH
+        # path drop_tip auto-routes to it. The run engine has no implicit
+        # trash, so without this a bare drop_tip fell through to
+        # dropTipInPlace — the tip landed wherever the pipette happened to be.
+        # Registered here (not per-drop) so drop_tip's own precedence
+        # (pending location > trash > in place) stays a pure lookup. Skipped
+        # if a recipe deliberately occupies slot 12, or on a re-setup that
+        # already registered it.
+        occupied = {
+            str(cfg.get("location"))
+            for cfg in [*(labware or []), *(modules or [])]
+        }
+        if self._trash_nickname is None and _OT2_FIXED_TRASH_SLOT not in occupied:
+            self.load_trash_bin()
 
     def load_labware(self, labware: Dict[str, Any]) -> str:
         nickname = labware["nickname"]

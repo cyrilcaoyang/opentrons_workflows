@@ -77,6 +77,52 @@ def test_reconcile_clears_unknown_outcome():
     assert service.last_snapshot == {"deck": {"slots": {}}}
 
 
+def test_reconcile_clears_error_when_a_session_is_live():
+    service = OT2Service(dry_run=False)
+    service.control = Mock()
+    service._set_error("command_failed", "pick_up_tip: boom", severity="error")
+    assert service.state == OT2ServiceState.ERROR
+
+    service.reconcile()
+
+    assert service.state == OT2ServiceState.READY
+    assert service.last_error is None
+
+
+def test_reconcile_does_not_clear_error_without_a_session():
+    # e.g. a failed startup: there is nothing usable to return "ready" to.
+    service = OT2Service(dry_run=False)
+    service._set_error("startup_failed", "no route to robot", severity="error")
+
+    service.reconcile()
+
+    assert service.state == OT2ServiceState.ERROR
+    assert service.last_error is not None
+    assert service._required_actions() == ["startup"]
+
+
+def test_error_state_advertises_recovery_actions_when_a_session_is_live():
+    service = OT2Service(dry_run=False)
+    service.control = Mock()
+    service._set_error("command_failed", "pick_up_tip: boom", severity="error")
+
+    allowed = set(service.allowed_actions())
+
+    # An operator with a mounted tip after a failed step must be able to get
+    # out — the old ["startup"]-only list stranded exactly that operator.
+    assert {"startup", "shutdown", "home", "move_to", "drop_tip"} <= allowed
+    # §2.2: run-starting actions stay withheld while the fault is active.
+    assert not {"setup", "pick_up_tip", "aspirate", "dispense"} & allowed
+    assert service._required_actions() == ["reconcile"]
+
+
+def test_error_state_without_a_session_offers_only_startup():
+    service = OT2Service(dry_run=False)
+    service._set_error("startup_failed", "no route to robot", severity="error")
+
+    assert service._allowed_for_state() == ["startup"]
+
+
 # ---------------------------------------------------------------------------
 # /control/startup credential precedence: env-var default vs request body
 # ---------------------------------------------------------------------------

@@ -62,8 +62,11 @@ See `HTTP_DRIVE_VALIDATION.md`. Complexation bring-up still not run.
   loaded trash; no location → `dropTipInPlace` (SSH already auto-trashes).
   **Update (2026-07-18, `feature-http-ssh-parity`):** `OT2HttpControl.load_trash_bin()`
   now registers the OT-2 fixed trash (slot 12) and tokenless `drop_tip` defaults to
-  it when registered (still bench-unverified). **Left:** update the complexation
-  test to drop-to-trash and verify on the bench.
+  it when registered (still bench-unverified). **Update (2026-08-11):**
+  `setup_protocol` now calls `load_trash_bin()` automatically when the recipe
+  leaves slot 12 free — nobody ever called it, so live drops still landed in
+  place (observed on the bench 2026-08-11: the operator had to home first).
+  **Left:** verify drop-to-trash on the bench (Complexation).
 - ✅ **Full SSH↔HTTP control parity** (2026-07-18, branch `feature-http-ssh-parity`):
   `OT2HttpControl` now mirrors the entire `OT2Control` method surface — protocol
   controls (comment/delay/lights), absolute-coordinate liquid handling

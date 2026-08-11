@@ -75,7 +75,7 @@ call. Only `move_to_pip` peeks.
 | Method | HTTP status | Mechanism / notes |
 |---|---|---|
 | `pick_up_tip(pip)` | native | `pickUpTip` at the pending well (explicit location required — no protocol-API next-tip tracking; the gateway's tip store auto-picks above this layer). `presses`/`increment`/`prep_after` → `NotImplementedError` (no engine params; deprecated in the protocol API too). |
-| `drop_tip(pip, home_after)` | native + default | Precedence: pending location > registered trash (`load_trash_bin`) > `dropTipInPlace`. SSH auto-routes to the fixed trash; register the trash to match. `home_after` threaded through. |
+| `drop_tip(pip, home_after)` | native + default | Precedence: pending location > registered trash (`load_trash_bin`) > `dropTipInPlace`. SSH auto-routes to the fixed trash; `setup_protocol` registers the fixed trash automatically when the recipe leaves slot 12 free, so a bare `drop_tip` matches SSH. `home_after` threaded through. |
 | `return_tip(pip, home_after)` | emulated | No `returnTip` command; drops into the client-tracked pick-up origin well. Raises if no pick went through this adapter. |
 | `has_tip(pip)` | client-tracked | True between pick and drop/return **through this adapter**; blind to other clients and to state before a gateway restart. SSH reads the live protocol object. |
 | `set_starting_tip` / `reset_tipracks` | **unsupported** | Protocol-API tip tracking doesn't exist in the run engine. Equivalent functionality lives in the gateway tip store (`gateway/tip_state.py`, `POST /control/tips/reset`). |

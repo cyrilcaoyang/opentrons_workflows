@@ -220,6 +220,83 @@ def test_drop_tip_with_location_uses_drop_tip():
     assert params["labwareId"] == "tips"
 
 
+# --- fixed trash auto-registration (setup_protocol) --------------------------
+
+
+def test_setup_protocol_registers_the_fixed_trash():
+    client = FakeClient()
+    ctl = OT2HttpControl(client)
+    ctl.initialize_protocol()
+    recipe = {
+        "labware": [
+            {
+                "ot_default": True,
+                "nickname": "tips",
+                "loadname": "opentrons_96_tiprack_300ul",
+                "location": "1",
+            }
+        ],
+        "instruments": [
+            {
+                "ot_default": True,
+                "nickname": "p300",
+                "instrument_name": "p300_single_gen2",
+                "mount": "right",
+            }
+        ],
+    }
+    ctl.setup_protocol(**recipe)
+
+    ctype, params = _last(client)
+    assert ctype == "loadLabware"
+    assert params["loadName"] == "opentrons_1_trash_1100ml_fixed"
+    assert params["location"] == {"slotName": "12"}
+
+    # A bare drop_tip now routes to the trash (SSH-path behavior), not in place.
+    ctl.drop_tip("p300")
+    ctype, params = _last(client)
+    assert ctype == "dropTip"
+    assert params["labwareId"] == "default_trash"
+
+    # A re-setup does not load a second trash into the occupied slot.
+    ctl.setup_protocol(**recipe)
+    trash_loads = [
+        p for _, p in client.commands if p.get("loadName") == "opentrons_1_trash_1100ml_fixed"
+    ]
+    assert len(trash_loads) == 1
+
+
+def test_setup_protocol_skips_the_trash_when_slot_12_is_occupied():
+    client = FakeClient()
+    ctl = OT2HttpControl(client)
+    ctl.initialize_protocol()
+    ctl.setup_protocol(
+        labware=[
+            {
+                "ot_default": True,
+                "nickname": "big_res",
+                "loadname": "nest_1_reservoir_195ml",
+                "location": "12",
+            }
+        ],
+        instruments=[
+            {
+                "ot_default": True,
+                "nickname": "p300",
+                "instrument_name": "p300_single_gen2",
+                "mount": "right",
+            }
+        ],
+    )
+
+    assert all(
+        p.get("loadName") != "opentrons_1_trash_1100ml_fixed" for _, p in client.commands
+    )
+    # Without a trash the fallback is unchanged: drop where the pipette is.
+    ctl.drop_tip("p300")
+    assert _last(client)[0] == "dropTipInPlace"
+
+
 # --- move labware / handoff -------------------------------------------------
 
 

@@ -191,12 +191,16 @@ echo "$TOKEN"; H="-H X-Claim-Token:$TOKEN -H Content-Type:application/json"
       curl -fsS $H -X POST localhost:8020/control/aspirate  -d '{"pipette":"p300","volume_ul":50,"location":{"labware_nickname":"plate","position":"A1","bottom":2},"flow_rate":30}'
       curl -fsS $H -X POST localhost:8020/control/dispense -d '{"pipette":"p300","volume_ul":50,"location":{"labware_nickname":"plate","position":"A2","bottom":2},"flow_rate":30}'
       ```
-- [x] **Explicit-tip requirement — CLOSED.** Bare `{"pipette":"p300"}` pick-up → **409**;
-      explicit well works. **Decision:** keep the explicit-well contract (no gateway-side
-      next-tip tracking).
-- [x] **Drop location — OBSERVED (fix deferred).** No location → `dropTipInPlace`
-      (drops where the head is). `home` first lands tips at slot 12 (fixed-trash region)
-      — usable stopgap. Real drop-to-`fixedTrash` remains future work.
+- [x] **Explicit-tip requirement — CLOSED, then superseded.** Bare `{"pipette":"p300"}`
+      pick-up → **409**; explicit well works. The keep-the-explicit-well decision was
+      superseded by the gateway tip store: a tracked rack auto-picks the next tip, and
+      since 2026-08-11 a request naming **no rack at all** auto-selects a tracked,
+      size-compatible rack (untrackable picks are refused up front with a 412, not a
+      mid-action transport error).
+- [x] **Drop location — OBSERVED (fix deferred), now CLOSED (2026-08-11).** No location
+      → `dropTipInPlace` (drops where the head is); `home` first was the stopgap.
+      `setup_protocol` now auto-registers the fixed trash (slot 12) so a bare
+      `drop_tip` routes there — bench re-verification pending.
 - [x] **Deck-snapshot parity — idle-persistence PASS.** Restarted the gateway with a
       loaded run present and did **not** call startup; `/status` came back 200 with
       `deck.source: run` still showing the run's labware (slot 1 tiprack) read from

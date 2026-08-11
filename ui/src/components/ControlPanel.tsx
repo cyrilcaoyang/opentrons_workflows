@@ -7,6 +7,7 @@ import {
   postHome,
   postPause,
   postResume,
+  postReconcile,
   postSetLights,
   postTipsReset,
   postShutdown,
@@ -276,6 +277,19 @@ export function ControlPanel({
         <div className="flex shrink-0 items-center gap-1.5">
           <ActionErrorBadge error={actionError} />
           <LastErrorBadge error={status.last_error} />
+          {status.equipment_status === "error" && (
+            <TileButton
+              onClick={() => runControl("reconcile", () => postReconcile(token))}
+              disabled={locked || pending}
+              variant="danger"
+              title={
+                controlHint ??
+                "Acknowledge the failed command and return the gateway to ready — check the robot first; this clears the error, it does not fix anything"
+              }
+            >
+              CLEAR ERROR
+            </TileButton>
+          )}
           <TileButton
             onClick={() => (claim.held ? void claim.release() : void claim.acquire())}
             disabled={claim.pending}

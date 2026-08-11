@@ -173,6 +173,90 @@ def test_untracked_rack_behaves_as_before(service):
     assert service._mounted_tips == {}
 
 
+# ---- the gateway supplies the tip location itself ----------------------------
+#
+# A caller that names no rack (an agent plan, a bare curl) still gets the next
+# tip: the tracker, not the caller, owns "which rack, which well". And a pick
+# that cannot be answered is refused BEFORE any hardware addressing — as a
+# TipUnavailable (412), never by flipping the device to ERROR on a transport
+# exception that fires mid-action.
+
+
+def test_pick_with_no_rack_auto_selects_a_tracked_rack(service):
+    service.setup_protocol(RECIPE)
+
+    _pick(service, rack=None)
+
+    mounted = service._mounted_tips["p300"]
+    assert (mounted["rack"], mounted["well"]) == ("4", "A1")
+    # Addressed by the recipe nickname, which is what the transport understands.
+    service.control.get_location_from_labware.assert_called_with("tips_300", "A1")
+
+
+def test_pick_with_no_rack_skips_an_exhausted_rack(service):
+    two_racks = {
+        **RECIPE,
+        "labware": [
+            *RECIPE["labware"],
+            {
+                "nickname": "tips_300_b",
+                "loadname": "opentrons_96_tiprack_300ul",
+                "location": "5",
+                "ot_default": True,
+            },
+        ],
+    }
+    service.setup_protocol(two_racks)
+    rack_4 = service.tips.racks()["4"]
+    service.tips.set_statuses("4", list(rack_4.tips.keys()), "empty")
+
+    _pick(service, rack=None)
+
+    assert service._mounted_tips["p300"]["rack"] == "5"
+    service.control.get_location_from_labware.assert_called_with("tips_300_b", "A1")
+
+
+def test_pick_with_no_rack_skips_a_rack_whose_tips_do_not_fit(service):
+    # MULTI_RECIPE: slot 4 holds 300 µL tips, slot 5 holds 20 µL tips. The
+    # p20 must not be sent onto the 300 µL rack just because slot 4 sorts
+    # first — a wrong-size pick is silent physical wrongness.
+    service.setup_protocol(MULTI_RECIPE)
+
+    _pick(service, rack=None, pipette="p20")
+
+    mounted = service._mounted_tips["p20"]
+    assert (mounted["rack"], mounted["well"]) == ("5", "A1")
+    service.control.get_location_from_labware.assert_called_with("tips_20", "A1")
+
+
+def test_pick_with_no_rack_and_no_usable_tip_is_a_precondition_refusal(service):
+    service.setup_protocol(RECIPE)
+    rack_4 = service.tips.racks()["4"]
+    service.tips.set_statuses("4", list(rack_4.tips.keys()), "empty")
+
+    with pytest.raises(TipUnavailable) as exc_info:
+        _pick(service, rack=None)
+
+    assert "slot 4" in exc_info.value.body["detail"]
+    # The refusal happened before any hardware addressing, and it is not an
+    # operational error: the device stays ready, last_error untouched (§6.3).
+    service.control.pick_up_tip.assert_not_called()
+    assert service.state == OT2ServiceState.READY
+    assert service.last_error is None
+
+
+def test_pick_untracked_rack_without_position_is_a_precondition_refusal(service):
+    service.setup_protocol(RECIPE)
+
+    with pytest.raises(TipUnavailable) as exc_info:
+        _pick(service, rack="mystery_rack")
+
+    assert "not a tracked tip rack" in exc_info.value.body["detail"]
+    service.control.pick_up_tip.assert_not_called()
+    assert service.state == OT2ServiceState.READY
+    assert service.last_error is None
+
+
 # ---- multi-channel pipettes -------------------------------------------------
 #
 # An 8-channel head sent to a row-A well removes the whole column, so tracking

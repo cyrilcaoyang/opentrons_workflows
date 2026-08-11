@@ -179,10 +179,11 @@ class TipRequest(BaseModel):
     pipette: str
     labware_nickname: Optional[str] = None
     position: Optional[str] = None
-    # Tip-tracking fields; meaningful only when labware_nickname names a
-    # registered (tracked) tip rack. Omitting `position` on such a rack
-    # auto-picks the next available tip. `sample_id` allows same-sample tip
-    # reuse; `force` overrides the contamination guard (never an empty well).
+    # Tip-tracking fields. Omitting `position` on a tracked rack auto-picks the
+    # next available tip; omitting `labware_nickname` too auto-selects a
+    # tracked, tip-size-compatible rack (slot order). An untracked rack still
+    # needs an explicit `position`. `sample_id` allows same-sample tip reuse;
+    # `force` overrides the contamination guard (never an empty well).
     sample_id: Optional[str] = None
     force: bool = False
 
