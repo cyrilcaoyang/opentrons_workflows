@@ -307,6 +307,64 @@ def test_declared_deck_pick_without_an_attached_pipette_is_honest(service):
         service.pick_up_tip(TipRequest(pipette="left"))
 
 
+def test_drop_into_a_tracked_rack_well_relocates_the_tip(service):
+    """The 2026-08-11 bench ask: move the tip from H12 into the rack's empty
+    A1. The robot did it, but the tracker recorded only "H12 is gone" — A1
+    never showed available. A drop into a tracked rack well is a relocation:
+    the destination now holds the tip, keeping its history."""
+
+    service.setup_protocol(RECIPE)
+    service.tips.set_status("4", "A1", "empty")  # the hole being refilled
+    _pick(service, well="H12")
+
+    service.drop_tip(
+        TipRequest(pipette="p300", labware_nickname="tips_300", position="A1")
+    )
+
+    assert service.tips.status("4", "H12") == "empty"
+    # A relocated never-used tip is fresh — A1 counts as available again.
+    assert service.tips.status("4", "A1") == "new"
+    assert "p300" not in service._mounted_tips
+
+
+def test_relocated_used_tip_carries_its_sample(service):
+    service.setup_protocol(RECIPE)
+    service.tips.set_status("4", "A1", "empty")
+    _pick(service, well="H12")
+    _move(service, "aspirate", "reservoir", "A1")
+
+    service.drop_tip(
+        TipRequest(pipette="p300", labware_nickname="tips_300", position="A1")
+    )
+
+    assert service.tips.status("4", "A1") == "reservoir_A1"
+
+
+def test_returning_a_tip_to_its_own_well_is_legal(service):
+    service.setup_protocol(RECIPE)
+    _pick(service, well="H12")
+
+    service.drop_tip(
+        TipRequest(pipette="p300", labware_nickname="tips_300", position="H12")
+    )
+
+    assert service.tips.status("4", "H12") == "new"
+
+
+def test_drop_onto_a_seated_tip_is_refused_pre_motion(service):
+    service.setup_protocol(RECIPE)
+    _pick(service, well="H12")
+
+    with pytest.raises(TipUnavailable, match="already hold tips"):
+        service.drop_tip(
+            TipRequest(pipette="p300", labware_nickname="tips_300", position="B5")
+        )
+    service.control.drop_tip.assert_not_called()
+    # The tip is still on the head; nothing moved and nothing was recorded.
+    assert "p300" in service._mounted_tips
+    assert service.last_error is None
+
+
 def test_drop_tip_accepts_trash_aliases_as_the_default_target(service):
     # The assistant naturally proposes drop_tip {"labware_nickname": "12"} for
     # "drop it in waste". Slot 12 IS the trash — route to the default rather

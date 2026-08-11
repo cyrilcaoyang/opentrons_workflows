@@ -1070,6 +1070,13 @@ transports:
 - Aspirate/dispense stamp the mounted tip with what it touched — the tracked
   plate's real `sample_id` when the target well has one, else
   `<labware>_<well>`. Drop marks the origin well `"empty"`.
+- **A drop into a tracked rack well is a relocation, not a disposal.** The
+  destination wells take the tip and its history — the sample it last touched,
+  `"new"` for a tip that never touched liquid (so it stays available), or
+  `"unknown"` for an untracked head. The destination must be empty (dropping
+  onto a seated tip is a crash and is refused with 412 pre-motion); the head's
+  own origin wells are exempt, which is what makes returning a tip to its own
+  well legal.
 - `POST /control/tips/reset` takes `{"slot": "4"}` — the operator asserting a
   physical refill, which is never inferred (the gateway cannot see new tips go
   in, and a wrong "full" sends the head onto bare holes). `{"nickname": ...}`

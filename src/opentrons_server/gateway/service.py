@@ -965,6 +965,47 @@ class OT2Service:
                 "position; omit both to drop into the fixed trash"
             )
 
+        # An explicit drop into a TRACKED rack is a tip relocation, not a
+        # disposal, and gets the same pre-motion discipline as a pick: the
+        # destination wells (all of them, for a multi-channel head) must not
+        # already hold tips — dropping onto a seated tip is a crash. The
+        # head's own origin wells are exempt: they are physically empty while
+        # the tips ride the head (that exemption is what makes "return to
+        # where it came from" legal).
+        mounted = self._mounted_tips.get(request.pipette)
+        dest_rack = self._tiprack_slot(nickname) if nickname and position else None
+        dest_wells: List[str] = []
+        if dest_rack is not None:
+            channels = (mounted or {}).get("channels") or self._channels_for(request.pipette)
+            # Raises for an unmappable address (unknown well; a multi-channel
+            # head not at row A) — refuse rather than move untracked.
+            dest_wells = self.tips.covered_wells(dest_rack, position, channels=channels)
+            vacated = (
+                set(mounted.get("wells") or [])
+                if mounted is not None and mounted.get("rack") == dest_rack
+                else set()
+            )
+            occupied = [
+                w
+                for w in dest_wells
+                if w not in vacated
+                and self.tips.status(dest_rack, w).strip().lower() != EMPTY
+            ]
+            if occupied:
+                raise TipUnavailable(
+                    {
+                        "detail": (
+                            f"Cannot drop into rack {dest_rack} at {position}: "
+                            f"well(s) {', '.join(occupied)} already hold tips"
+                        ),
+                        "rack": dest_rack,
+                        "well": position,
+                        "tip_status": self.tips.status(dest_rack, occupied[0]),
+                        "requested_sample_id": None,
+                        "retry_after_s": None,
+                    }
+                )
+
         def _drop_tip() -> None:
             # Optional explicit drop location (e.g. a well to return a tip
             # to). When omitted, both transports route to the OT-2 fixed
@@ -985,15 +1026,27 @@ class OT2Service:
         # addressed one — otherwise a multi-channel column stays partly "new"
         # and the next auto-pick sends the head onto holes.
         self._mark_mounted_wells(mounted, EMPTY)
-        if mounted is not None:
+        if dest_rack is not None and dest_wells:
+            # Complete the relocation: the destination wells now hold the
+            # head's tips, carrying their history — the sample they last
+            # touched, "new" for tips that never touched liquid (so a
+            # relocated fresh tip stays available), "unknown" for a head
+            # whose tips were never tracked (occupied, but never offered to
+            # an auto-pick). Ordered after the origin marking so returning a
+            # tip to its own well nets out as that well holding a tip.
+            carried = "unknown" if mounted is None else (mounted.get("last_sample") or "new")
+            self.tips.set_statuses(dest_rack, dest_wells, carried)
+        if mounted is not None or dest_rack is not None:
             self._emit_tip_event(
                 "tip_drop",
-                mounted.get("rack"),
+                (mounted or {}).get("rack") or dest_rack,
                 pipette=request.pipette,
-                well=mounted.get("well"),
-                wells=mounted.get("wells") or None,
-                channels=mounted.get("channels"),
-                sample_id=mounted.get("last_sample"),
+                well=(mounted or {}).get("well"),
+                wells=(mounted or {}).get("wells") or None,
+                channels=(mounted or {}).get("channels"),
+                sample_id=(mounted or {}).get("last_sample"),
+                to_rack=dest_rack,
+                to_wells=dest_wells or None,
             )
 
     def _mark_mounted_wells(
