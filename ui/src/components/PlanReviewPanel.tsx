@@ -16,8 +16,10 @@ import type { Plan, StepOutcome } from "../lib/types";
  *
  * This panel is the human half of the gate in `gateway/plans.py`. An agent
  * (Hermes) can draft a plan and revise it; it can do nothing else. Approving
- * and running both require the claim token, which lives in this browser, so
- * every path that moves the robot passes through these buttons.
+ * and running require the claim token, which lives in this browser — here or
+ * in the chat bubble's plan card (`AssistantBubble`), which makes the same
+ * claim-gated calls with the same rendered-hash discipline. This panel is
+ * the overview: every plan from every proposer, not just this chat's.
  *
  * Two things here are load-bearing rather than cosmetic:
  *

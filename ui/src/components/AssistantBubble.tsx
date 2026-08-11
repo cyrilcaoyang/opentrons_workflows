@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError, assistantChat, getAssistantHealth, getPlan } from "../lib/api";
+import {
+  ApiError,
+  abortPlan,
+  approvePlan,
+  assistantChat,
+  deletePlan,
+  executePlan,
+  getAssistantHealth,
+  getPlan,
+} from "../lib/api";
 import type { ClaimState } from "../lib/use-claim";
-import type { AssistantMessage, PlanStep } from "../lib/types";
+import type { AssistantMessage, Plan, PlanStep } from "../lib/types";
 
 /**
  * Optional chat popup for simple operations on THIS OT-2.
@@ -13,9 +22,19 @@ import type { AssistantMessage, PlanStep } from "../lib/types";
  * a complete operator surface, chat included, with no dashboard or agent
  * harness required.
  *
- * The assistant can only propose. Anything it drafts shows up in the Proposed
- * plans panel as a draft for the operator to approve and run, so this box
- * has no path to the hardware that the panel does not already gate.
+ * The assistant can only propose. What it drafts renders here as a plan card
+ * the operator can approve and run **in the chat** — the same claim-gated
+ * calls the Proposed-plans panel makes, with the same two review properties
+ * preserved:
+ *
+ *  - **Approve sends the hash of the steps this card is showing.** The card
+ *    renders from the live plan (re-fetched, not the proposal-time preview),
+ *    so what is approved is what is on screen; a plan revised elsewhere gets
+ *    a 409 and a re-read, exactly as in the panel.
+ *  - **Approve and Run stay two clicks**, for the same reason as the panel.
+ *
+ * The panel remains the overview surface (plans from other agents, history
+ * of settled plans); this card is the fast path for what THIS chat proposed.
  */
 
 const STORAGE_KEY = "ot2-assistant-thread";
@@ -38,7 +57,73 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Live plan state per plan id — what the cards render and approve from.
+  // "gone" = deleted/dismissed (or died with a gateway restart). Not
+  // persisted: statuses are re-fetched when the bubble opens, so a stale
+  // sessionStorage copy can never be what gets approved.
+  const [planStates, setPlanStates] = useState<Record<string, Plan | "gone">>({});
+  const [planBusy, setPlanBusy] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+
+  const refreshPlan = useCallback(async (planId: string) => {
+    try {
+      const plan = await getPlan(planId);
+      setPlanStates((s) => ({ ...s, [planId]: plan }));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setPlanStates((s) => ({ ...s, [planId]: "gone" }));
+      }
+      /* other failures: keep whatever we had; the card degrades read-only */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    // Re-sync every card when the bubble opens: approvals expire, plans get
+    // revised or dismissed from the panel, and the gateway may have restarted.
+    const ids = new Set(thread.map((m) => m.planId).filter(Boolean) as string[]);
+    ids.forEach((id) => void refreshPlan(id));
+    // Deliberately not keyed on `thread`: send() stores the fresh plan itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, refreshPlan]);
+
+  const runPlanAction = useCallback(
+    async (planId: string, fn: () => Promise<Plan>) => {
+      setPlanBusy(planId);
+      setError(null);
+      try {
+        const updated = await fn();
+        setPlanStates((s) => ({ ...s, [planId]: updated }));
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          setError(`${err.message} — the plan changed; re-read it before approving.`);
+        } else {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+        void refreshPlan(planId);
+      } finally {
+        setPlanBusy(null);
+      }
+    },
+    [refreshPlan],
+  );
+
+  const dismissPlan = useCallback(
+    async (planId: string) => {
+      setPlanBusy(planId);
+      setError(null);
+      try {
+        await deletePlan(planId, claim.token);
+        setPlanStates((s) => ({ ...s, [planId]: "gone" }));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        void refreshPlan(planId);
+      } finally {
+        setPlanBusy(null);
+      }
+    },
+    [claim.token, refreshPlan],
+  );
 
   useEffect(() => {
     // One probe on mount. If the gateway has no assistant this component then
@@ -74,9 +159,12 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
       let steps: PlanStep[] | undefined;
       if (res.plan_id) {
         try {
-          steps = (await getPlan(res.plan_id)).steps;
+          const plan = await getPlan(res.plan_id);
+          steps = plan.steps;
+          // Seed the live card immediately — approvable without a reopen.
+          setPlanStates((s) => ({ ...s, [plan.plan_id]: plan }));
         } catch {
-          /* preview is a nicety; the panel has the authoritative copy */
+          /* preview is a nicety; the card degrades read-only without it */
         }
       }
       setThread((t) => [
@@ -179,44 +267,25 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
             >
               <span className="whitespace-pre-wrap">{m.content}</span>
               {m.planId && (
-                <div className="mt-1.5 rounded border border-emerald-200 bg-emerald-50/60 p-1.5 dark:border-emerald-900/50 dark:bg-emerald-950/30">
-                  {m.steps && m.steps.length > 0 && (
-                    <ol className="mb-1 flex flex-col gap-0.5">
-                      {m.steps.map((s, si) => (
-                        <li key={si} className="font-mono text-[11px] text-ink dark:text-slate-200">
-                          {si + 1}. {s.action}
-                          {Object.keys(s.args).length > 0 && (
-                            <span className="text-ink-subtle dark:text-slate-400">
-                              {"  "}
-                              {Object.entries(s.args)
-                                .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
-                                .join(" ")}
-                            </span>
-                          )}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                  {/* This is a proposal, not an action taken — say so, then send
-                      the operator to the one place it can be approved. The panel
-                      is the source of truth; this preview is read-only. */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const el = document.getElementById(`plan-${m.planId}`);
-                      if (el) {
-                        // Re-trigger :target even if we're already there, so the
-                        // ring flashes on a repeat click.
-                        window.location.hash = "";
-                        window.location.hash = `plan-${m.planId}`;
-                        el.scrollIntoView({ behavior: "smooth", block: "center" });
-                      }
-                    }}
-                    className="text-[10px] font-medium text-emerald-800 underline decoration-dotted hover:text-emerald-900 dark:text-emerald-300 dark:hover:text-emerald-200"
-                  >
-                    Review &amp; approve ↑
-                  </button>
-                </div>
+                <ChatPlanCard
+                  planId={m.planId}
+                  live={planStates[m.planId]}
+                  previewSteps={m.steps}
+                  busy={planBusy === m.planId}
+                  claimHeld={claim.held}
+                  onApprove={(hash) =>
+                    void runPlanAction(m.planId!, () =>
+                      approvePlan(m.planId!, hash, claim.token),
+                    )
+                  }
+                  onRun={() =>
+                    void runPlanAction(m.planId!, () => executePlan(m.planId!, claim.token))
+                  }
+                  onDiscard={() =>
+                    void runPlanAction(m.planId!, () => abortPlan(m.planId!, claim.token))
+                  }
+                  onDismiss={() => void dismissPlan(m.planId!)}
+                />
               )}
             </li>
           ))}
@@ -255,5 +324,196 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
         </button>
       </form>
     </section>
+  );
+}
+
+const CARD_STATUS_TONE: Record<string, string> = {
+  draft: "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
+  approved: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
+  executing: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
+  executed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
+  failed: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300",
+  aborted: "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300",
+};
+
+const CARD_STEP_TONE: Record<string, string> = {
+  pending: "text-ink dark:text-slate-200",
+  ok: "text-emerald-700 dark:text-emerald-400",
+  failed: "text-rose-700 dark:text-rose-400",
+  skipped: "text-amber-700 dark:text-amber-500",
+};
+
+function stepLine(s: PlanStep): string {
+  const args = Object.entries(s.args)
+    .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+    .join(" ");
+  return args ? `${s.action}  ${args}` : s.action;
+}
+
+/**
+ * The in-chat plan card: review, approve, and run without leaving the chat.
+ *
+ * Renders from the LIVE plan (`live`), never from the proposal-time preview,
+ * so the hash sent by Approve is the hash of exactly what is displayed — the
+ * same review property the panel enforces. Without live state (fetch failed,
+ * gateway restarted) the card degrades to the read-only preview.
+ */
+function ChatPlanCard({
+  planId,
+  live,
+  previewSteps,
+  busy,
+  claimHeld,
+  onApprove,
+  onRun,
+  onDiscard,
+  onDismiss,
+}: {
+  planId: string;
+  live: Plan | "gone" | undefined;
+  previewSteps?: PlanStep[];
+  busy: boolean;
+  claimHeld: boolean;
+  onApprove: (stepHash: string) => void;
+  onRun: () => void;
+  onDiscard: () => void;
+  onDismiss: () => void;
+}) {
+  if (live === "gone") {
+    return (
+      <p className="mt-1.5 text-[10px] italic text-ink-subtle dark:text-slate-500">
+        Plan dismissed.
+      </p>
+    );
+  }
+
+  const jump = (
+    <button
+      type="button"
+      onClick={() => {
+        const el = document.getElementById(`plan-${planId}`);
+        if (el) {
+          // Re-trigger :target even if we're already there, so the ring
+          // flashes on a repeat click.
+          window.location.hash = "";
+          window.location.hash = `plan-${planId}`;
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }}
+      className="text-[10px] text-ink-subtle underline decoration-dotted hover:text-ink dark:text-slate-500 dark:hover:text-slate-300"
+    >
+      view in panel
+    </button>
+  );
+
+  if (live === undefined) {
+    // No live state: show what was proposed, but never an Approve button —
+    // approving requires the hash of a plan we can actually see fresh.
+    return (
+      <div className="mt-1.5 rounded border border-slate-200 bg-surface-raised p-1.5 dark:border-slate-700 dark:bg-slate-900">
+        {previewSteps && previewSteps.length > 0 && (
+          <ol className="mb-1 flex flex-col gap-0.5">
+            {previewSteps.map((s, si) => (
+              <li key={si} className="font-mono text-[11px] text-ink dark:text-slate-200">
+                {si + 1}. {stepLine(s)}
+              </li>
+            ))}
+          </ol>
+        )}
+        {jump}
+      </div>
+    );
+  }
+
+  const actionButton = "rounded px-2 py-0.5 text-[11px] font-medium text-white disabled:opacity-40";
+  const quietButton =
+    "rounded border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-ink dark:border-slate-600 dark:text-slate-200 disabled:opacity-40";
+
+  return (
+    <div className="mt-1.5 rounded border border-slate-200 bg-surface-raised p-1.5 dark:border-slate-700 dark:bg-slate-900">
+      <div className="mb-1 flex items-center gap-1.5">
+        <span
+          className={`rounded px-1 py-px text-[10px] font-medium ${
+            CARD_STATUS_TONE[live.status] ?? CARD_STATUS_TONE.draft
+          }`}
+        >
+          {live.status}
+        </span>
+        <span className="ml-auto">{jump}</span>
+      </div>
+      <ol className="mb-1 flex flex-col gap-0.5">
+        {live.steps.map((s, si) => {
+          const outcome = live.results[si]?.outcome ?? "pending";
+          return (
+            <li
+              key={si}
+              className={`font-mono text-[11px] ${CARD_STEP_TONE[outcome] ?? CARD_STEP_TONE.pending}`}
+            >
+              {si + 1}. {stepLine(s)}
+              {live.results[si]?.message && (
+                <span className="ml-1 font-sans text-rose-700 dark:text-rose-400">
+                  {live.results[si].message}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      {live.status === "draft" && live.non_idempotent_actions.length > 0 && (
+        <p className="mb-1 text-[10px] text-amber-700 dark:text-amber-500">
+          ⚠ {live.non_idempotent_actions.join(", ")} cannot be safely repeated if the
+          link drops mid-step.
+        </p>
+      )}
+      {live.halt_reason && (
+        <p className="mb-1 text-[10px] text-rose-700 dark:text-rose-400">
+          Halted: {live.halt_reason}
+        </p>
+      )}
+      {live.status === "approved" && !live.executable && live.blocked_reason && (
+        <p className="mb-1 text-[10px] text-ink-subtle dark:text-slate-500">
+          {live.blocked_reason}
+        </p>
+      )}
+      {!claimHeld && live.status === "draft" && (
+        <p className="mb-1 text-[10px] text-amber-700 dark:text-amber-500">
+          Take control of the device to approve.
+        </p>
+      )}
+      <div className="flex flex-wrap gap-1.5">
+        {live.status === "draft" && (
+          <button
+            type="button"
+            disabled={!claimHeld || busy}
+            // Approves the hash of the steps rendered above — never a
+            // re-fetch-and-approve, so a plan that moved gets a 409.
+            onClick={() => onApprove(live.step_hash)}
+            className={`${actionButton} bg-sky-600`}
+          >
+            Approve these {live.steps.length} steps
+          </button>
+        )}
+        {live.status === "approved" && (
+          <button
+            type="button"
+            disabled={!claimHeld || busy || !live.executable}
+            onClick={onRun}
+            className={`${actionButton} bg-emerald-600`}
+          >
+            {busy ? "Running…" : "Run"}
+          </button>
+        )}
+        {(live.status === "draft" || live.status === "approved") && (
+          <button type="button" disabled={!claimHeld || busy} onClick={onDiscard} className={quietButton}>
+            Discard
+          </button>
+        )}
+        {(live.status === "failed" || live.status === "executed" || live.status === "aborted") && (
+          <button type="button" disabled={!claimHeld || busy} onClick={onDismiss} className={quietButton}>
+            Dismiss
+          </button>
+        )}
+      </div>
+    </div>
   );
 }

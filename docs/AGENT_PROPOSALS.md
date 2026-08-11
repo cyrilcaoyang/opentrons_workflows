@@ -114,6 +114,14 @@ plan is already terminal and abort leaves terminal plans untouched. Draft and
 approved plans are *aborted* instead, so the proposing agent can observe the
 rejection.
 
+There are **two operator review surfaces**, same gate: the Proposed-plans
+panel (every plan, every proposer) and the chat bubble's plan card (the plan
+this chat just drafted). Both are claim-gated and both approve the step-hash
+they rendered — the card re-fetches the live plan rather than trusting its
+proposal-time preview, so a plan revised elsewhere still 409s. Neither is
+agent-reachable; the assistant and the MCP server have no approve/execute
+tools.
+
 ## Wiring up Hermes
 
 `tools/ot2_agent_mcp.py` is a **standalone** stdio MCP server. It imports only
