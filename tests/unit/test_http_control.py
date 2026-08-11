@@ -266,6 +266,43 @@ def test_setup_protocol_registers_the_fixed_trash():
     assert len(trash_loads) == 1
 
 
+def test_trash_registration_adopts_a_preloaded_fixed_trash():
+    # Newer robot-servers preload the OT-2 fixed trash into every run and
+    # reserve slot 12 — loading there raises AreaNotInDeckConfigurationError
+    # (observed live on ot2_complexation 2026-08-11). The existing labware is
+    # adopted instead of loaded.
+    client = FakeClient()
+    client.get_run = lambda: {
+        "id": "run-1",
+        "labware": [
+            {
+                "id": "fixedTrash",
+                "loadName": "opentrons_1_trash_1100ml_fixed",
+                "location": {"slotName": "12"},
+            }
+        ],
+    }
+    ctl = OT2HttpControl(client)
+    ctl.initialize_protocol()
+    ctl.load_instrument(
+        {
+            "ot_default": True,
+            "nickname": "p300",
+            "instrument_name": "p300_single_gen2",
+            "mount": "right",
+        }
+    )
+    ctl.load_trash_bin()
+
+    assert all(
+        p.get("loadName") != "opentrons_1_trash_1100ml_fixed" for _, p in client.commands
+    )
+    ctl.drop_tip("p300")
+    ctype, params = _last(client)
+    assert ctype == "dropTip"
+    assert params["labwareId"] == "fixedTrash"
+
+
 def test_setup_protocol_skips_the_trash_when_slot_12_is_occupied():
     client = FakeClient()
     ctl = OT2HttpControl(client)

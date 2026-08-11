@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import paramiko
 import requests
 
-from ..control import OT2Control, OT2HttpControl, RunEngineClient
+from ..control import OT2Control, OT2HttpControl, RunEngineClient, RunEngineError
 from ..control import state_readers as _state_readers
 from ..version import __version__ as GATEWAY_VERSION
 from .claims import ClaimManager
@@ -380,8 +380,20 @@ class OT2Service:
         # The OT-2's fixed trash is always physically present. Register it as
         # soon as the run exists so a bare drop_tip routes there even in a
         # setup-less (declared-deck) session; setup_protocol's own registration
-        # guard then sees it and does not load a second one.
-        control.load_trash_bin()
+        # guard then sees it and does not load a second one. Best-effort: an
+        # engine that refuses (exotic deck configuration) must not cost the
+        # whole session — the per-drop fallback (drop in place) remains, and
+        # the warning names what was lost. First deploy of this call took the
+        # gateway down at startup (AreaNotInDeckConfigurationError); never
+        # let a convenience default do that again.
+        try:
+            control.load_trash_bin()
+        except RunEngineError as exc:
+            logger.warning(
+                "fixed-trash registration failed (%s); a bare drop_tip will "
+                "drop in place until a trash is registered",
+                exc,
+            )
         return control
 
     def shutdown(self) -> None:

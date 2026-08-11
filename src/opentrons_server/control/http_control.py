@@ -251,11 +251,21 @@ class OT2HttpControl:
         """Register the OT-2 fixed trash as an addressable labware.
 
         On the SSH path this method is Flex-only (``protocol.load_trash_bin``);
-        the OT-2's fixed trash is implicit in the protocol API. The run engine
-        has no implicit trash in a protocol-less run, so here the method loads
-        the fixed-trash labware definition (slot 12 by default) and registers
-        it as the default ``drop_tip`` target.
+        the OT-2's fixed trash is implicit in the protocol API. Here it becomes
+        the default ``drop_tip`` target, by one of two routes: newer
+        robot-server versions **preload** the fixed trash into every run and
+        reserve slot 12 (loading there raises
+        ``AreaNotInDeckConfigurationError`` — observed live on ot2_complexation
+        2026-08-11), so the run's existing trash labware is adopted when
+        present; older servers leave a protocol-less run empty, and only then
+        is the fixed-trash definition actually loaded.
         """
+        run = self.client.get_run() or {}
+        for lw in run.get("labware") or []:
+            if lw.get("id") == "fixedTrash" or lw.get("loadName") == _OT2_FIXED_TRASH_LOADNAME:
+                self._labware_ids[nickname] = lw.get("id")
+                self._trash_nickname = nickname
+                return nickname
         self.client.execute(
             RunEngineCommands.load_labware(
                 _OT2_FIXED_TRASH_LOADNAME,
