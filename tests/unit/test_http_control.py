@@ -223,7 +223,7 @@ def test_drop_tip_with_location_uses_drop_tip():
 # --- fixed trash auto-registration (setup_protocol) --------------------------
 
 
-def test_setup_protocol_registers_the_fixed_trash():
+def test_setup_protocol_registers_the_fixed_trash_area():
     client = FakeClient()
     ctl = OT2HttpControl(client)
     ctl.initialize_protocol()
@@ -247,23 +247,17 @@ def test_setup_protocol_registers_the_fixed_trash():
     }
     ctl.setup_protocol(**recipe)
 
-    ctype, params = _last(client)
-    assert ctype == "loadLabware"
-    assert params["loadName"] == "opentrons_1_trash_1100ml_fixed"
-    assert params["location"] == {"slotName": "12"}
-
-    # A bare drop_tip now routes to the trash (SSH-path behavior), not in place.
+    # No trash labware is loaded (slot 12 is not loadable on modern
+    # robot-servers) — the fixedTrash addressable AREA is registered instead,
+    # and a bare drop_tip routes to it (SSH-path behavior), not in place.
+    assert all(
+        p.get("loadName") != "opentrons_1_trash_1100ml_fixed" for _, p in client.commands
+    )
     ctl.drop_tip("p300")
-    ctype, params = _last(client)
-    assert ctype == "dropTip"
-    assert params["labwareId"] == "default_trash"
-
-    # A re-setup does not load a second trash into the occupied slot.
-    ctl.setup_protocol(**recipe)
-    trash_loads = [
-        p for _, p in client.commands if p.get("loadName") == "opentrons_1_trash_1100ml_fixed"
-    ]
-    assert len(trash_loads) == 1
+    move, drop = client.commands[-2], client.commands[-1]
+    assert move[0] == "moveToAddressableAreaForDropTip"
+    assert move[1]["addressableAreaName"] == "fixedTrash"
+    assert drop[0] == "dropTipInPlace"
 
 
 def test_trash_registration_adopts_a_preloaded_fixed_trash():
@@ -326,12 +320,12 @@ def test_setup_protocol_skips_the_trash_when_slot_12_is_occupied():
         ],
     )
 
-    assert all(
-        p.get("loadName") != "opentrons_1_trash_1100ml_fixed" for _, p in client.commands
-    )
-    # Without a trash the fallback is unchanged: drop where the pipette is.
+    # A recipe that deliberately occupies slot 12 opts out of every trash
+    # route: the fallback is unchanged (drop where the pipette is), with no
+    # positioning move first.
     ctl.drop_tip("p300")
     assert _last(client)[0] == "dropTipInPlace"
+    assert all(c != "moveToAddressableAreaForDropTip" for c, _ in client.commands)
 
 
 # --- move labware / handoff -------------------------------------------------

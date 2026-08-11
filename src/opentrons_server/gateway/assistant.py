@@ -84,7 +84,9 @@ rejected. Address labware by `labware_nickname`: the setup recipe's nickname \
 when one exists, else the deck slot (e.g. "9"). Address pipettes by the \
 recipe nickname, else the mount ("left" / "right"). `pick_up_tip` may omit \
 the rack and position entirely — the gateway picks the next available tip \
-from a tracked, size-compatible rack.
+from a tracked, size-compatible rack. To discard a tip into the waste, \
+propose `drop_tip` with only the pipette: the fixed trash is the default \
+target and takes no location.
 4. Propose the smallest plan that does what was asked. Explain each step in one \
 short line.
 5. If a request is ambiguous, out of scope, or unsafe, say so plainly instead \

@@ -299,6 +299,30 @@ class RunEngineCommands:
         return "dropTipInPlace", params
 
     @staticmethod
+    def move_to_addressable_area_for_drop_tip(
+        pipette_id: str,
+        addressable_area_name: str,
+        *,
+        alternate_drop_location: bool = True,
+    ) -> Command:
+        """Position over a deck *area* (e.g. the OT-2 fixed trash) for a drop.
+
+        On modern robot-servers the OT-2 fixed trash is not labware — it is
+        the ``fixedTrash`` addressable area — and this + ``dropTipInPlace``
+        is exactly how the protocol API drops tips into it (API 2.16+).
+        ``alternate_drop_location`` mirrors the protocol API's default of
+        scattering drop positions so tips do not pile into one spot.
+        """
+        return (
+            "moveToAddressableAreaForDropTip",
+            {
+                "pipetteId": pipette_id,
+                "addressableAreaName": addressable_area_name,
+                "alternateDropLocation": alternate_drop_location,
+            },
+        )
+
+    @staticmethod
     def blow_out(
         pipette_id: str,
         flow_rate: float,

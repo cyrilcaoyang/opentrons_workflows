@@ -70,9 +70,13 @@ _DEFAULT_BLOWOUT_FLOW = float(os.getenv("OT2_HTTP_BLOWOUT_FLOW_UL_S", "100"))
 
 _OFF_DECK_ALIASES = {"OFF_DECK", "offDeck", "off_deck", OFF_DECK}
 
-# The OT-2's fixed trash: a normal labware definition in slot 12.
+# The OT-2's fixed trash. Older robot-servers model it as a normal labware
+# definition in slot 12; modern ones model it as an addressable AREA — slot 12
+# is then not loadable at all (AreaNotInDeckConfigurationError, observed live
+# on ot2_complexation 2026-08-11, robot-server leaving live runs empty).
 _OT2_FIXED_TRASH_LOADNAME = "opentrons_1_trash_1100ml_fixed"
 _OT2_FIXED_TRASH_SLOT = "12"
+_OT2_FIXED_TRASH_AREA = "fixedTrash"
 
 # Motor axes for the run-engine `home` command, keyed by mount.
 _MOUNT_Z_AXIS = {"left": "leftZ", "right": "rightZ"}
@@ -125,8 +129,11 @@ class OT2HttpControl:
         self._clearances: Dict[str, Dict[str, float]] = {}
         # pip -> default gantry speed (mm/s); applied to move_to_pip only.
         self._default_speeds: Dict[str, float] = {}
-        # Registered trash labware nickname; default drop_tip target when set.
+        # Registered trash: a labware nickname (older servers / preloaded runs)
+        # or an addressable-area name (modern servers, where the fixed trash is
+        # not labware). Default drop_tip target when either is set.
         self._trash_nickname: Optional[str] = None
+        self._trash_area: Optional[str] = None
 
     # -- session lifecycle -------------------------------------------------
 
@@ -170,14 +177,19 @@ class OT2HttpControl:
         # trash, so without this a bare drop_tip fell through to
         # dropTipInPlace — the tip landed wherever the pipette happened to be.
         # Registered here (not per-drop) so drop_tip's own precedence
-        # (pending location > trash > in place) stays a pure lookup. Skipped
-        # if a recipe deliberately occupies slot 12, or on a re-setup that
-        # already registered it.
+        # (pending location > trash labware > trash area > in place) stays a
+        # pure lookup. Skipped if a recipe deliberately occupies slot 12, or
+        # when a registration (startup-time or an earlier setup) already
+        # happened.
         occupied = {
             str(cfg.get("location"))
             for cfg in [*(labware or []), *(modules or [])]
         }
-        if self._trash_nickname is None and _OT2_FIXED_TRASH_SLOT not in occupied:
+        if (
+            self._trash_nickname is None
+            and self._trash_area is None
+            and _OT2_FIXED_TRASH_SLOT not in occupied
+        ):
             self.load_trash_bin()
 
     def load_labware(self, labware: Dict[str, Any]) -> str:
@@ -248,17 +260,23 @@ class OT2HttpControl:
         nickname: str = "default_trash",
         location: str = _OT2_FIXED_TRASH_SLOT,
     ) -> str:
-        """Register the OT-2 fixed trash as an addressable labware.
+        """Register the OT-2 fixed trash as the default ``drop_tip`` target.
 
         On the SSH path this method is Flex-only (``protocol.load_trash_bin``);
-        the OT-2's fixed trash is implicit in the protocol API. Here it becomes
-        the default ``drop_tip`` target, by one of two routes: newer
-        robot-server versions **preload** the fixed trash into every run and
-        reserve slot 12 (loading there raises
-        ``AreaNotInDeckConfigurationError`` — observed live on ot2_complexation
-        2026-08-11), so the run's existing trash labware is adopted when
-        present; older servers leave a protocol-less run empty, and only then
-        is the fixed-trash definition actually loaded.
+        the OT-2's fixed trash is implicit in the protocol API. Here, one of
+        two routes, decided by what the robot-server actually offers:
+
+        * A run that **preloads** the fixed trash as labware (some server
+          versions do) — adopt that labware.
+        * Otherwise the trash is the ``fixedTrash`` **addressable area** —
+          slot 12 is not loadable at all on such servers
+          (``AreaNotInDeckConfigurationError``, observed live 2026-08-11, and
+          the reason the first shipped version of this method took the whole
+          session down). Drops then use ``moveToAddressableAreaForDropTip`` +
+          ``dropTipInPlace``, exactly as protocol API ≥ 2.16 does. No labware
+          is loaded, so nothing can fail at registration time.
+
+        ``location`` is kept for signature parity; the area route ignores it.
         """
         run = self.client.get_run() or {}
         for lw in run.get("labware") or []:
@@ -266,17 +284,7 @@ class OT2HttpControl:
                 self._labware_ids[nickname] = lw.get("id")
                 self._trash_nickname = nickname
                 return nickname
-        self.client.execute(
-            RunEngineCommands.load_labware(
-                _OT2_FIXED_TRASH_LOADNAME,
-                "opentrons",
-                1,
-                self._location(location),
-                labware_id=nickname,
-            )
-        )
-        self._labware_ids[nickname] = nickname
-        self._trash_nickname = nickname
+        self._trash_area = _OT2_FIXED_TRASH_AREA
         return nickname
 
     def remove_labware(self, labware_nickname: str) -> None:
@@ -468,9 +476,10 @@ class OT2HttpControl:
         self._volumes[pip_name] = 0.0
 
     def drop_tip(self, pip_name: str, *, home_after: Optional[bool] = None) -> None:
-        """Drop the tip. Precedence: pending location > registered trash (see
-        :meth:`load_trash_bin`) > in place. The SSH path always auto-routes to
-        the OT-2 fixed trash; register the trash to get the same behavior."""
+        """Drop the tip. Precedence: pending location > registered trash
+        labware > registered trash *area* (see :meth:`load_trash_bin`) > in
+        place. The SSH path always auto-routes to the OT-2 fixed trash;
+        registering the trash gives the same behavior here."""
         pipette_id = self._pipette_id(pip_name)
         if self._pending is not None:
             loc = self._take_pending("drop_tip")
@@ -494,6 +503,17 @@ class OT2HttpControl:
                     "A1",
                     home_after=home_after,
                 )
+            )
+        elif self._trash_area is not None:
+            # Modern servers: the fixed trash is an area, not labware. Two
+            # commands — position over the area, then drop in place there.
+            self.client.execute(
+                RunEngineCommands.move_to_addressable_area_for_drop_tip(
+                    pipette_id, self._trash_area
+                )
+            )
+            self.client.execute(
+                RunEngineCommands.drop_tip_in_place(pipette_id, home_after=home_after)
             )
         else:
             # Fallback: drop where the pipette is (NOT the trash). Flagged.

@@ -96,6 +96,12 @@ _OT2_RUN_REFRESH_INTERVAL = float(os.getenv("OT2_RUN_REFRESH_INTERVAL", "5.0"))
 _OT2_SELF_HEAL_INTERVAL = float(os.getenv("OT2_SELF_HEAL_INTERVAL", "60.0"))
 
 
+# References a drop_tip caller may use for the OT-2 fixed trash. The trash is
+# the *default* drop target and needs no addressing; these route to it rather
+# than being resolved as labware (slot 12 holds no loadable labware — it IS
+# the trash). "12" is what the assistant naturally proposes.
+_TRASH_ALIASES = frozenset({"12", "trash", "fixedTrash", "fixed_trash", "default_trash", "waste"})
+
 # Actions that drive a protocol command on the robot — this device's primary
 # operation. Withheld from `allowed_actions` while one is already in flight
 # (STATUS_SPEC §2.3). Everything else on the surface is either abort/stop
@@ -942,17 +948,34 @@ class OT2Service:
             )
 
     def drop_tip(self, request: Any) -> None:
+        nickname = request.labware_nickname
+        position = request.position
+        if nickname and not position and str(nickname).strip() in _TRASH_ALIASES:
+            # Naming the trash without a well is the same as naming nothing —
+            # it is already the default target, and it is not resolvable
+            # labware. A full nickname+position pair always passes through:
+            # a session may genuinely hold labware nicknamed "trash".
+            nickname = None
+        elif bool(nickname) != bool(position):
+            # Refuse a half-specified location loudly (pre-motion, no
+            # last_error): silently ignoring it is how a "drop in slot 12"
+            # once became a drop wherever the head happened to be.
+            raise ValueError(
+                "an explicit drop location needs both labware_nickname and "
+                "position; omit both to drop into the fixed trash"
+            )
+
         def _drop_tip() -> None:
-            # Optional explicit drop location (e.g. a loaded trash labware).
-            # When omitted, both transports route to the OT-2 fixed trash: SSH
-            # implicitly, HTTP via the trash registered at setup_protocol time
-            # (drop-in-place remains only for an HTTP session whose recipe
-            # deliberately occupies slot 12). Mirrors pick_up_tip.
+            # Optional explicit drop location (e.g. a well to return a tip
+            # to). When omitted, both transports route to the OT-2 fixed
+            # trash: SSH implicitly, HTTP via the trash registered when the
+            # session was created (trash labware on servers that model it as
+            # labware, the fixedTrash addressable area otherwise). Mirrors
+            # pick_up_tip.
             pip = self._ensure_session_pipette(request.pipette)
-            if request.labware_nickname and request.position:
+            if nickname and position:
                 self._require_control().get_location_from_labware(
-                    self._resolve_session_labware(request.labware_nickname),
-                    request.position,
+                    self._resolve_session_labware(nickname), position
                 )
             self._require_control().drop_tip(pip)
 

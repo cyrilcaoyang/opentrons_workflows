@@ -392,17 +392,21 @@ def test_return_tip_without_pick_raises():
 
 
 def test_drop_tip_defaults_to_registered_trash():
+    # A run without a preloaded trash labware registers the fixedTrash
+    # addressable AREA (slot 12 is not loadable on modern robot-servers):
+    # a bare drop is then move-over-the-area + drop-in-place, exactly the
+    # protocol API's own ≥2.16 sequence.
     ctl, client = _loaded_control()
     ctl.load_trash_bin()
-    trash_load = client.commands[-1]
-    assert trash_load[0] == "loadLabware"
-    assert trash_load[1]["loadName"] == "opentrons_1_trash_1100ml_fixed"
-    assert trash_load[1]["location"] == {"slotName": "12"}
+    assert all(
+        p.get("loadName") != "opentrons_1_trash_1100ml_fixed" for _, p in client.commands
+    )
     ctl.drop_tip("p300")
-    ctype, params = _last(client)
-    assert ctype == "dropTip"
-    assert params["labwareId"] == "default_trash"
-    assert params["wellName"] == "A1"
+    move, drop = client.commands[-2], client.commands[-1]
+    assert move[0] == "moveToAddressableAreaForDropTip"
+    assert move[1]["addressableAreaName"] == "fixedTrash"
+    assert move[1]["alternateDropLocation"] is True
+    assert drop[0] == "dropTipInPlace"
 
 
 def test_drop_tip_without_trash_drops_in_place_with_home_after():

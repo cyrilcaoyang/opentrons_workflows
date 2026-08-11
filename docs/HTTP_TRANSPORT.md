@@ -257,6 +257,7 @@ well `origin` enum = `top|bottom|center|meniscus` (aspirate/dispense),
 | `loadModule` | `model`, `location` | `moduleId` |
 | `pickUpTip` / `dropTip` | `pipetteId`, `labwareId`, `wellName` | `wellLocation`, `homeAfter` (drop) |
 | `dropTipInPlace` | `pipetteId` | `homeAfter` |
+| `moveToAddressableAreaForDropTip` | `pipetteId`, `addressableAreaName` (`fixedTrash` on the OT-2) | `alternateDropLocation`, `offset` |
 | `aspirate` / `dispense` | `pipetteId`, `labwareId`, `wellName`, `volume`, `flowRate`, `wellLocation` | `pushOut` (dispense) |
 | `aspirateInPlace` / `dispenseInPlace` | `pipetteId`, `volume`, `flowRate` | `pushOut` (dispense) |
 | `blowout` / `blowOutInPlace` | `pipetteId`, `flowRate` (+ well for `blowout`) | — |

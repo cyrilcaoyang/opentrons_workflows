@@ -307,6 +307,33 @@ def test_declared_deck_pick_without_an_attached_pipette_is_honest(service):
         service.pick_up_tip(TipRequest(pipette="left"))
 
 
+def test_drop_tip_accepts_trash_aliases_as_the_default_target(service):
+    # The assistant naturally proposes drop_tip {"labware_nickname": "12"} for
+    # "drop it in waste". Slot 12 IS the trash — route to the default rather
+    # than trying to resolve labware that does not exist there.
+    service.setup_protocol(RECIPE)
+    _pick(service)
+    location_calls = service.control.get_location_from_labware.call_count
+
+    service.drop_tip(TipRequest(pipette="p300", labware_nickname="12"))
+
+    service.control.drop_tip.assert_called_once_with("p300")
+    # No explicit-location addressing happened for the alias.
+    assert service.control.get_location_from_labware.call_count == location_calls
+
+
+def test_drop_tip_refuses_a_half_specified_location(service):
+    # Silently ignoring a lone labware_nickname is how "drop in slot 12" once
+    # became a drop wherever the head happened to be. Refused pre-motion.
+    service.setup_protocol(RECIPE)
+    _pick(service)
+
+    with pytest.raises(ValueError, match="both labware_nickname and position"):
+        service.drop_tip(TipRequest(pipette="p300", labware_nickname="plate_D"))
+    service.control.drop_tip.assert_not_called()
+    assert service.last_error is None
+
+
 def test_pick_untracked_rack_without_position_is_a_precondition_refusal(service):
     service.setup_protocol(RECIPE)
 

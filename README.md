@@ -915,8 +915,13 @@ Useful control endpoints:
 - `POST /control/aspirate`
 - `POST /control/dispense`
 - `POST /control/drop-tip` — no body location → the fixed trash, on both
-  transports (the HTTP session registers the fixed trash when the run is
-  created, so setup-less declared-deck sessions route there too).
+  transports (HTTP adopts the run's preloaded trash labware when the server
+  provides one, else drops via the `fixedTrash` addressable area; registered
+  when the run is created, so setup-less declared-deck sessions route there
+  too). Naming the trash without a well (`labware_nickname: "12"`, `"trash"`,
+  `"waste"`, …) is the same as naming nothing; any other explicit location
+  must carry **both** `labware_nickname` and `position` — a half-specified
+  one is refused rather than silently ignored.
 - `POST /control/move-labware`
 - `POST /control/tips/reset` — body `{"slot": str, "wells"?: [str]}`;
   (re)registers a tip rack with every tip fresh (a physical rack swap).

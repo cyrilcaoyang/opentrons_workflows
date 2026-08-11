@@ -167,23 +167,19 @@ def test_http_drop_tip_with_location_targets_that_labware(fake_http):
 
 
 def test_http_drop_tip_without_location_routes_to_the_fixed_trash(fake_http):
-    # No location -> the fixed trash, which startup registered into the run.
-    # (dropTipInPlace — dropping wherever the head happens to be — is the
-    # fallback only when nothing registered a trash, e.g. slot 12 occupied.)
+    # No location -> the fixed trash, which startup registered as the
+    # fixedTrash addressable area (this fake, like modern robot-servers,
+    # neither preloads a trash labware nor allows loading into slot 12).
     from opentrons_server.gateway.models import TipRequest
 
     service = _http_service_with_pipette(fake_http)
 
     service.drop_tip(TipRequest(pipette="p300"))
 
+    move = next(c for c in fake_http.commands if c[0] == "moveToAddressableAreaForDropTip")
+    assert move[1]["addressableAreaName"] == "fixedTrash"
     drop = next(c for c in fake_http.commands if c[0] in ("dropTip", "dropTipInPlace"))
-    assert drop[0] == "dropTip"
-    assert drop[1]["labwareId"] == "default_trash"
-    trash_load = next(
-        p for c, p in fake_http.commands
-        if c == "loadLabware" and p.get("loadName") == "opentrons_1_trash_1100ml_fixed"
-    )
-    assert trash_load["location"] == {"slotName": "12"}
+    assert drop[0] == "dropTipInPlace"
 
 
 def test_http_snapshot_populates_deck_parity_from_run(fake_http):
