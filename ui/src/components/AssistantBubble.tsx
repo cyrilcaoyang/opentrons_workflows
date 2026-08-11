@@ -33,6 +33,7 @@ function loadThread(): AssistantMessage[] {
 export function AssistantBubble({ claim }: { claim: ClaimState }) {
   const [available, setAvailable] = useState(false);
   const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [thread, setThread] = useState<AssistantMessage[]>(loadThread);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
@@ -120,7 +121,17 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
   }
 
   return (
-    <section className="fixed bottom-4 right-4 z-40 flex h-[28rem] w-[22rem] max-w-[calc(100vw-2rem)] flex-col rounded-xl border border-slate-200 bg-surface-raised shadow-xl dark:border-slate-700 dark:bg-slate-900">
+    <section
+      className={[
+        "fixed bottom-4 right-4 z-40 flex max-w-[calc(100vw-2rem)] flex-col rounded-xl border border-slate-200 bg-surface-raised shadow-xl dark:border-slate-700 dark:bg-slate-900",
+        // Two sizes rather than a drag-resize: anchored bottom-right, a CSS
+        // resize handle would grow the panel off-screen. Default is wide
+        // enough for a plan preview; expanded is for reading longer replies.
+        expanded
+          ? "h-[min(46rem,calc(100vh-2rem))] w-[44rem]"
+          : "h-[32rem] w-[32rem] max-h-[calc(100vh-2rem)]",
+      ].join(" ")}
+    >
       <header className="flex items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-slate-800">
         <div className="flex flex-col">
           <span className="text-xs font-semibold text-ink dark:text-slate-100">Assistant</span>
@@ -128,14 +139,25 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
             Proposes only — you approve and run
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="rounded px-1.5 text-sm text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-          aria-label="Close the assistant"
-        >
-          ×
-        </button>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            className="rounded px-1.5 text-sm text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+            aria-label={expanded ? "Shrink the assistant window" : "Enlarge the assistant window"}
+            title={expanded ? "Shrink" : "Enlarge"}
+          >
+            {expanded ? "⤡" : "⤢"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="rounded px-1.5 text-sm text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+            aria-label="Close the assistant"
+          >
+            ×
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto px-3 py-2">
@@ -161,7 +183,7 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
                   {m.steps && m.steps.length > 0 && (
                     <ol className="mb-1 flex flex-col gap-0.5">
                       {m.steps.map((s, si) => (
-                        <li key={si} className="font-mono text-[10px] text-ink dark:text-slate-200">
+                        <li key={si} className="font-mono text-[11px] text-ink dark:text-slate-200">
                           {si + 1}. {s.action}
                           {Object.keys(s.args).length > 0 && (
                             <span className="text-ink-subtle dark:text-slate-400">
