@@ -269,6 +269,15 @@ export function abortPlan(planId: string, token: string | null): Promise<Plan> {
   });
 }
 
+/** Dismiss a settled (failed / executed / aborted) plan — removes it from the
+ *  list entirely. Abort cannot clear a failed plan: it is already terminal. */
+export function deletePlan(planId: string, token: string | null): Promise<void> {
+  return fetchJson<void>(`/plans/${encodeURIComponent(planId)}`, {
+    method: "DELETE",
+    headers: withToken(token),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Optional chat assistant
 // ---------------------------------------------------------------------------

@@ -245,6 +245,68 @@ def test_pick_with_no_rack_and_no_usable_tip_is_a_precondition_refusal(service):
     assert service.last_error is None
 
 
+def test_declared_deck_pick_provisions_the_session_on_demand(service):
+    """The 2026-08-11 live failure: a declared deck (no /control/setup) has no
+    session nicknames, so every tracked rack was 'not loaded in the control
+    session' and a bare pick had nothing to address. The declared labware and
+    the probed pipette are now loaded into the session at the point of use."""
+
+    service.declare_deck({"9": "opentrons_96_tiprack_300ul"})
+    service._last_probe = {
+        "instruments": [
+            {"mount": "left", "name": "p300_single_gen2", "channels": 1}
+        ]
+    }
+
+    service.pick_up_tip(TipRequest(pipette="left"))
+
+    service.control.load_instrument.assert_called_once_with(
+        {
+            "ot_default": True,
+            "nickname": "left",
+            "instrument_name": "p300_single_gen2",
+            "mount": "left",
+        }
+    )
+    service.control.load_labware.assert_called_once_with(
+        {
+            "ot_default": True,
+            "nickname": "slot_9",
+            "loadname": "opentrons_96_tiprack_300ul",
+            "location": "9",
+        }
+    )
+    service.control.get_location_from_labware.assert_called_with("slot_9", "A1")
+    service.control.pick_up_tip.assert_called_with("left")
+    assert service._mounted_tips["left"]["rack"] == "9"
+
+
+def test_declared_deck_slot_and_mount_load_only_once(service):
+    service.declare_deck({"9": "opentrons_96_tiprack_300ul"})
+    service._last_probe = {
+        "instruments": [
+            {"mount": "left", "name": "p300_single_gen2", "channels": 1}
+        ]
+    }
+
+    service.pick_up_tip(TipRequest(pipette="left", labware_nickname="9"))
+    service.drop_tip(TipRequest(pipette="left"))
+    service.pick_up_tip(TipRequest(pipette="left", labware_nickname="9"))
+
+    assert service.control.load_labware.call_count == 1
+    assert service.control.load_instrument.call_count == 1
+    # Second pick skipped the emptied A1.
+    assert service._mounted_tips["left"]["well"] == "B1"
+
+
+def test_declared_deck_pick_without_an_attached_pipette_is_honest(service):
+    service.declare_deck({"9": "opentrons_96_tiprack_300ul"})
+    service._last_probe = {"instruments": []}
+
+    with pytest.raises(Exception, match="no pipette known on mount 'left'"):
+        service.pick_up_tip(TipRequest(pipette="left"))
+
+
 def test_pick_untracked_rack_without_position_is_a_precondition_refusal(service):
     service.setup_protocol(RECIPE)
 

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiError, abortPlan, approvePlan, executePlan, listPlans } from "../lib/api";
+import {
+  ApiError,
+  abortPlan,
+  approvePlan,
+  deletePlan,
+  executePlan,
+  listPlans,
+} from "../lib/api";
 import type { ClaimState } from "../lib/use-claim";
 import type { Plan, StepOutcome } from "../lib/types";
 
@@ -89,6 +96,26 @@ export function PlanReviewPanel({ claim }: { claim: ClaimState }) {
       }
     },
     [refresh],
+  );
+
+  // Removes the plan from the list entirely (server-side DELETE) — the way an
+  // operator clears a failed plan's "Halted:" banner. Abort cannot do it: a
+  // failed plan is already terminal, so abort leaves it exactly as it is.
+  const dismiss = useCallback(
+    async (planId: string) => {
+      setBusyId(planId);
+      setError(null);
+      try {
+        await deletePlan(planId, claim.token);
+        setPlans((prev) => prev.filter((p) => p.plan_id !== planId));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        void refresh();
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [claim.token, refresh],
   );
 
   const open = plans.filter((p) => p.status !== "executed" && p.status !== "aborted");
@@ -235,14 +262,29 @@ export function PlanReviewPanel({ claim }: { claim: ClaimState }) {
                   </button>
                 )}
 
-                <button
-                  type="button"
-                  disabled={!claim.held || busy}
-                  onClick={() => run(plan.plan_id, () => abortPlan(plan.plan_id, claim.token))}
-                  className="rounded-md border border-ink-line px-3 py-1.5 text-xs font-medium text-ink dark:border-slate-600 dark:text-slate-200"
-                >
-                  Discard
-                </button>
+                {/* One button, two verbs: a live plan is *aborted* (stays
+                    visible as `aborted`, so the proposing agent can see the
+                    rejection); a failed one is *dismissed* (deleted — it is
+                    already terminal, and this clears its banner). */}
+                {plan.status === "failed" ? (
+                  <button
+                    type="button"
+                    disabled={!claim.held || busy}
+                    onClick={() => void dismiss(plan.plan_id)}
+                    className="rounded-md border border-ink-line px-3 py-1.5 text-xs font-medium text-ink dark:border-slate-600 dark:text-slate-200"
+                  >
+                    Dismiss
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!claim.held || busy}
+                    onClick={() => run(plan.plan_id, () => abortPlan(plan.plan_id, claim.token))}
+                    className="rounded-md border border-ink-line px-3 py-1.5 text-xs font-medium text-ink dark:border-slate-600 dark:text-slate-200"
+                  >
+                    Discard
+                  </button>
+                )}
               </div>
             </li>
           );

@@ -470,6 +470,23 @@ class PlanStore:
         plan.approval = None
         return plan
 
+    def delete(self, plan_id: str) -> None:
+        """Dismiss a settled plan — remove it from the registry entirely.
+
+        Only terminal plans (executed / failed / aborted) may be deleted: a
+        draft or approved plan is *aborted* instead, so the proposing agent
+        can observe the rejection, and an executing plan is not removable at
+        all. This is how an operator clears a failed plan's banner; what ran
+        is already durable in the events exporter's audit rows, and the
+        registry itself is in-memory (dies with the process) by design.
+        """
+        plan = self.get(plan_id)
+        if plan.status not in {"executed", "failed", "aborted"}:
+            raise PlanStateError(
+                f"plan {plan_id} is {plan.status}; abort it instead of deleting"
+            )
+        del self._plans[plan_id]
+
 
 # ---------------------------------------------------------------------------
 # Executor

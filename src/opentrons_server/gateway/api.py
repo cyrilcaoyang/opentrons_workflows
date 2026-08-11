@@ -997,6 +997,19 @@ def create_app(
         except PlanError as exc:
             raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
 
+    @app.delete("/plans/{plan_id}", status_code=204, tags=["plans"])
+    def delete_plan(plan_id: str, _claim: None = Depends(require_claim)) -> None:
+        """Dismiss a settled (executed / failed / aborted) plan.
+
+        Claim-gated like abort. This is the operator clearing a halted plan's
+        banner from the panel — abort cannot do it, because a failed plan is
+        already terminal and abort leaves terminal plans untouched.
+        """
+        try:
+            plans.delete(plan_id)
+        except PlanError as exc:
+            raise HTTPException(status_code=_plan_error_status(exc), detail=str(exc))
+
     def _run_non_idempotent(func: Any, success_message: str) -> CommandResponse:
         try:
             func()

@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Union, get_args
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sdl_lab_contract import (
     Activity,
@@ -112,19 +112,33 @@ class CommandResponse(BaseModel):
     state: Optional[str] = None
 
 
-class StartupRequest(BaseModel):
+class StrictRequest(BaseModel):
+    """Base for control request bodies: unknown keys are rejected, not ignored.
+
+    Pydantic's default silently drops unrecognized fields, which turned an
+    agent-proposed ``pick_up_tip {"slot": 9, "well": "A1"}`` into a *bare* pick
+    — the misnamed arguments simply vanished and something else ran instead of
+    a validation error. On a device, an argument that silently disappears is
+    the same failure class as a swallowed exception; refuse loudly at the
+    boundary so the caller (human or agent) corrects the step.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StartupRequest(StrictRequest):
     host_alias: Optional[str] = None
     password: str = ""
     simulation: bool = False
 
 
-class ProtocolSetupRequest(BaseModel):
+class ProtocolSetupRequest(StrictRequest):
     labware: List[Dict[str, Any]] = Field(default_factory=list)
     instruments: List[Dict[str, Any]] = Field(default_factory=list)
     modules: List[Dict[str, Any]] = Field(default_factory=list)
 
 
-class WellLocation(BaseModel):
+class WellLocation(StrictRequest):
     labware_nickname: str
     position: str
     top: Optional[float] = None
@@ -132,7 +146,7 @@ class WellLocation(BaseModel):
     center: bool = False
 
 
-class CoordinateLocation(BaseModel):
+class CoordinateLocation(StrictRequest):
     """Absolute deck coordinates in mm (the robot's deck reference frame)."""
 
     x: float
@@ -140,7 +154,7 @@ class CoordinateLocation(BaseModel):
     z: float
 
 
-class MoveToRequest(BaseModel):
+class MoveToRequest(StrictRequest):
     """Move a pipette to a well or to absolute deck coordinates (no liquid).
 
     Exactly one of ``location`` (well-addressed, same shape as aspirate/dispense)
@@ -165,7 +179,7 @@ class MoveToRequest(BaseModel):
         return self
 
 
-class LiquidMoveRequest(BaseModel):
+class LiquidMoveRequest(StrictRequest):
     pipette: str
     volume_ul: float
     location: WellLocation
@@ -175,7 +189,7 @@ class LiquidMoveRequest(BaseModel):
     flow_rate: Optional[float] = Field(default=None, gt=0.0)
 
 
-class TipRequest(BaseModel):
+class TipRequest(StrictRequest):
     pipette: str
     labware_nickname: Optional[str] = None
     position: Optional[str] = None
@@ -188,7 +202,7 @@ class TipRequest(BaseModel):
     force: bool = False
 
 
-class TipsResetRequest(BaseModel):
+class TipsResetRequest(StrictRequest):
     """(Re)register a tip rack with every tip fresh — a physical rack swap.
 
     Addressed by deck ``slot``, which is a tip rack's identity: a rack carries
@@ -223,12 +237,12 @@ class TipRackState(BaseModel):
     registered_at: datetime
 
 
-class MoveLabwareRequest(BaseModel):
+class MoveLabwareRequest(StrictRequest):
     labware_nickname: str
     new_location: str
 
 
-class LightsRequest(BaseModel):
+class LightsRequest(StrictRequest):
     on: bool
 
 
@@ -271,7 +285,7 @@ class LoadedPlate(BaseModel):
     wells: List[WellSample] = Field(default_factory=list)
 
 
-class PlateLoadRequest(BaseModel):
+class PlateLoadRequest(StrictRequest):
     plate_id: str = Field(..., min_length=1, max_length=128)
     model: str = Field(..., min_length=1)
     wells: Optional[List[WellSample]] = None  # defaults to 96 empty wells
@@ -360,7 +374,7 @@ class DeckState(BaseModel):
     timestamp: datetime
 
 
-class DeckDeclareRequest(BaseModel):
+class DeckDeclareRequest(StrictRequest):
     """Operator/recipe-declared layout (Phase 2 endpoint payload).
 
     Each slot value is a labware ``load_name`` (preferred, full fidelity), a
@@ -374,7 +388,7 @@ class DeckDeclareRequest(BaseModel):
     slots: Dict[str, Optional[Union[str, Dict[str, Any]]]] = Field(default_factory=dict)
 
 
-class WellUpdateRequest(BaseModel):
+class WellUpdateRequest(StrictRequest):
     well: WellId = Field(..., min_length=2, max_length=3, description="e.g. A1, H12")
     sample_id: Optional[str] = None
     volume_ul: Optional[float] = Field(default=None, ge=0.0)

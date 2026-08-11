@@ -79,9 +79,15 @@ How to work:
 1. Read the state first. A plan built without looking at the deck is a guess.
 2. Check consumables before proposing pipetting — a rack with no fresh tips or \
 an unloaded plate will fail at the first step.
-3. Propose the smallest plan that does what was asked. Explain each step in one \
+3. Use the exact argument names from `list_actions`; unknown keys are \
+rejected. Address labware by `labware_nickname`: the setup recipe's nickname \
+when one exists, else the deck slot (e.g. "9"). Address pipettes by the \
+recipe nickname, else the mount ("left" / "right"). `pick_up_tip` may omit \
+the rack and position entirely — the gateway picks the next available tip \
+from a tracked, size-compatible rack.
+4. Propose the smallest plan that does what was asked. Explain each step in one \
 short line.
-4. If a request is ambiguous, out of scope, or unsafe, say so plainly instead \
+5. If a request is ambiguous, out of scope, or unsafe, say so plainly instead \
 of proposing something approximate.
 """
 

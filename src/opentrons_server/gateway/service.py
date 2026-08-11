@@ -293,6 +293,13 @@ class OT2Service:
             "instruments": [],
             "modules": [],
         }
+        # Session auto-provisioning for declared decks (no /control/setup):
+        # slot -> the nickname this session loaded the declared labware under,
+        # and mount -> the nickname the attached pipette was loaded under.
+        # Both describe the CURRENT control session only, so both reset with it
+        # (startup / shutdown).
+        self._session_labware: Dict[str, str] = {}
+        self._session_pipettes: Dict[str, str] = {}
         # Stamp the opening span so `activity_since` is a real instant from the
         # first poll on, rather than "unknown until someone asks".
         self._sync_activity()
@@ -342,6 +349,10 @@ class OT2Service:
                     password=self.password,
                     simulation=self.simulation,
                 )
+            # A new control session starts empty: anything the previous session
+            # auto-loaded from the declared deck is gone with it.
+            self._session_labware = {}
+            self._session_pipettes = {}
             self.state = OT2ServiceState.READY
             self.last_error = None
             self._status_note = None
@@ -366,6 +377,11 @@ class OT2Service:
             )
         control = OT2HttpControl(RunEngineClient(base_url))
         control.initialize_protocol(simulation=self.simulation)
+        # The OT-2's fixed trash is always physically present. Register it as
+        # soon as the run exists so a bare drop_tip routes there even in a
+        # setup-less (declared-deck) session; setup_protocol's own registration
+        # guard then sees it and does not load a second one.
+        control.load_trash_bin()
         return control
 
     def shutdown(self) -> None:
@@ -381,6 +397,8 @@ class OT2Service:
                 self.control.shutdown()
             finally:
                 self.control = None
+        self._session_labware = {}
+        self._session_pipettes = {}
         self.claims.force_clear()
         previous = self.state
         self.state = OT2ServiceState.DRY_RUN if self.dry_run else OT2ServiceState.REQUIRES_INIT
@@ -476,17 +494,24 @@ class OT2Service:
         slot_to_nickname = {
             slot: nick for nick, slot in self._nickname_to_slot().items()
         }
+        declared = self._declared_slots()
         # "1".."11" must order numerically, not lexically ("10" < "2").
         slots = sorted(self.tips.racks(), key=lambda s: (len(s), s))
         reasons: List[str] = []
         for slot in slots:
             addressed = slot_to_nickname.get(slot)
             if addressed is None:
-                reasons.append(
-                    f"slot {slot}: tracked but not loaded in the control "
-                    "session (no /control/setup nickname)"
-                )
-                continue
+                # No recipe nickname — a declared rack is still addressable:
+                # the slot reference is loaded into the session at execution
+                # time (_resolve_session_labware).
+                if getattr(declared.get(slot), "load_name", None):
+                    addressed = slot
+                else:
+                    reasons.append(
+                        f"slot {slot}: tracked but neither loaded in the "
+                        "control session nor declared"
+                    )
+                    continue
             if not self._rack_fits_pipette(addressed, pipette):
                 reasons.append(
                     f"slot {slot}: tip size does not fit pipette {pipette!r}"
@@ -519,11 +544,13 @@ class OT2Service:
             }
         )
 
-    def _rack_fits_pipette(self, rack_nickname: str, pipette: str) -> bool:
+    def _rack_fits_pipette(self, rack_ref: str, pipette: str) -> bool:
         """Whether a rack's tips physically fit the pipette, when derivable.
 
-        Both volumes are parsed from names the recipe already carries (rack
-        loadname ``..._300ul``, instrument ``p300_single_gen2``). Opentrons'
+        Both volumes are parsed from names the gateway already holds: the rack
+        loadname (``..._300ul``) from the recipe or the declared deck, the
+        instrument name (``p300_single_gen2``) from the recipe or — for a
+        mount-addressed pipette — the robot's own instrument probe. Opentrons'
         GEN2 compatibility matrix — p20:{10,20}, p300:{200,300}, p1000:{1000}
         — is exactly ``pipette/2 <= tip <= pipette``, so the rule is encoded
         as that inequality rather than a table that would need editing for
@@ -533,28 +560,141 @@ class OT2Service:
         rack explicitly.
         """
 
-        instrument = next(
+        load_name = next(
             (
-                inst
+                lw.get("loadname")
+                for lw in self.session_recipe.get("labware", []) or []
+                if lw.get("nickname") == rack_ref
+            ),
+            None,
+        )
+        if load_name is None and rack_ref in SLOTS:
+            load_name = getattr(self._declared_slots().get(rack_ref), "load_name", None)
+        instrument_name = next(
+            (
+                inst.get("instrument_name")
                 for inst in self.session_recipe.get("instruments", []) or []
                 if inst.get("nickname") == pipette
             ),
             None,
         )
-        labware = next(
-            (
-                lw
-                for lw in self.session_recipe.get("labware", []) or []
-                if lw.get("nickname") == rack_nickname
-            ),
-            None,
-        )
-        pip_match = re.match(r"p(\d+)", str((instrument or {}).get("instrument_name", "")))
-        tip_match = re.search(r"_(\d+)ul", str((labware or {}).get("loadname", "")))
+        if instrument_name is None:
+            mount = str(pipette).strip().lower()
+            instrument_name = next(
+                (
+                    inst.get("name")
+                    for inst in self._last_probe.get("instruments", []) or []
+                    if str(inst.get("mount", "")).strip().lower() == mount
+                ),
+                None,
+            )
+        pip_match = re.match(r"p(\d+)", str(instrument_name or ""))
+        tip_match = re.search(r"_(\d+)ul", str(load_name or ""))
         if pip_match is None or tip_match is None:
             return True
         pip_ul, tip_ul = int(pip_match.group(1)), int(tip_match.group(1))
         return pip_ul / 2 <= tip_ul <= pip_ul
+
+    # ---- session auto-provisioning (declared decks, no /control/setup) ----
+    #
+    # A setup recipe loads labware and pipettes into the control session and
+    # names them. A *declared* deck does neither — its only names are deck
+    # slots, and the operator flow (declare in the panel, then run an agent
+    # plan) never calls /control/setup at all. These resolvers make the two
+    # deck sources equivalent at the point of use: a slot or mount reference
+    # is loaded into the session on first use, from what the operator declared
+    # and what the robot reports attached. Both MUST be called inside a
+    # `_run_action` closure — loading is a session command like any other.
+
+    def _ensure_session_pipette(self, pipette: str) -> str:
+        """Resolve ``pipette`` to a name the control session can address.
+
+        Recipe nicknames pass through (setup loaded them). A mount name
+        ("left" / "right") loads the attached instrument — from the robot's
+        own ``GET /instruments`` probe — into the session on first use, and
+        binds its channel count so multi-channel tip tracking stays honest.
+        Anything else passes through for the transport to refuse honestly.
+        """
+
+        ref = str(pipette).strip()
+        if any(
+            inst.get("nickname") == ref
+            for inst in self.session_recipe.get("instruments", []) or []
+        ):
+            return ref
+        mount = ref.lower()
+        if mount in self._session_pipettes:
+            return self._session_pipettes[mount]
+        if mount not in {"left", "right"}:
+            return ref
+        attached = next(
+            (
+                inst
+                for inst in self._last_probe.get("instruments", []) or []
+                if str(inst.get("mount", "")).strip().lower() == mount
+            ),
+            None,
+        )
+        if attached is None or not attached.get("name"):
+            raise RuntimeError(
+                f"no pipette known on mount {mount!r} — the robot probe "
+                "reports none attached (or has not run); check the instrument "
+                "or load one explicitly via /control/setup"
+            )
+        self._require_control().load_instrument(
+            {
+                "ot_default": True,
+                "nickname": mount,
+                "instrument_name": attached["name"],
+                "mount": mount,
+            }
+        )
+        self._session_pipettes[mount] = mount
+        try:
+            channels = int(attached.get("channels"))
+        except (TypeError, ValueError):
+            channels = 0
+        if channels >= 1:
+            self._pipette_channels[mount] = channels
+        return mount
+
+    def _resolve_session_labware(self, ref: str) -> str:
+        """Resolve a labware reference to a session nickname, loading declared
+        labware on demand.
+
+        Recipe nicknames pass through. A deck-slot reference — the only name
+        a declared deck has — is loaded into the session from the operator's
+        declaration on first use, under ``slot_<n>`` (a valid identifier, so
+        the SSH REPL path works too). Anything else passes through for the
+        transport to refuse honestly.
+        """
+
+        name = str(ref).strip()
+        if name in self._nickname_to_slot():
+            return name
+        if name in self._session_labware:
+            return self._session_labware[name]
+        if name not in SLOTS:
+            return name
+        declared = self._declared_slots().get(name)
+        load_name = getattr(declared, "load_name", None)
+        if not load_name:
+            raise RuntimeError(
+                f"slot {name} is not loaded in the control session and "
+                "nothing is declared there — declare the slot in the panel "
+                "or load it via /control/setup"
+            )
+        nickname = f"slot_{name}"
+        self._require_control().load_labware(
+            {
+                "ot_default": True,
+                "nickname": nickname,
+                "loadname": load_name,
+                "location": name,
+            }
+        )
+        self._session_labware[name] = nickname
+        return nickname
 
     def _bind_pipette_channels(self) -> None:
         """Bind each recipe pipette nickname to its channel count.
@@ -603,6 +743,23 @@ class OT2Service:
             # The probe may have landed after setup (boot order, a reconnect).
             self._bind_pipette_channels()
             channels = self._pipette_channels.get(pipette)
+        if channels is None:
+            # Mount-addressed pipette (declared-deck flow, no recipe): the
+            # probe knows the attached head directly.
+            mount = str(pipette).strip().lower()
+            probed = next(
+                (
+                    inst.get("channels")
+                    for inst in self._last_probe.get("instruments", []) or []
+                    if str(inst.get("mount", "")).strip().lower() == mount
+                ),
+                None,
+            )
+            try:
+                if int(probed) >= 1:
+                    channels = int(probed)
+            except (TypeError, ValueError):
+                pass
         return channels or 1
 
     @staticmethod
@@ -628,7 +785,7 @@ class OT2Service:
 
     def set_location_from_well(self, request: Any) -> None:
         self._require_control().get_location_from_labware(
-            request.location.labware_nickname,
+            self._resolve_session_labware(request.location.labware_nickname),
             request.location.position,
             top=request.location.top or 0,
             bottom=request.location.bottom or 0,
@@ -644,13 +801,14 @@ class OT2Service:
         """
 
         def _move_to() -> None:
+            pip = self._ensure_session_pipette(request.pipette)
             if request.location is not None:
                 self.set_location_from_well(request)
             else:
                 coords = request.coordinates
                 self._require_control().get_location_absolute(coords.x, coords.y, coords.z)
             self._require_control().move_to_pip(
-                request.pipette,
+                pip,
                 speed=request.speed,
                 # False -> None keeps the SSH invoke minimal (kwargs formatter
                 # skips None); the protocol-API default is False anyway.
@@ -664,10 +822,9 @@ class OT2Service:
         flow_rate = getattr(request, "flow_rate", None)
 
         def _aspirate() -> None:
+            pip = self._ensure_session_pipette(request.pipette)
             self.set_location_from_well(request)
-            self._require_control().aspirate(
-                request.pipette, request.volume_ul, flow_rate=flow_rate
-            )
+            self._require_control().aspirate(pip, request.volume_ul, flow_rate=flow_rate)
 
         self._run_action("aspirate", _aspirate, idempotent=False)
         self._mark_tip_used(
@@ -678,10 +835,9 @@ class OT2Service:
         flow_rate = getattr(request, "flow_rate", None)
 
         def _dispense() -> None:
+            pip = self._ensure_session_pipette(request.pipette)
             self.set_location_from_well(request)
-            self._require_control().dispense(
-                request.pipette, request.volume_ul, flow_rate=flow_rate
-            )
+            self._require_control().dispense(pip, request.volume_ul, flow_rate=flow_rate)
 
         self._run_action("dispense", _dispense, idempotent=False)
         self._mark_tip_used(
@@ -742,12 +898,16 @@ class OT2Service:
             covered = self.tips.covered_wells(rack, well, channels=channels)
 
         def _pick_up_tip() -> None:
-            # The robot is addressed by the labware nickname (caller-given or
-            # auto-selected) — `rack` is the tracker's slot key and means
-            # nothing to the protocol API.
+            # The robot is addressed by session names; slot / mount references
+            # (declared-deck flow) are loaded into the session on first use.
+            # `rack` is the tracker's slot key and means nothing to the
+            # protocol API.
+            pip = self._ensure_session_pipette(request.pipette)
             if nickname and well:
-                self._require_control().get_location_from_labware(nickname, well)
-            self._require_control().pick_up_tip(request.pipette)
+                self._require_control().get_location_from_labware(
+                    self._resolve_session_labware(nickname), well
+                )
+            self._require_control().pick_up_tip(pip)
 
         self._run_action("pick_up_tip", _pick_up_tip, idempotent=False)
         if tracked and well:
@@ -776,12 +936,13 @@ class OT2Service:
             # implicitly, HTTP via the trash registered at setup_protocol time
             # (drop-in-place remains only for an HTTP session whose recipe
             # deliberately occupies slot 12). Mirrors pick_up_tip.
+            pip = self._ensure_session_pipette(request.pipette)
             if request.labware_nickname and request.position:
                 self._require_control().get_location_from_labware(
-                    request.labware_nickname,
+                    self._resolve_session_labware(request.labware_nickname),
                     request.position,
                 )
-            self._require_control().drop_tip(request.pipette)
+            self._require_control().drop_tip(pip)
 
         self._run_action("drop_tip", _drop_tip, idempotent=False)
         mounted = self._mounted_tips.pop(request.pipette, None)
@@ -859,7 +1020,7 @@ class OT2Service:
         self._run_action(
             "move_labware",
             lambda: self._require_control().move_labware(
-                request.labware_nickname,
+                self._resolve_session_labware(request.labware_nickname),
                 request.new_location,
             ),
             idempotent=False,

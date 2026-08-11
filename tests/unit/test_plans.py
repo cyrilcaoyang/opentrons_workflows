@@ -79,6 +79,38 @@ def test_bad_arguments_are_refused_at_proposal():
         )
 
 
+def test_misnamed_arguments_are_refused_not_silently_dropped():
+    """The live bug of 2026-08-11: ``pick_up_tip {"slot": 9, "well": "A1"}``
+    validated cleanly because Pydantic ignored the unknown keys — the reviewed
+    step silently became a *bare* pick, and something other than the operator's
+    intent ran. Unknown keys are now a proposal-time refusal (StrictRequest)."""
+    store = PlanStore()
+    with pytest.raises(StepValidationError, match="pick_up_tip"):
+        store.create(
+            [
+                PlanStep(
+                    action="pick_up_tip",
+                    args={"pipette": "left", "slot": 9, "well": "A1"},
+                )
+            ],
+            created_by="agent",
+        )
+
+
+def test_delete_dismisses_settled_plans_only():
+    """Dismiss is for terminal plans (the failed plan's banner); a live plan
+    must be aborted instead, so the proposing agent can see the rejection."""
+    store = PlanStore()
+    plan = store.create(_steps("home"), created_by="agent")
+    with pytest.raises(PlanStateError, match="abort it instead"):
+        store.delete(plan.plan_id)
+
+    plan.status = "failed"
+    store.delete(plan.plan_id)
+    with pytest.raises(PlanNotFound):
+        store.get(plan.plan_id)
+
+
 def test_lifecycle_and_recovery_actions_are_not_plannable():
     """startup/shutdown/pause/resume/reconcile are deliberately absent.
 

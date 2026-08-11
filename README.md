@@ -885,6 +885,14 @@ curl -X POST http://127.0.0.1:8020/control/release \
 
 Useful control endpoints:
 
+> **Addressing.** `labware_nickname` accepts the setup recipe's nickname, or —
+> on a declared deck with no recipe — the deck slot (e.g. `"9"`); `pipette`
+> accepts the recipe nickname or the mount (`"left"` / `"right"`). Slot- and
+> mount-addressed gear is loaded into the control session on first use, from
+> the operator's declaration and the robot's own instrument probe, so the
+> declare-then-run flow needs no `/control/setup`. Request bodies are strict:
+> unknown keys are rejected (422), never silently ignored.
+
 - `POST /control/startup`
 - `POST /control/shutdown`
 - `POST /control/setup`
@@ -907,7 +915,8 @@ Useful control endpoints:
 - `POST /control/aspirate`
 - `POST /control/dispense`
 - `POST /control/drop-tip` — no body location → the fixed trash, on both
-  transports (the HTTP session registers the fixed trash at setup time).
+  transports (the HTTP session registers the fixed trash when the run is
+  created, so setup-less declared-deck sessions route there too).
 - `POST /control/move-labware`
 - `POST /control/tips/reset` — body `{"slot": str, "wells"?: [str]}`;
   (re)registers a tip rack with every tip fresh (a physical rack swap).

@@ -99,7 +99,20 @@ Five control actions are deliberately **not** plannable:
 
 Step arguments are validated at proposal time against the same request models
 the matching `/control/*` endpoint uses, so a malformed step is refused with a
-422 naming the field while it is still text.
+422 naming the field while it is still text. Validation is **strict**: unknown
+argument names are refused, not ignored — a live plan once proposed
+`pick_up_tip {"slot": 9, "well": "A1"}` and Pydantic's default silently
+dropped both keys, turning the reviewed step into a bare pick. Labware is
+addressed by `labware_nickname` (the setup recipe's nickname, or the deck slot
+on a declared deck), pipettes by recipe nickname or mount (`"left"`/`"right"`);
+slot- and mount-addressed gear is loaded into the control session on first
+use.
+
+A settled plan is cleared from the panel with **Dismiss**
+(`DELETE /plans/{id}`, claim-gated) — abort cannot do it, because a failed
+plan is already terminal and abort leaves terminal plans untouched. Draft and
+approved plans are *aborted* instead, so the proposing agent can observe the
+rejection.
 
 ## Wiring up Hermes
 
