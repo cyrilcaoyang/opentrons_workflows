@@ -1731,6 +1731,10 @@ class OT2Service:
             equipment_name=self.equipment_name,
             equipment_kind=EQUIPMENT_KIND,
             equipment_version=self.equipment_version,
+            # STATUS_SPEC: local hostname only (never an IP — the registry
+            # owns network identity). Names the machine THIS gateway runs on;
+            # the operator UI shows it so two panels are tellable apart.
+            host=socket.gethostname(),
             equipment_status=status,
             activity=activity,
             activity_since=self._activity_since,
