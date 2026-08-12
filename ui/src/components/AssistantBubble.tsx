@@ -11,7 +11,7 @@ import {
   getPlan,
 } from "../lib/api";
 import type { ClaimState } from "../lib/use-claim";
-import type { AssistantMessage, Plan, PlanStep } from "../lib/types";
+import type { AssistantMessage, GatewaySnapshot, Plan, PlanStep } from "../lib/types";
 
 /**
  * Optional chat popup for simple operations on THIS OT-2.
@@ -49,11 +49,16 @@ function loadThread(): AssistantMessage[] {
   }
 }
 
-export function AssistantBubble({ claim }: { claim: ClaimState }) {
+export function AssistantBubble({
+  claim,
+  snapshot,
+}: {
+  claim: ClaimState;
+  snapshot: GatewaySnapshot | null;
+}) {
   const [available, setAvailable] = useState(false);
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [translucent, setTranslucent] = useState(false);
   // Drag offset from the bottom-right anchor, in px (x/y ≤ 0 moves left/up).
   // Component state only: a reload snaps back to the corner, which beats
   // restoring a position that an old window size may have made unreachable.
@@ -263,9 +268,6 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
         expanded
           ? "h-[min(46rem,calc(100vh-2rem))] w-[44rem]"
           : "h-[32rem] w-[32rem] max-h-[calc(100vh-2rem)]",
-        // See-through mode so the deck stays visible behind the chat; solid
-        // again under the cursor, so reading and typing are never dimmed.
-        translucent ? "opacity-50 transition-opacity hover:opacity-100" : "",
       ].join(" ")}
     >
       <header
@@ -276,22 +278,25 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
         className="flex cursor-move touch-none select-none items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-slate-800"
         title="Drag to move"
       >
-        <div className="flex flex-col">
-          <span className="text-xs font-semibold text-ink dark:text-slate-100">Assistant</span>
-          <span className="text-[10px] text-ink-subtle dark:text-slate-500">
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate text-sm font-semibold text-ink dark:text-slate-100">
+            Assistant{snapshot?.name ? ` — ${snapshot.name}` : ""}
+          </span>
+          {/* Which robot this chat drives, and through which machine/address —
+              two panels open side by side must be tellable apart before a
+              plan gets approved on the wrong one. `status.host` is the
+              gateway PC's hostname; the address is the one THIS browser is
+              actually connected through (edge or direct port). */}
+          <span className="truncate font-mono text-[10px] text-ink-subtle dark:text-slate-500">
+            {[snapshot?.status?.host, window.location.host]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          <span className="truncate text-[10px] text-ink-subtle dark:text-slate-500">
             Proposes only — you approve and run
           </span>
         </div>
         <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => setTranslucent((t) => !t)}
-            className="rounded px-1.5 text-sm text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-            aria-label={translucent ? "Make the window opaque" : "Make the window see-through"}
-            title={translucent ? "Opaque" : "See-through (solid under the cursor)"}
-          >
-            ◐
-          </button>
           <button
             type="button"
             onClick={() => setExpanded((e) => !e)}

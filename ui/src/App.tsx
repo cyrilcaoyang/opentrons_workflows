@@ -35,7 +35,7 @@ export function App() {
           review surface now; this is the overview (other agents' proposals,
           settled plans), reachable via each card's "view in panel" link. */}
       {snapshot && <PlanReviewPanel claim={claim} />}
-      <AssistantBubble claim={claim} />
+      <AssistantBubble claim={claim} snapshot={snapshot ?? null} />
     </main>
   );
 }
