@@ -199,21 +199,3 @@ export function buildWellModel({
   };
 }
 
-/**
- * One column's aggregate state, for the side elevation — which shows columns,
- * not individual wells. "mixed" is its own answer rather than being rounded to
- * fresh or empty: a partially-consumed column is exactly what a multi-channel
- * head cannot pick from, so flattening it would hide the thing worth seeing.
- */
-export type ColumnKind = WellKind | "mixed";
-
-export function columnKinds(model: PlateWellModel): ColumnKind[] {
-  const out: ColumnKind[] = [];
-  for (let c = 0; c < model.columns; c++) {
-    const kinds = new Set(model.cells.filter((w) => w.column === c).map((w) => w.kind));
-    if (kinds.size === 0) out.push("unknown");
-    else if (kinds.size === 1) out.push([...kinds][0]);
-    else out.push("mixed");
-  }
-  return out;
-}

@@ -36,8 +36,6 @@ import {
 import type { MountedTip, SlotView, TipRackSummary } from "../lib/ot2-deck";
 import {
   buildWellModel,
-  columnKinds,
-  type ColumnKind,
   type PlateWellModel,
   type WellCell,
   type WellKind,
@@ -58,28 +56,17 @@ const WELL_FILL: Record<WellKind, string> = {
 };
 
 /**
- * Tip tint for the elevation. A column with no tips is drawn hollow like the
- * rack around it — an absent tip should not read as a solid.
+ * Tip tint for the elevation's filled portion. Sky for tips that are fresh
+ * (or reusable for their sample); amber as soon as the column carries a used
+ * tip; slate for a rack the tracker has no record of. A column with no tips
+ * is drawn hollow like the rack around it — an absent tip should not read as
+ * a solid.
  */
-const COLUMN_FILL: Record<ColumnKind, string> = {
+const ELEVATION_FILL = {
   fresh: "fill-sky-300 dark:fill-sky-800",
   touched: "fill-amber-300 dark:fill-amber-700",
-  empty: "fill-none",
-  sample: "fill-sky-300 dark:fill-sky-800",
-  vacant: "fill-none",
   unknown: "fill-slate-200 dark:fill-slate-700",
-  mixed: "fill-amber-200 dark:fill-amber-800",
-};
-
-/**
- * Cavity tint for the elevation. Only a **tip rack's tips** are shaded: they
- * are the solid the section actually cuts through, and a part-consumed column
- * is amber because it is exactly what an 8-channel head cannot pick from. A
- * plate's wells are voids, so they are drawn hollow — as is every body.
- */
-function cavityFill(kind: ColumnKind, contents: "tiprack" | "plate"): string {
-  return contents === "tiprack" ? COLUMN_FILL[kind] : "fill-none";
-}
+} as const;
 
 const KIND_LABEL: Record<WellKind, string> = {
   fresh: "fresh",
@@ -258,9 +245,16 @@ function PlanView({
  * Front elevation, to scale, from the real definition only. The body is
  * `footprintZ` tall; each column's cavity hangs from its well mouth
  * (`z + depth`) down to its floor (`z`), so a tip rack's tips correctly stand
- * proud of the rack body while a plate's wells sit inside it. Tip-rack cavities
- * taper (a tip is conical); plate wells are drawn straight-sided. Everything is
- * an outline except a tip rack's tips (see `cavityFill`).
+ * proud of the rack body while a plate's wells sit inside it. Tip-rack
+ * cavities taper (a tip is conical); plate wells are drawn straight-sided.
+ *
+ * A column's 8 wells sit behind one another in this projection, so each
+ * column is one shape — filled **proportionally, bottom-up**, to the tips it
+ * still holds (7/8 present draws 7/8 full, like a level gauge). It used to
+ * collapse any partial column to a solid amber "mixed", which read as "this
+ * whole column is used" when a single tip was missing. Amber still appears,
+ * but only when the column actually carries a used tip; the tooltip gives
+ * the exact count.
  */
 function ElevationView({
   geometry,
@@ -269,32 +263,64 @@ function ElevationView({
   geometry: LabwareGeometry;
   model: PlateWellModel;
 }) {
-  const kinds = columnKinds(model);
   const { footprintX, footprintZ } = geometry;
+  const shadeTips = model.contents === "tiprack" && geometry.isTiprack;
   const cavities = geometry.ordering.map((column, index) => {
     const g = geometry.wells[column[0]];
     if (!g) return null;
     const halfX = wellHalfX(g);
     const mouthY = Math.max(0, footprintZ - (g.z + g.depth)); // SVG y of the well mouth
     const floorY = Math.min(footprintZ, footprintZ - g.z); // SVG y of the well floor
-    const kind = kinds[index] ?? "unknown";
-    const fill = cavityFill(kind, model.contents);
-    const points = geometry.isTiprack
-      ? // Tapered: full width at the mouth, ~25% at the tip.
-        `${g.x - halfX},${mouthY} ${g.x + halfX},${mouthY} ${g.x + halfX * 0.25},${floorY} ${
-          g.x - halfX * 0.25
-        },${floorY}`
-      : `${g.x - halfX},${mouthY} ${g.x + halfX},${mouthY} ${g.x + halfX},${floorY} ${
-          g.x - halfX
-        },${floorY}`;
+    // Half-width of the cavity at depth fraction t (0 = mouth, 1 = floor):
+    // tapered to ~25% for a tip rack, straight-sided for a plate.
+    const taper = (t: number) => (geometry.isTiprack ? halfX * (1 - 0.75 * t) : halfX);
+    const outline = `${g.x - taper(0)},${mouthY} ${g.x + taper(0)},${mouthY} ${
+      g.x + taper(1)
+    },${floorY} ${g.x - taper(1)},${floorY}`;
+
+    let level: React.ReactNode = null;
+    let label = `Column ${index + 1}`;
+    if (shadeTips) {
+      const cells = model.cells.filter((w) => w.column === index);
+      const total = cells.length || 1;
+      const present = cells.filter(
+        (w) => w.kind === "fresh" || w.kind === "sample" || w.kind === "touched",
+      ).length;
+      const untracked = cells.length > 0 && cells.every((w) => w.kind === "unknown");
+      const anyTouched = cells.some((w) => w.kind === "touched");
+      const fraction = untracked ? 1 : present / total;
+      const fill = untracked
+        ? ELEVATION_FILL.unknown
+        : anyTouched
+          ? ELEVATION_FILL.touched
+          : ELEVATION_FILL.fresh;
+      label = untracked
+        ? `Column ${index + 1} — not tracked`
+        : `Column ${index + 1} — ${present}/${total} tips` +
+          (total - present > 0 ? ` (${total - present} empty)` : "") +
+          (anyTouched ? ", incl. used" : "");
+      if (fraction > 0) {
+        const tCut = 1 - fraction;
+        const yCut = mouthY + (floorY - mouthY) * tCut;
+        level = (
+          <polygon
+            points={`${g.x - taper(tCut)},${yCut} ${g.x + taper(tCut)},${yCut} ${
+              g.x + taper(1)
+            },${floorY} ${g.x - taper(1)},${floorY}`}
+            className={fill}
+          />
+        );
+      }
+    }
     return (
       <g key={column[0]}>
+        {level}
         <polygon
-          points={points}
-          className={`${fill} stroke-slate-500 dark:stroke-slate-400`}
+          points={outline}
+          className="fill-none stroke-slate-500 dark:stroke-slate-400"
           strokeWidth={0.3}
         />
-        <title>{`Column ${index + 1} — ${kind}`}</title>
+        <title>{label}</title>
       </g>
     );
   });
