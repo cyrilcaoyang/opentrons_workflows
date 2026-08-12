@@ -53,6 +53,15 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
   const [available, setAvailable] = useState(false);
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [translucent, setTranslucent] = useState(false);
+  // Drag offset from the bottom-right anchor, in px (x/y ≤ 0 moves left/up).
+  // Component state only: a reload snaps back to the corner, which beats
+  // restoring a position that an old window size may have made unreachable.
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(
+    null,
+  );
+  const panelRef = useRef<HTMLElement | null>(null);
   const [thread, setThread] = useState<AssistantMessage[]>(loadThread);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
@@ -192,6 +201,40 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
     }
   }, [draft, pending, thread, claim.token]);
 
+  // Drag the panel by its header. Pointer events (not HTML5 drag) so it works
+  // with touch; capture keeps the drag alive when the cursor outruns the
+  // header. Buttons in the header opt out, so they still just click.
+  function onDragStart(e: React.PointerEvent<HTMLElement>) {
+    if ((e.target as HTMLElement).closest("button")) return;
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      baseX: dragOffset.x,
+      baseY: dragOffset.y,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function onDragMove(e: React.PointerEvent<HTMLElement>) {
+    const d = dragRef.current;
+    if (!d) return;
+    const rect = panelRef.current?.getBoundingClientRect();
+    const w = rect?.width ?? 512;
+    const h = rect?.height ?? 512;
+    // Anchored bottom-right with 1rem margins; clamp so the whole panel stays
+    // on screen (offsets are ≤ 0 by construction).
+    const minX = -(window.innerWidth - w - 32);
+    const minY = -(window.innerHeight - h - 32);
+    setDragOffset({
+      x: Math.max(Math.min(minX, 0), Math.min(0, d.baseX + e.clientX - d.startX)),
+      y: Math.max(Math.min(minY, 0), Math.min(0, d.baseY + e.clientY - d.startY)),
+    });
+  }
+
+  function onDragEnd() {
+    dragRef.current = null;
+  }
+
   if (!available) return null;
 
   if (!open) {
@@ -210,6 +253,8 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
 
   return (
     <section
+      ref={panelRef}
+      style={{ transform: `translate(${dragOffset.x}px, ${dragOffset.y}px)` }}
       className={[
         "fixed bottom-4 right-4 z-40 flex max-w-[calc(100vw-2rem)] flex-col rounded-xl border border-slate-200 bg-surface-raised shadow-xl dark:border-slate-700 dark:bg-slate-900",
         // Two sizes rather than a drag-resize: anchored bottom-right, a CSS
@@ -218,9 +263,19 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
         expanded
           ? "h-[min(46rem,calc(100vh-2rem))] w-[44rem]"
           : "h-[32rem] w-[32rem] max-h-[calc(100vh-2rem)]",
+        // See-through mode so the deck stays visible behind the chat; solid
+        // again under the cursor, so reading and typing are never dimmed.
+        translucent ? "opacity-50 transition-opacity hover:opacity-100" : "",
       ].join(" ")}
     >
-      <header className="flex items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-slate-800">
+      <header
+        onPointerDown={onDragStart}
+        onPointerMove={onDragMove}
+        onPointerUp={onDragEnd}
+        onPointerCancel={onDragEnd}
+        className="flex cursor-move touch-none select-none items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-slate-800"
+        title="Drag to move"
+      >
         <div className="flex flex-col">
           <span className="text-xs font-semibold text-ink dark:text-slate-100">Assistant</span>
           <span className="text-[10px] text-ink-subtle dark:text-slate-500">
@@ -228,6 +283,15 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
           </span>
         </div>
         <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setTranslucent((t) => !t)}
+            className="rounded px-1.5 text-sm text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+            aria-label={translucent ? "Make the window opaque" : "Make the window see-through"}
+            title={translucent ? "Opaque" : "See-through (solid under the cursor)"}
+          >
+            ◐
+          </button>
           <button
             type="button"
             onClick={() => setExpanded((e) => !e)}
@@ -241,9 +305,10 @@ export function AssistantBubble({ claim }: { claim: ClaimState }) {
             type="button"
             onClick={() => setOpen(false)}
             className="rounded px-1.5 text-sm text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-            aria-label="Close the assistant"
+            aria-label="Minimize the assistant"
+            title="Minimize — the conversation is kept"
           >
-            ×
+            −
           </button>
         </div>
       </header>

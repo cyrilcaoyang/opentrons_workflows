@@ -96,6 +96,14 @@ _OT2_RUN_REFRESH_INTERVAL = float(os.getenv("OT2_RUN_REFRESH_INTERVAL", "5.0"))
 _OT2_SELF_HEAL_INTERVAL = float(os.getenv("OT2_SELF_HEAL_INTERVAL", "60.0"))
 
 
+# How deep to descend when dropping a tip back INTO a tracked rack well
+# (relocation / return): the tip end is brought to this height above the well
+# bottom before release, so the tip slides into the hole and seats instead of
+# being released at the well top and landing crooked. ~1 cm above where a
+# pickup bottoms out, per bench feedback 2026-08-12; override per-deployment
+# if a rack geometry needs it.
+_TIP_RESEAT_BOTTOM_MM = float(os.getenv("OT2_TIP_RESEAT_BOTTOM_MM", "10"))
+
 # References a drop_tip caller may use for the OT-2 fixed trash. The trash is
 # the *default* drop target and needs no addressing; these route to it rather
 # than being resolved as labware (slot 12 holds no loadable labware — it IS
@@ -1015,8 +1023,12 @@ class OT2Service:
             # pick_up_tip.
             pip = self._ensure_session_pipette(request.pipette)
             if nickname and position:
+                # Into a tracked rack, descend so the tip seats in the hole
+                # (releasing at the well top lands it crooked); into any other
+                # labware keep the default well-top release.
+                depth = {"bottom": _TIP_RESEAT_BOTTOM_MM} if dest_rack is not None else {}
                 self._require_control().get_location_from_labware(
-                    self._resolve_session_labware(nickname), position
+                    self._resolve_session_labware(nickname), position, **depth
                 )
             self._require_control().drop_tip(pip)
 

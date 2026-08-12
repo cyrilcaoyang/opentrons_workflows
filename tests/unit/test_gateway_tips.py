@@ -325,6 +325,11 @@ def test_drop_into_a_tracked_rack_well_relocates_the_tip(service):
     # A relocated never-used tip is fresh — A1 counts as available again.
     assert service.tips.status("4", "A1") == "new"
     assert "p300" not in service._mounted_tips
+    # The drop descends into the well so the tip seats, rather than being
+    # released at the well top and landing crooked.
+    service.control.get_location_from_labware.assert_called_with(
+        "tips_300", "A1", bottom=10.0
+    )
 
 
 def test_relocated_used_tip_carries_its_sample(service):

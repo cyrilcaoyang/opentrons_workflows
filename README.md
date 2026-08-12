@@ -1076,7 +1076,9 @@ transports:
   `"unknown"` for an untracked head. The destination must be empty (dropping
   onto a seated tip is a crash and is refused with 412 pre-motion); the head's
   own origin wells are exempt, which is what makes returning a tip to its own
-  well legal.
+  well legal. The release descends to ~10 mm above the well bottom so the tip
+  seats in the hole instead of being dropped from the well top
+  (`OT2_TIP_RESEAT_BOTTOM_MM` to tune per rack geometry).
 - `POST /control/tips/reset` takes `{"slot": "4"}` — the operator asserting a
   physical refill, which is never inferred (the gateway cannot see new tips go
   in, and a wrong "full" sends the head onto bare holes). `{"nickname": ...}`
