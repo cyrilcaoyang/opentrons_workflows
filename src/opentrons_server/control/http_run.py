@@ -632,9 +632,16 @@ class RunEngineClient:
     # -- lifecycle ---------------------------------------------------------
 
     def create_run(self) -> str:
-        """Create an empty (protocol-less) run and remember its id."""
+        """Create an empty (protocol-less) run and remember its id.
+
+        Uses the long *command* timeout, not the 10 s request timeout: run
+        creation makes the robot-server prune old runs and spin up a protocol
+        engine, and was observed live (2026-08-12) taking >10 s — a read
+        timeout here failed the whole session bring-up over a slow, but
+        healthy, robot.
+        """
         data = self._request(
-            "POST", "/runs", json_body={"data": {}}, timeout=self.request_timeout_s
+            "POST", "/runs", json_body={"data": {}}, timeout=self.command_timeout_s
         )
         run_id = data.get("id")
         if not run_id:

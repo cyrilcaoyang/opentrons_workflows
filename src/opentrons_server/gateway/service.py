@@ -1446,8 +1446,15 @@ class OT2Service:
 
         * ``_operator_shutdown`` — a deliberate ``/control/shutdown`` is never
           undone, or the endpoint would be a no-op.
-        * ``requires_init`` only — never from ``error`` (a failed startup
-          should surface, not loop) and never from a live session.
+        * ``requires_init``, or a **failed startup** (``error`` with no live
+          session and ``last_error.code == "startup_failed"``) — the same
+          boot-retry the shaker and plateloc shipped after the 2026-07-31
+          USB race left both in ``requires_init`` for two days. The error
+          stays surfaced on ``/status`` until a retry succeeds (§6.4 then
+          clears it); what never loops is a *mid-session* operational error,
+          where a session exists and a human should adjudicate. (First hit
+          live 2026-08-12: one 10 s read-timeout on ``POST /runs`` during
+          boot left the gateway in ``error`` until a manual restart.)
         * ``run_active`` — a robot busy with an outside run is deferred to,
           the same way ``boot_reconnect`` does, which hands it to the
           external-control self-heal once that run ends.
@@ -1458,9 +1465,15 @@ class OT2Service:
         ``probe_robot()`` result, not the cached ``_last_probe``.
         """
 
-        if self.dry_run or self._operator_shutdown:
+        if self.dry_run or self._operator_shutdown or not self._boot_started:
             return
-        if self.state != OT2ServiceState.REQUIRES_INIT or not self._boot_started:
+        failed_startup = (
+            self.state == OT2ServiceState.ERROR
+            and self.control is None
+            and self.last_error is not None
+            and self.last_error.code == "startup_failed"
+        )
+        if self.state != OT2ServiceState.REQUIRES_INIT and not failed_startup:
             return
         if not probe.get("reachable"):
             return
@@ -1481,15 +1494,16 @@ class OT2Service:
         self._last_self_heal_at = now
 
         logger.info(
-            "self-heal: robot reachable and idle after an unreachable boot; "
+            "self-heal: robot reachable and idle after %s; "
             "starting %s session + protocol init (this can take several minutes)",
+            "a failed startup" if failed_startup else "an unreachable boot",
             self.transport,
         )
         try:
             self.startup()
         except Exception:  # pragma: no cover - startup records its own error/state
             # startup() already recorded last_error and flipped to ERROR; the
-            # requires_init guard above stops this from retrying in a loop.
+            # self-heal interval above spaces the next attempt.
             pass
 
     def boot_reconnect(self) -> None:

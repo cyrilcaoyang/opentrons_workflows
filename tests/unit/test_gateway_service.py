@@ -769,6 +769,62 @@ def test_self_heal_retry_is_rate_limited(monkeypatch):
     assert len(attempts) == 1
 
 
+def test_self_heals_after_a_failed_boot_startup(monkeypatch):
+    """One transient failure during the boot reconnect must not strand the
+    gateway in `error` until a human restarts it (live 2026-08-12: a single
+    10 s read-timeout on POST /runs did exactly that). Mirrors the
+    shaker/plateloc boot-retry: a failed *startup* retries while no session
+    exists, with the error surfaced on /status until a retry succeeds."""
+
+    calls = []
+
+    def flaky_then_good(**kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("POST /runs: read timed out")
+        return Mock()
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", flaky_then_good)
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=False)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9", password="pw")
+    service.boot_reconnect()
+    assert service.state == OT2ServiceState.ERROR
+    assert service.last_error is not None
+    assert service.last_error.code == "startup_failed"
+
+    service._last_self_heal_at = 0.0  # outside the retry window
+    service._refresh_identity()
+
+    assert service.state == OT2ServiceState.READY
+    assert service.control is not None
+    # The startup failure is cleared (the Mock control leaves a cosmetic
+    # snapshot_failed warning behind, which is not what this test pins).
+    assert service.last_error is None or service.last_error.code != "startup_failed"
+
+
+def test_a_mid_session_error_is_never_self_healed(monkeypatch):
+    """A session that exists and then faults is a human's call (recover via
+    the panel or reconcile) — only the no-session startup failure loops."""
+
+    monkeypatch.setattr("opentrons_server.gateway.service.OT2Control", lambda **kwargs: Mock())
+    monkeypatch.setattr(
+        "opentrons_server.gateway.service.requests.get", _fake_probe_get(run_active=False)
+    )
+    service = OT2Service(dry_run=False, host_alias="192.168.0.9", password="pw")
+    service.boot_reconnect()
+    assert service.state == OT2ServiceState.READY
+    control = service.control
+
+    service._set_error("command_failed", "aspirate: boom", severity="error")
+    service._last_self_heal_at = 0.0
+    service._refresh_identity()
+
+    assert service.state == OT2ServiceState.ERROR  # surfaced, not looped
+    assert service.control is control  # no new session was taken
+
+
 def test_stale_unreachable_message_clears_when_robot_returns(monkeypatch):
     """/status must stop claiming 'Robot unreachable' once it isn't — the note
     was set at boot and previously nothing ever cleared it."""
