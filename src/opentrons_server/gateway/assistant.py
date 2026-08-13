@@ -330,9 +330,15 @@ class Assistant:
     """One conversation turn's worth of tool-calling over a single OT-2."""
 
     # Bounded so a confused model cannot spin against the robot's read path or
-    # burn tokens indefinitely. Four is enough for read -> read -> propose with
-    # one repair attempt after a validation error.
-    MAX_TOOL_ROUNDS = 4
+    # burn tokens indefinitely — but generous, because the budget counts model
+    # *completions*, not tool calls, and the deployed model tends to make one
+    # call per completion. The system prompt itself demands status +
+    # consumables + list_actions reads before a propose, the client re-sends
+    # history as plain text (previous tool results are never replayed), and
+    # the final no-tool-call reply costs a round of its own — so a single
+    # honest turn routinely needs 5-6 rounds, plus repair attempts after
+    # validation errors.
+    MAX_TOOL_ROUNDS = 16
 
     def __init__(self, service: Any, plans: PlanStore, config: AssistantConfig) -> None:
         self._service = service

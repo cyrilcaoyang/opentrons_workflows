@@ -232,7 +232,10 @@ def test_tool_rounds_are_bounded(monkeypatch):
     """A model that keeps calling tools must not spin against the robot's read
     path. It gets a truthful 'I didn't finish' rather than an invented summary."""
     a = Assistant(OT2Service(dry_run=True), PlanStore(), _config())
-    _fake_openai(monkeypatch, [_tool_call("get_status", {}, f"c{i}") for i in range(10)])
+    _fake_openai(
+        monkeypatch,
+        [_tool_call("get_status", {}, f"c{i}") for i in range(Assistant.MAX_TOOL_ROUNDS + 2)],
+    )
 
     result = a.chat([{"role": "user", "content": "loop"}])
 

@@ -139,6 +139,20 @@ export function AssistantBubble({
     [claim.token, refreshPlan],
   );
 
+  const clearThread = useCallback(() => {
+    // Forgets the conversation only. Plans the assistant drafted live on the
+    // gateway and stay visible in the Proposed-plans panel — clearing a chat
+    // must never silently discard something awaiting review.
+    setThread([]);
+    setPlanStates({});
+    setError(null);
+    try {
+      sessionStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* private mode / quota — nothing to remove */
+    }
+  }, []);
+
   useEffect(() => {
     // One probe on mount. If the gateway has no assistant this component then
     // costs nothing for the rest of the session.
@@ -297,6 +311,16 @@ export function AssistantBubble({
           </span>
         </div>
         <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={clearThread}
+            disabled={thread.length === 0}
+            className="rounded px-1.5 text-[11px] text-ink-subtle hover:bg-slate-100 disabled:opacity-40 dark:text-slate-400 dark:hover:bg-slate-800"
+            aria-label="Clear the conversation"
+            title="Clear the conversation — proposed plans stay in the panel"
+          >
+            Clear
+          </button>
           <button
             type="button"
             onClick={() => setExpanded((e) => !e)}
