@@ -57,6 +57,9 @@ export function AssistantBubble({
   snapshot: GatewaySnapshot | null;
 }) {
   const [available, setAvailable] = useState(false);
+  // Which model answers the chat (from /assistant/health), shown under the
+  // input so operators know what they are talking to — dashboard parity.
+  const [model, setModel] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   // Drag offset from the bottom-right anchor, in px (x/y ≤ 0 moves left/up).
@@ -157,7 +160,10 @@ export function AssistantBubble({
     // One probe on mount. If the gateway has no assistant this component then
     // costs nothing for the rest of the session.
     void getAssistantHealth()
-      .then((h) => setAvailable(h.configured))
+      .then((h) => {
+        setAvailable(h.configured);
+        setModel(h.model ?? null);
+      })
       .catch(() => setAvailable(false));
   }, []);
 
@@ -238,12 +244,12 @@ export function AssistantBubble({
     const d = dragRef.current;
     if (!d) return;
     const rect = panelRef.current?.getBoundingClientRect();
-    const w = rect?.width ?? 512;
-    const h = rect?.height ?? 512;
-    // Anchored bottom-right with 1rem margins; clamp so the whole panel stays
-    // on screen (offsets are ≤ 0 by construction).
-    const minX = -(window.innerWidth - w - 32);
-    const minY = -(window.innerHeight - h - 32);
+    const w = rect?.width ?? 460;
+    const h = rect?.height ?? 520;
+    // Anchored bottom-right above the launcher (dashboard placement); clamp so
+    // the whole panel stays on screen (offsets are ≤ 0 by construction).
+    const minX = -(window.innerWidth - w - 40);
+    const minY = -(window.innerHeight - h - 100);
     setDragOffset({
       x: Math.max(Math.min(minX, 0), Math.min(0, d.baseX + e.clientX - d.startX)),
       y: Math.max(Math.min(minY, 0), Math.min(0, d.baseY + e.clientY - d.startY)),
@@ -256,32 +262,63 @@ export function AssistantBubble({
 
   if (!available) return null;
 
-  if (!open) {
-    return (
+  return (
+    <>
+      {/* Floating launcher — dashboard AssistantBubble parity: stays visible
+          while the panel is open and swaps the chat glyph for an X. Purple is
+          the lab-wide "proposes actions you authorize" accent (UI_DESIGN §5),
+          shared with the dashboard's Control mode and the xArm panel. */}
       <button
         type="button"
-        onClick={() => setOpen(true)}
-        title="Ask about this OT-2"
-        className="fixed bottom-4 right-4 z-40 flex h-11 w-11 items-center justify-center rounded-full bg-sky-600 text-lg text-white shadow-lg hover:bg-sky-700"
+        onClick={() => setOpen((v) => !v)}
+        aria-label={open ? "Close the assistant" : "Open the assistant"}
+        title={open ? "Minimize — the conversation is kept" : "Ask about this OT-2"}
+        className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-purple-600 text-white shadow-lg transition hover:bg-purple-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2"
       >
-        <span aria-hidden>💬</span>
-        <span className="sr-only">Open the assistant</span>
+        {open ? (
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-5 w-5"
+          >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        ) : (
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-5 w-5"
+          >
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+          </svg>
+        )}
       </button>
-    );
-  }
 
-  return (
+      {open && (
     <section
       ref={panelRef}
+      role="dialog"
+      aria-label="OT-2 assistant"
       style={{ transform: `translate(${dragOffset.x}px, ${dragOffset.y}px)` }}
       className={[
-        "fixed bottom-4 right-4 z-40 flex max-w-[calc(100vw-2rem)] flex-col rounded-xl border border-slate-200 bg-surface-raised shadow-xl dark:border-slate-700 dark:bg-slate-900",
+        "fixed bottom-20 right-5 z-40 flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-purple-300 bg-surface-raised shadow-2xl dark:border-purple-800 dark:bg-slate-900",
         // Two sizes rather than a drag-resize: anchored bottom-right, a CSS
-        // resize handle would grow the panel off-screen. Default is wide
-        // enough for a plan preview; expanded is for reading longer replies.
+        // resize handle would grow the panel off-screen. Default matches the
+        // dashboard's 460x520 panel; expanded is for reading longer replies.
         expanded
           ? "h-[min(46rem,calc(100vh-2rem))] w-[44rem]"
-          : "h-[32rem] w-[32rem] max-h-[calc(100vh-2rem)]",
+          : "h-[520px] w-[460px] max-h-[calc(100vh-2rem)]",
       ].join(" ")}
     >
       <header
@@ -289,7 +326,7 @@ export function AssistantBubble({
         onPointerMove={onDragMove}
         onPointerUp={onDragEnd}
         onPointerCancel={onDragEnd}
-        className="flex cursor-move touch-none select-none items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-slate-800"
+        className="flex cursor-move touch-none select-none items-center justify-between gap-2 border-b border-purple-200 bg-purple-50/60 px-3 py-2 dark:border-purple-800 dark:bg-purple-950/30"
         title="Drag to move"
       >
         <div className="flex min-w-0 flex-col">
@@ -307,15 +344,15 @@ export function AssistantBubble({
               .join(" · ")}
           </span>
           <span className="truncate text-[10px] text-ink-subtle dark:text-slate-500">
-            Proposes only — you approve and run
+            Control · proposes plans you approve and run
           </span>
         </div>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={clearThread}
             disabled={thread.length === 0}
-            className="rounded px-1.5 text-[11px] text-ink-subtle hover:bg-slate-100 disabled:opacity-40 dark:text-slate-400 dark:hover:bg-slate-800"
+            className="rounded border border-slate-300 px-2 py-1 text-[11px] font-medium text-ink-subtle transition hover:bg-slate-100 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
             aria-label="Clear the conversation"
             title="Clear the conversation — proposed plans stay in the panel"
           >
@@ -324,7 +361,7 @@ export function AssistantBubble({
           <button
             type="button"
             onClick={() => setExpanded((e) => !e)}
-            className="rounded px-1.5 text-sm text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+            className="rounded px-2 py-1 text-[14px] leading-none text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
             aria-label={expanded ? "Shrink the assistant window" : "Enlarge the assistant window"}
             title={expanded ? "Shrink" : "Enlarge"}
           >
@@ -333,33 +370,37 @@ export function AssistantBubble({
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="rounded px-1.5 text-sm text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+            className="rounded px-2 py-1 text-[14px] leading-none text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
             aria-label="Minimize the assistant"
             title="Minimize — the conversation is kept"
           >
-            −
+            &minus;
           </button>
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-3 py-2">
+      <div className="flex-1 overflow-y-auto px-3 py-3 text-sm">
         {thread.length === 0 && (
-          <p className="text-xs text-ink-subtle dark:text-slate-500">
-            Ask about this robot&apos;s state, or describe a simple operation and I&apos;ll
-            propose it for your approval.
-          </p>
+          <div className="text-xs text-ink-subtle dark:text-slate-500">
+            Ask about this robot&apos;s state, or describe a simple operation and
+            I&apos;ll propose it for your approval. For example:
+            <ul className="mt-2 list-disc space-y-1 pl-4">
+              <li>What is on the deck right now?</li>
+              <li>Pick up a tip from A1 and aspirate 50 µL from well B2.</li>
+            </ul>
+          </div>
         )}
-        <ul className="flex flex-col gap-2">
+        <ul className="flex flex-col gap-3">
           {thread.map((m, i) => (
             <li
               key={i}
               className={
                 m.role === "user"
-                  ? "self-end rounded-lg bg-sky-600 px-2.5 py-1.5 text-xs text-white"
-                  : "self-start rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs text-ink dark:bg-slate-800 dark:text-slate-200"
+                  ? "max-w-[85%] self-end rounded-lg bg-purple-600 px-3 py-2 text-[13px] leading-relaxed text-white"
+                  : "max-w-[85%] self-start rounded-lg bg-slate-100 px-3 py-2 text-[13px] leading-relaxed text-ink dark:bg-slate-800 dark:text-slate-100"
               }
             >
-              <span className="whitespace-pre-wrap">{m.content}</span>
+              <span className="whitespace-pre-wrap break-words">{m.content}</span>
               {m.planId && (
                 <ChatPlanCard
                   planId={m.planId}
@@ -385,46 +426,71 @@ export function AssistantBubble({
           ))}
         </ul>
         {pending && (
-          <p className="mt-2 text-[11px] text-ink-subtle dark:text-slate-500">Thinking…</p>
+          <p className="mt-2 text-[13px] text-ink-subtle opacity-60 dark:text-slate-500">…</p>
         )}
         {error && (
-          <p role="alert" className="mt-2 text-[11px] text-rose-700 dark:text-rose-400">
+          <div
+            role="alert"
+            className="mt-2 rounded border border-rose-300 bg-rose-50 px-2 py-1 text-xs text-rose-800 dark:border-rose-700 dark:bg-rose-950/40 dark:text-rose-200"
+          >
             {error}
-          </p>
+          </div>
         )}
         <div ref={endRef} />
       </div>
 
       <form
-        className="flex gap-1.5 border-t border-slate-100 p-2 dark:border-slate-800"
+        className="border-t border-purple-200 px-3 py-2 dark:border-purple-800"
         onSubmit={(e) => {
           e.preventDefault();
           void send();
         }}
       >
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          disabled={pending}
-          placeholder={claim.held ? "Ask or describe a step…" : "Take control first…"}
-          className="min-w-0 flex-1 rounded-md border border-slate-200 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-        />
-        <button
-          type="submit"
-          disabled={pending || !draft.trim()}
-          className="rounded-md bg-sky-600 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-40"
-        >
-          Send
-        </button>
+        <div className="flex items-end gap-2">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+            rows={2}
+            disabled={pending}
+            placeholder={
+              pending
+                ? "Working…"
+                : claim.held
+                  ? "Ask or describe a step…"
+                  : "Take control first…"
+            }
+            className="flex-1 resize-none rounded border border-slate-300 bg-white px-2 py-1 text-sm text-ink shadow-inner focus:border-purple-500 focus:outline-none disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          />
+          <button
+            type="submit"
+            disabled={pending || !draft.trim()}
+            className="self-stretch rounded bg-purple-600 px-3 text-sm font-medium text-white shadow-sm transition hover:bg-purple-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
+          >
+            Send
+          </button>
+        </div>
+        {model && (
+          <p className="mt-1 text-center text-[10px] text-ink-subtle dark:text-slate-500">
+            model: {model}
+          </p>
+        )}
       </form>
     </section>
+      )}
+    </>
   );
 }
 
 const CARD_STATUS_TONE: Record<string, string> = {
   draft: "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
-  approved: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
-  executing: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
+  approved: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
+  executing: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
   executed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
   failed: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300",
   aborted: "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300",
@@ -504,7 +570,7 @@ function ChatPlanCard({
     // No live state: show what was proposed, but never an Approve button —
     // approving requires the hash of a plan we can actually see fresh.
     return (
-      <div className="mt-1.5 rounded border border-slate-200 bg-surface-raised p-1.5 dark:border-slate-700 dark:bg-slate-900">
+      <div className="mt-1.5 rounded-lg border border-purple-300 bg-purple-50 p-2 text-[12px] dark:border-purple-700 dark:bg-purple-950/40">
         {previewSteps && previewSteps.length > 0 && (
           <ol className="mb-1 flex flex-col gap-0.5">
             {previewSteps.map((s, si) => (
@@ -519,12 +585,15 @@ function ChatPlanCard({
     );
   }
 
-  const actionButton = "rounded px-2 py-0.5 text-[11px] font-medium text-white disabled:opacity-40";
+  // Dashboard ProposalCard button family: a solid accent action and a quiet
+  // text dismiss with a purple-tinted hover.
+  const actionButton =
+    "rounded px-3 py-1 text-[11px] font-medium text-white transition disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700";
   const quietButton =
-    "rounded border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-ink dark:border-slate-600 dark:text-slate-200 disabled:opacity-40";
+    "rounded px-2 py-1 text-[11px] text-ink-subtle hover:bg-purple-100 disabled:opacity-60 dark:text-slate-400 dark:hover:bg-purple-900/40";
 
   return (
-    <div className="mt-1.5 rounded border border-slate-200 bg-surface-raised p-1.5 dark:border-slate-700 dark:bg-slate-900">
+    <div className="mt-1.5 rounded-lg border border-purple-300 bg-purple-50 p-2 text-[12px] dark:border-purple-700 dark:bg-purple-950/40">
       <div className="mb-1 flex items-center gap-1.5">
         <span
           className={`rounded px-1 py-px text-[10px] font-medium ${
@@ -582,7 +651,7 @@ function ChatPlanCard({
             // Approves the hash of the steps rendered above — never a
             // re-fetch-and-approve, so a plan that moved gets a 409.
             onClick={() => onApprove(live.step_hash)}
-            className={`${actionButton} bg-sky-600`}
+            className={`${actionButton} bg-purple-600 hover:bg-purple-700`}
           >
             Approve these {live.steps.length} steps
           </button>
@@ -592,7 +661,7 @@ function ChatPlanCard({
             type="button"
             disabled={!claimHeld || busy || !live.executable}
             onClick={onRun}
-            className={`${actionButton} bg-emerald-600`}
+            className={`${actionButton} bg-emerald-600 hover:bg-emerald-700`}
           >
             {busy ? "Running…" : "Run"}
           </button>
