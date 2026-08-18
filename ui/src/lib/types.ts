@@ -165,6 +165,11 @@ export interface LabwareSummary {
   well_volume_ul?: number | null;
   version?: number;
   namespace?: string;
+  /** Manufacturer metadata from the definition's schema-2 `brand` object.
+   *  Optional: an older gateway deploy may not serve these yet. */
+  vendor?: string | null;
+  product_numbers?: string[];
+  product_links?: string[];
   source?: string;
 }
 

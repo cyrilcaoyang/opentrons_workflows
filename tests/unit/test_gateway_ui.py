@@ -70,6 +70,11 @@ def test_labware_endpoint_always_answers():
         assert summary["display_name"]
         assert "rows" in summary and "columns" in summary
         assert summary["source"] == "standard"
+        # Manufacturer metadata (schema-2 brand object) rides in summaries so
+        # the picker tooltip can show vendor + part numbers.
+        assert "vendor" in summary
+        assert isinstance(summary["product_numbers"], list)
+        assert isinstance(summary["product_links"], list)
 
 
 def test_labware_definition_endpoint_serves_geometry():

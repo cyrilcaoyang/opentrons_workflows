@@ -60,6 +60,7 @@ def _summary(load_name: str, defn: dict[str, Any]) -> dict[str, Any]:
     rows, columns = _grid(defn)
     meta = defn.get("metadata") or {}
     params = defn.get("parameters") or {}
+    brand = defn.get("brand") or {}
     wells = defn.get("wells") or {}
     first_well = next(iter(wells.values()), {}) if isinstance(wells, dict) else {}
     return {
@@ -73,6 +74,11 @@ def _summary(load_name: str, defn: dict[str, Any]) -> dict[str, Any]:
         "well_volume_ul": first_well.get("totalLiquidVolume"),
         "version": defn.get("version"),
         "namespace": defn.get("namespace"),
+        # Schema-2 manufacturer metadata (brand.brand / brandId[] / links[]),
+        # same summary keys the dashboard store serves.
+        "vendor": brand.get("brand"),
+        "product_numbers": brand.get("brandId") or [],
+        "product_links": brand.get("links") or [],
         "source": "standard",
     }
 

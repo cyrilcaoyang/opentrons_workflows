@@ -188,9 +188,20 @@ export function catalogEntryFromLabware(summary: {
   is_tiprack?: boolean;
   rows?: number;
   columns?: number;
+  vendor?: string | null;
+  product_numbers?: string[];
   source?: string;
 }): CatalogEntry {
   const labCustom = summary.source === "uploaded" || summary.source === "repo";
+  // Vendor + part numbers ride in the tooltip so an operator can match the
+  // picker entry against the physical plate's label.
+  const compat = [
+    labCustom ? "Lab-custom definition (dashboard labware store)" : "Official Opentrons definition",
+    summary.vendor,
+    summary.product_numbers?.length ? `PN ${summary.product_numbers.join(", ")}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return {
     key: `labware-store-${summary.load_name}`,
     label: summary.display_name || summary.load_name,
@@ -199,8 +210,6 @@ export function catalogEntryFromLabware(summary: {
     rows: summary.rows || undefined,
     columns: summary.columns || undefined,
     isTiprack: summary.is_tiprack || undefined,
-    compat: labCustom
-      ? "Lab-custom definition (dashboard labware store)"
-      : "Official Opentrons definition",
+    compat,
   };
 }
