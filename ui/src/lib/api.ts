@@ -73,7 +73,13 @@ export class ApiError extends Error {
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(apiUrl(path), init);
+  return fetchJsonAt<T>(apiUrl(path), path, init);
+}
+
+/** Like `fetchJson` but takes the final URL verbatim — for the edge-root
+ *  dashboard endpoints below, which must NOT get the `apiBase` prefix. */
+async function fetchJsonAt<T>(url: string, path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
   if (!res.ok) {
     let body: unknown = null;
     try {
@@ -117,6 +123,39 @@ export function getLabwareList(): Promise<{ definitions: LabwareSummary[] }> {
  *  isn't installed — callers treat both as "no elevation available". */
 export function getLabwareDefinition(loadName: string): Promise<unknown> {
   return fetchJson<unknown>(`/labware/${encodeURIComponent(loadName)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard labware store (edge-only, same-origin)
+//
+// When the SPA is served through the Caddy edge (apiBase != "/"), the
+// dashboard's central labware store is reachable same-origin at the edge
+// root: GET /api/labware (custom definitions authored in the dashboard's
+// labware builder; reads are public). Served directly from the gateway
+// (:80xx/ui) that origin has no such route, so the store is simply
+// unavailable and the picker falls back to standard + authored entries.
+// This keeps the gateway itself device-side: the SPA in the browser is the
+// caller, never the gateway process.
+// ---------------------------------------------------------------------------
+
+/** True when the dashboard labware store is reachable from this origin. */
+export const labStoreAvailable: boolean = apiBase !== "/";
+
+/** Custom labware summaries from the dashboard store (source "uploaded" /
+ *  "repo"). Resolves empty when the SPA isn't behind the edge. */
+export function getLabStoreList(): Promise<{ definitions: LabwareSummary[] }> {
+  if (!labStoreAvailable) return Promise.resolve({ definitions: [] });
+  return fetchJsonAt<{ definitions: LabwareSummary[] }>("/api/labware", "/api/labware");
+}
+
+/** One full custom definition from the dashboard store (unwrapped from its
+ *  `{source, definition}` envelope). Throws `ApiError(404)` for unknown
+ *  names; rejects immediately when the store isn't reachable. */
+export async function getLabStoreDefinition(loadName: string): Promise<unknown> {
+  if (!labStoreAvailable) throw new Error("dashboard labware store not reachable from this origin");
+  const path = `/api/labware/${encodeURIComponent(loadName)}`;
+  const body = await fetchJsonAt<{ source: string; definition: unknown }>(path, path);
+  return body.definition;
 }
 
 // ---------------------------------------------------------------------------

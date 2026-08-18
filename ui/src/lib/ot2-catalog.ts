@@ -26,7 +26,8 @@ export type CatalogCategory =
   | "module"
   | "fixture" // trash / waste
   | "generic" // legacy bare-kind strings
-  | "custom"; // runtime entries (GET /labware), merged in at runtime
+  | "custom" // runtime entries (gateway GET /labware standard summaries)
+  | "labstore"; // runtime entries (dashboard GET /api/labware custom store)
 
 export interface CatalogEntry {
   /** Stable key, unique across the catalog (used as React key / test id). */
@@ -121,14 +122,17 @@ export const CATEGORY_LABELS: Record<CatalogCategory, string> = {
   fixture: "Fixtures",
   generic: "Generic (legacy)",
   custom: "Standard (Opentrons library)",
+  labstore: "Lab custom (dashboard store)",
 };
 
-/** Display order for grouped pickers. */
+/** Display order for grouped pickers. Lab-custom entries sit above the large
+ *  standard library: the lab's own plates are the likelier pick. */
 export const CATEGORY_ORDER: CatalogCategory[] = [
   "plate",
   "reservoir",
   "tiprack",
   "tuberack",
+  "labstore",
   "custom",
   "module",
   "fixture",
@@ -174,7 +178,10 @@ export function groupedCatalog(
   })).filter((g) => g.entries.length > 0);
 }
 
-/** Map a gateway labware summary (GET /labware) to a picker entry. */
+/** Map a labware summary to a picker entry. Summaries from the gateway's own
+ *  GET /labware carry source "standard" (official Opentrons library); the
+ *  dashboard store's GET /api/labware carries "uploaded" / "repo" (lab-custom
+ *  definitions from the labware builder) — same shape, different group. */
 export function catalogEntryFromLabware(summary: {
   load_name: string;
   display_name: string;
@@ -183,14 +190,17 @@ export function catalogEntryFromLabware(summary: {
   columns?: number;
   source?: string;
 }): CatalogEntry {
+  const labCustom = summary.source === "uploaded" || summary.source === "repo";
   return {
     key: `labware-store-${summary.load_name}`,
     label: summary.display_name || summary.load_name,
-    category: "custom",
+    category: labCustom ? "labstore" : "custom",
     declare: summary.load_name,
     rows: summary.rows || undefined,
     columns: summary.columns || undefined,
     isTiprack: summary.is_tiprack || undefined,
-    compat: "Official Opentrons definition",
+    compat: labCustom
+      ? "Lab-custom definition (dashboard labware store)"
+      : "Official Opentrons definition",
   };
 }

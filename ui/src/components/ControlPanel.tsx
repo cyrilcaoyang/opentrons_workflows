@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   deleteDeckDeclare,
+  getLabStoreList,
   getLabwareList,
   postDeckDeclare,
   postHome,
@@ -132,27 +133,40 @@ export function ControlPanel({
   const locked = !claim.held;
   const token = claim.token;
 
-  // Standard Opentrons definitions from the gateway's /labware (empty when
-  // opentrons-shared-data isn't installed there). Fetched once — the catalog
-  // is immutable for the gateway process lifetime.
+  // Runtime picker entries from two sources: the gateway's own /labware
+  // (standard Opentrons summaries — immutable for the gateway process
+  // lifetime) and the dashboard's labware store at the edge root
+  // (lab-custom definitions from the labware builder — mutable, empty when
+  // the SPA isn't served through the edge). Fetched on mount and refetched
+  // when the tab regains focus, so a plate just saved in the dashboard
+  // builder appears without a reload. Each source fails soft independently.
   const [labwareEntries, setLabwareEntries] = useState<CatalogEntry[]>([]);
   useEffect(() => {
     let cancelled = false;
     const authored = new Set(OT2_CATALOG.map((e) => e.declare));
-    getLabwareList()
-      .then((r) => {
+    const load = () => {
+      Promise.all([
+        getLabwareList().catch(() => ({ definitions: [] })),
+        getLabStoreList().catch(() => ({ definitions: [] })),
+      ]).then(([standard, labStore]) => {
         if (cancelled) return;
-        setLabwareEntries(
-          r.definitions
-            .filter((d) => !authored.has(d.load_name))
-            .map(catalogEntryFromLabware),
-        );
-      })
-      .catch(() => {
-        /* endpoint absent or shared-data not installed — authored catalog only */
+        const seen = new Set(authored);
+        const entries: CatalogEntry[] = [];
+        // Lab-custom first so a store definition shadowing a standard
+        // load_name keeps its "lab custom" identity in the picker.
+        for (const d of [...labStore.definitions, ...standard.definitions]) {
+          if (seen.has(d.load_name)) continue;
+          seen.add(d.load_name);
+          entries.push(catalogEntryFromLabware(d));
+        }
+        setLabwareEntries(entries);
       });
+    };
+    load();
+    window.addEventListener("focus", load);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", load);
     };
   }, []);
 

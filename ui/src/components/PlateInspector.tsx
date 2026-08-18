@@ -26,7 +26,12 @@
 
 import { useEffect, useState } from "react";
 
-import { ApiError, getLabwareDefinition } from "../lib/api";
+import {
+  ApiError,
+  getLabStoreDefinition,
+  getLabwareDefinition,
+  labStoreAvailable,
+} from "../lib/api";
 import {
   geometryFromDefinition,
   wellHalfX,
@@ -372,12 +377,22 @@ function useLabwareGeometry(loadName: string | undefined): {
     let cancelled = false;
     setLoading(loadName);
     getLabwareDefinition(loadName)
+      .catch((err: unknown) => {
+        // 404 = not a standard definition (or shared-data absent). Before
+        // giving up, try the dashboard's labware store — lab-custom
+        // definitions live there, not in opentrons-shared-data. The store is
+        // only reachable when the SPA is served through the edge.
+        if (err instanceof ApiError && err.status === 404 && labStoreAvailable) {
+          return getLabStoreDefinition(loadName);
+        }
+        throw err;
+      })
       .then((defn) => {
         if (!cancelled) setCache((c) => ({ ...c, [loadName]: geometryFromDefinition(defn) }));
       })
       .catch((err: unknown) => {
-        // 404 = unknown load_name or shared-data absent; either way, no
-        // elevation. Anything else is also non-fatal: this is a drawing.
+        // 404 on both = unknown load_name; either way, no elevation.
+        // Anything else is also non-fatal: this is a drawing.
         if (!cancelled) {
           if (!(err instanceof ApiError)) console.warn("labware definition fetch failed", err);
           setCache((c) => ({ ...c, [loadName]: null }));
