@@ -246,6 +246,44 @@ class LightsRequest(StrictRequest):
     on: bool
 
 
+class TempmodSetRequest(StrictRequest):
+    """Set the temperature-module target and return; the block ramps after.
+
+    Waiting for the target would hold the gateway BUSY for the whole ramp
+    (minutes, to 4 °C) and blow the HTTP command timeout. ``/status`` already
+    reports current vs target; the operator watches that.
+
+    ``module`` is the setup-recipe nickname or the deck slot. Omit it when
+    exactly one temperature module is declared or loaded.
+    """
+
+    celsius: float = Field(
+        ...,
+        ge=4.0,
+        le=95.0,
+        description="Target in °C. Temperature module GEN2 range is 4–95.",
+    )
+    module: Optional[str] = Field(
+        default=None,
+        description=(
+            'Recipe nickname or deck slot (e.g. "7"). Omit when exactly one '
+            "temperature module is on the deck."
+        ),
+    )
+
+
+class TempmodDeactivateRequest(StrictRequest):
+    """Turn the temperature module off."""
+
+    module: Optional[str] = Field(
+        default=None,
+        description=(
+            'Recipe nickname or deck slot (e.g. "7"). Omit when exactly one '
+            "temperature module is on the deck."
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-well sample / plate tracking
 #

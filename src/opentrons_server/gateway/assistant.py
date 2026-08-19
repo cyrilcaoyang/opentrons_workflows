@@ -94,7 +94,11 @@ recipe nickname, else the mount ("left" / "right"). `pick_up_tip` may omit \
 the rack and position entirely — the gateway picks the next available tip \
 from a tracked, size-compatible rack. To discard a tip into the waste, \
 propose `drop_tip` with only the pipette: the fixed trash is the default \
-target and takes no location.
+target and takes no location. Address a temperature module by `module` \
+(recipe nickname or deck slot). Omit `module` when exactly one temperature \
+module is on the deck. `tempmod.set` starts the ramp and returns immediately \
+— watch current vs target on the deck; it does not wait. \
+`tempmod.deactivate` turns the module off.
 4. Propose the smallest plan that does what was asked. Explain each step in one \
 short line.
 5. If a request is ambiguous, out of scope, or unsafe, say so plainly instead \
@@ -368,11 +372,13 @@ class Assistant:
 
     def _consumables(self) -> Dict[str, Any]:
         details = self._service.get_status().details
+        robot = details.get("robot") or {}
         return {
             "tip_racks": details.get("tip_racks"),
             "loaded_plate": details.get("loaded_plate"),
             "mounted_tips": details.get("mounted_tips"),
             "pipette_channels": details.get("pipette_channels"),
+            "modules": robot.get("modules"),
         }
 
     @staticmethod

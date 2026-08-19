@@ -38,6 +38,8 @@ from .models import (
     PROTOCOL_VERSION,
     ProtocolSetupRequest,
     StartupRequest,
+    TempmodDeactivateRequest,
+    TempmodSetRequest,
     TipRackState,
     TipRequest,
     TipsResetRequest,
@@ -716,6 +718,35 @@ def create_app(
             raise HTTPException(status_code=502, detail=f"robot lights request failed: {exc}")
         return CommandResponse(
             message=f"Deck lights {'on' if on else 'off'}", state=service.state.value
+        )
+
+    @app.post("/control/tempmod/set", response_model=CommandResponse, tags=["control"])
+    def tempmod_set(
+        request: TempmodSetRequest, _claim: None = Depends(require_claim)
+    ) -> CommandResponse:
+        """Set the temperature-module target. Returns once the target is
+        accepted; the block ramps in the background. Watch current vs target
+        on ``/status`` / the deck. Does not wait (a 4 °C cool-down is minutes).
+        """
+        try:
+            service.set_tempmod_temperature(request)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return CommandResponse(
+            message=f"Temperature module target {request.celsius:g} °C",
+            state=service.state.value,
+        )
+
+    @app.post("/control/tempmod/deactivate", response_model=CommandResponse, tags=["control"])
+    def tempmod_deactivate(
+        request: TempmodDeactivateRequest, _claim: None = Depends(require_claim)
+    ) -> CommandResponse:
+        try:
+            service.deactivate_tempmod(request)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return CommandResponse(
+            message="Temperature module deactivated", state=service.state.value
         )
 
     @app.post("/control/reconcile", response_model=CommandResponse, tags=["control"])

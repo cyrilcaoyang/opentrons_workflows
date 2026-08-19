@@ -245,6 +245,17 @@ export const postReconcile = (token: string | null) =>
 export const postSetLights = (token: string | null, on: boolean) =>
   controlPost("lights", { on }, token);
 
+/** Set the temperature-module target. Returns once the robot accepts the
+ *  target; the block ramps in the background. `module` is the deck slot. */
+export const postSetTempmod = (
+  token: string | null,
+  celsius: number,
+  module?: string,
+) => controlPost("tempmod/set", { celsius, ...(module ? { module } : {}) }, token);
+
+export const postDeactivateTempmod = (token: string | null, module?: string) =>
+  controlPost("tempmod/deactivate", module ? { module } : {}, token);
+
 /** Mark every tip in the rack on `slot` fresh again — the operator asserting a
  *  physical refill. Never inferred: the gateway cannot observe new tips being
  *  put in, and guessing wrong claims tips that aren't there. Addressed by slot

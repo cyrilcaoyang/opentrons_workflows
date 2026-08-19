@@ -147,6 +147,7 @@ Env defaults: `OT2_HTTP_ASPIRATE_FLOW_UL_S` (90), `OT2_HTTP_DISPENSE_FLOW_UL_S`
 
 | Method | HTTP status | Mechanism |
 |---|---|---|
+| `tempmod_start_set_temperature` | native | `temperatureModule/setTargetTemperature` only (no wait) — gateway operator/assistant path |
 | `tempmod_set_temperature` | native (2 cmds) | `temperatureModule/setTargetTemperature` + `waitForTemperature` (SSH blocks too) |
 | `tempmod_await_temperature` | native | `waitForTemperature` |
 | `tempmod_deactivate` | native | `deactivate` |

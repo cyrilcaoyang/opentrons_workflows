@@ -937,6 +937,17 @@ class OT2HttpControl:
 
     # -- temperature module -------------------------------------------------------
 
+    def tempmod_start_set_temperature(self, nickname: str, celsius: float) -> None:
+        """Set the target and return; the block ramps in the background.
+
+        The gateway's operator/assistant path uses this so a 4 °C set does not
+        hold BUSY for the whole cool-down (and blow ``OT2_HTTP_COMMAND_TIMEOUT``).
+        ``tempmod_set_temperature`` remains the protocol-API set-and-wait.
+        """
+        self.client.execute(
+            RunEngineCommands.temp_set_target(self._module_id(nickname), celsius)
+        )
+
     def tempmod_set_temperature(self, nickname: str, celsius: float) -> None:
         """Set-and-wait, like the protocol API's blocking ``set_temperature``."""
         module_id = self._module_id(nickname)

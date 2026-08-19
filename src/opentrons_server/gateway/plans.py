@@ -76,6 +76,8 @@ from .models import (
     MoveToRequest,
     PlateLoadRequest,
     ProtocolSetupRequest,
+    TempmodDeactivateRequest,
+    TempmodSetRequest,
     TipRequest,
     TipsResetRequest,
     WellUpdateRequest,
@@ -167,6 +169,14 @@ PLAN_ACTIONS: Dict[str, ActionSpec] = {
     "lights.set": ActionSpec(LightsRequest, True, lambda svc, a: svc.set_lights(a.on)),
     "deck.declare": ActionSpec(
         DeckDeclareRequest, True, lambda svc, a: svc.declare_deck(a.slots)
+    ),
+    # Set-target only (no wait): the ramp is hardware-side and /status already
+    # shows current vs target. Waiting would pin BUSY for minutes.
+    "tempmod.set": ActionSpec(
+        TempmodSetRequest, True, lambda svc, a: svc.set_tempmod_temperature(a)
+    ),
+    "tempmod.deactivate": ActionSpec(
+        TempmodDeactivateRequest, True, lambda svc, a: svc.deactivate_tempmod(a)
     ),
 }
 
