@@ -259,12 +259,17 @@ export function AssistantBubble({
           /* preview is a nicety; the card degrades read-only without it */
         }
       }
+      const tools = toolProgressRef.current;
       setThread((t) => [
         ...t,
         {
           role: "assistant" as const,
-          content: res.reply || (res.plan_id ? "Proposed a plan for your review." : "…"),
-          tools: toolProgressRef.current,
+          content:
+            res.reply.trim() ||
+            (res.plan_id
+              ? "Proposed a plan for your review."
+              : "The model returned no reply after using tools."),
+          tools,
           planId: res.plan_id ?? undefined,
           steps,
         },

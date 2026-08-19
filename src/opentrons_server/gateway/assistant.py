@@ -51,8 +51,16 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 # degrades to text-only replies with no proposals.
 DEFAULT_MODEL = "z-ai/glm-5.2"
 
-DEFAULT_MAX_TOKENS = 1024
+DEFAULT_MAX_TOKENS = 4096
 DEFAULT_TIMEOUT_S = 60.0
+# One empty model completion is common with reasoning models after a tool
+# round (they spend the token budget internally and return no content). A
+# bounded nudge asks them to actually answer instead of completing as "…".
+_EMPTY_REPLY_NUDGES = 2
+_EMPTY_REPLY_NUDGE = (
+    "Your last response was empty. Propose a plan with propose_plan, or tell "
+    "the operator in one short paragraph why you cannot."
+)
 
 _SYSTEM_PROMPT = """\
 You are the operator assistant for a single Opentrons OT-2 liquid handler, \
@@ -396,6 +404,33 @@ class Assistant:
             "note": "Draft created. The operator must approve and run it in the panel.",
         }
 
+    @staticmethod
+    def _message_text(message: Any) -> str:
+        """Visible assistant text only — never reasoning / chain-of-thought."""
+        content = getattr(message, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for part in content:
+                if isinstance(part, str) and part.strip():
+                    parts.append(part)
+                    continue
+                text = (
+                    part.get("text")
+                    if isinstance(part, dict)
+                    else getattr(part, "text", None)
+                )
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+            joined = "".join(parts).strip()
+            if joined:
+                return joined
+        refusal = getattr(message, "refusal", None)
+        if isinstance(refusal, str) and refusal.strip():
+            return refusal
+        return ""
+
     # -- the turn ----------------------------------------------------------
 
     def chat_events(self, messages: List[Dict[str, str]]) -> Iterator[Dict[str, Any]]:
@@ -424,6 +459,7 @@ class Assistant:
 
         used: List[str] = []
         plan_id: Optional[str] = None
+        empty_nudges = 0
 
         for round_index in range(self.MAX_TOOL_ROUNDS):
             yield {"type": "thinking", "round": round_index + 1}
@@ -436,10 +472,20 @@ class Assistant:
             choice = response.choices[0].message
             calls = getattr(choice, "tool_calls", None) or []
             if not calls:
+                text = self._message_text(choice)
+                if not text and empty_nudges < _EMPTY_REPLY_NUDGES:
+                    empty_nudges += 1
+                    convo.append({"role": "user", "content": _EMPTY_REPLY_NUDGE})
+                    continue
                 yield {
                     "type": "complete",
                     "result": {
-                        "reply": choice.content or "",
+                        "reply": text
+                        or (
+                            "The model finished after reading the robot but "
+                            "returned no reply. Try the request once more, or "
+                            "ask for a smaller step."
+                        ),
                         "tools_used": used,
                         "plan_id": plan_id,
                         "model": response.model,

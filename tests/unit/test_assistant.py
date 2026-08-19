@@ -246,6 +246,38 @@ def test_chat_events_report_tool_progress(monkeypatch):
     assert events[-1]["result"]["reply"] == "It is ready."
 
 
+def test_empty_reply_after_tools_is_nudged_once(monkeypatch):
+    """Reasoning models often return no content after a tool round. Complete
+    that as a visible sentence only after a bounded nudge fails — never as '…'."""
+    a = Assistant(OT2Service(dry_run=True), PlanStore(), _config())
+    _fake_openai(
+        monkeypatch,
+        [
+            _tool_call("get_status", {}),
+            _text(""),
+            _text("Deck is empty; I cannot aspirate yet."),
+        ],
+    )
+
+    result = a.chat([{"role": "user", "content": "aspirate 20 uL"}])
+
+    assert result["reply"] == "Deck is empty; I cannot aspirate yet."
+    assert result["tools_used"] == ["get_status"]
+
+
+def test_empty_reply_after_nudge_budget_is_truthful(monkeypatch):
+    a = Assistant(OT2Service(dry_run=True), PlanStore(), _config())
+    _fake_openai(
+        monkeypatch,
+        [_tool_call("get_status", {}), _text(""), _text(""), _text("")],
+    )
+
+    result = a.chat([{"role": "user", "content": "aspirate 20 uL"}])
+
+    assert "returned no reply" in result["reply"]
+    assert result["tools_used"] == ["get_status"]
+
+
 def test_chat_events_mark_a_failed_tool(monkeypatch):
     a = Assistant(OT2Service(dry_run=True), PlanStore(), _config())
     _fake_openai(
