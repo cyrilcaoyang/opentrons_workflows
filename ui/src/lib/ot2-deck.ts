@@ -6,7 +6,9 @@
  *
  * The declared-layout round-trip rule (`declaredMapFromDeck`) is the load-
  * bearing part: the gateway's `POST /control/deck/declare` is a full-layout
- * replace, so every edit must re-send all currently-declared slots. A
+ * replace, so every edit must re-send all currently-declared slots — including
+ * the ones a run or the REPL has since loaded, which is why it reads the
+ * slot's `declared` / `declared_module` rather than its `slot_state`. A
  * declared slot is re-sent as its exact Opentrons `load_name` when the
  * gateway reported one (any string containing "_" is parsed as a load_name
  * device-side), falling back to the legacy `kind` string; a declared module
@@ -141,24 +143,32 @@ function declareString(item: { kind?: string | null; load_name?: string | null }
 
 /**
  * The operator-editable declared map: only the slots the operator actually
- * declared (declared-only + the losing side of a mismatch) — observed labware
- * is NOT re-declared. Values are exact load_names when known, module picker
- * keys for declared modules, else kinds.
+ * declared — observed labware is NOT re-declared. Values are exact load_names
+ * when known, module picker keys for declared modules, else kinds.
+ *
+ * Read `declared` / `declared_module` in preference to `slot_state`. A declared
+ * slot that a run or the REPL has since loaded reports `slot_state:
+ * "occupied"`, so keying off `slot_state` alone drops it here — and since the
+ * declare endpoint is a full-layout replace, the next edit to any other slot
+ * would then delete that declaration on the device. The `slot_state ===
+ * "declared"` fallbacks still cover a gateway predating those two fields, and
+ * the orchestrator-tracked plate, which the deck folds onto its slot without
+ * being an operator declaration.
  */
 export function declaredMapFromDeck(deck: DeviceDeck): Record<string, string> {
   const declared: Record<string, string> = {};
   for (const [slot, s] of Object.entries(deck.slots)) {
-    if (s.slot_state === "declared" && s.module) {
+    const declaredModule = s.declared_module ?? (s.slot_state === "declared" ? s.module : null);
+    if (declaredModule) {
       // A declared (sticky) module → round-trip via its picker key.
-      const key = MODULE_NAME_TO_KEY[s.module.module_name];
+      const key = MODULE_NAME_TO_KEY[declaredModule.module_name];
       if (key) declared[slot] = key;
-    } else if (s.slot_state === "declared" && s.labware) {
-      const v = declareString(s.labware);
-      if (v) declared[slot] = v;
-    } else if (s.slot_state === "mismatch" && s.declared) {
-      const v = declareString(s.declared);
-      if (v) declared[slot] = v;
+      continue;
     }
+    const item = s.declared ?? (s.slot_state === "declared" ? s.labware : null);
+    if (!item) continue;
+    const v = declareString(item);
+    if (v) declared[slot] = v;
   }
   return declared;
 }

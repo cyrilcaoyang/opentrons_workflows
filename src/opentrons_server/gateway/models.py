@@ -407,9 +407,18 @@ class DeckSlot(BaseModel):
     module: Optional[SlotModule] = None
     slot_state: SlotState = "empty"
     source: DeckSource = "empty"
-    # Populated only on a mismatch: the declared intent that lost to the
-    # observed labware, so the operator can see the conflict.
+    # The operator/recipe declaration standing on this slot, whatever won the
+    # merge. Populated for *every* declared slot, not just a mismatch: once a
+    # run/REPL source occupies a declared slot, `slot_state` stops saying
+    # "declared", and a caller that reconstructs the layout from `slot_state`
+    # alone would silently drop the declaration on its next full-layout
+    # replace. The orchestrator-tracked plate is deliberately excluded — it is
+    # folded onto its slot for its wells, not operator intent.
     declared: Optional[SlotLabware] = None
+    # As `declared`, for a slot whose declaration is a sticky module rather than
+    # labware. Movable modules are never declared, so this is what tells a
+    # declared module apart from one that merely showed up in the live deck.
+    declared_module: Optional[SlotModule] = None
 
 
 class DeckState(BaseModel):

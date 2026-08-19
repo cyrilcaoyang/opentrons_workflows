@@ -347,6 +347,19 @@ def build_deck(
         deck_slot = _resolve_slot(
             observed, observed_source, module, module_source, declared_labware, busy
         )
+        # Surface the declaration on the slot regardless of which source won, so
+        # a declared slot stays recognizable as declared after a run or the REPL
+        # loads it. `slot_state` alone cannot carry this: it flips to
+        # occupied/in_use and the declaration becomes invisible, which made the
+        # panel's full-layout declare round-trip silently delete the
+        # declaration of every slot the robot happened to have loaded. Read from
+        # `declared`, not `effective_declared`, to keep the folded tracked plate
+        # out of the operator's declared layout.
+        operator_declared = declared.get(slot)
+        if isinstance(operator_declared, SlotModule):
+            deck_slot = deck_slot.model_copy(update={"declared_module": operator_declared})
+        elif isinstance(operator_declared, SlotLabware) and deck_slot.declared is None:
+            deck_slot = deck_slot.model_copy(update={"declared": operator_declared})
         nickname = slot_to_nickname.get(slot)
         if nickname and deck_slot.labware is not None and deck_slot.labware.nickname is None:
             deck_slot = deck_slot.model_copy(

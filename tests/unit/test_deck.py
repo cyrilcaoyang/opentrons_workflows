@@ -180,7 +180,9 @@ def test_build_deck_in_use_when_busy():
 def test_build_deck_confirmed_declared_is_occupied_not_mismatch():
     deck = build_deck(repl={"2": _plate()}, declared={"2": _plate()}, now=_NOW)
     assert deck.slots["2"].slot_state == "occupied"
-    assert deck.slots["2"].declared is None
+    # The declaration is still reported even though the observed source won the
+    # slot -- see test_build_deck_declaration_survives_being_observed.
+    assert deck.slots["2"].declared is not None
 
 
 def test_build_deck_mismatch():
@@ -241,6 +243,72 @@ def test_build_deck_legacy_kind_declared_agrees_with_observed_load_name():
 
 
 # ---------------------------------------------------------------------------
+# build_deck — the declaration survives whichever source wins the slot
+#
+# A caller reconstructing the declared layout (the panel does, because
+# /control/deck/declare is a full-layout replace) has to be able to see the
+# declaration on a slot a run or the REPL has since loaded. When it could not,
+# editing any one slot re-sent a layout missing every observed slot, and the
+# gateway deleted those declarations -- including the custom-labware definition
+# a declared custom plate needs to auto-load at all.
+# ---------------------------------------------------------------------------
+
+
+def test_build_deck_declaration_survives_being_observed():
+    custom = SlotLabware(
+        kind="96-well", load_name="sdl2_96_stacked_filterplate", definition={"ordering": []}
+    )
+    # The gateway auto-loaded the declared plate, so the REPL now observes it.
+    observed = SlotLabware(kind="96-well", load_name="sdl2_96_stacked_filterplate")
+    deck = build_deck(repl={"3": observed}, declared={"3": custom}, now=_NOW)
+    slot = deck.slots["3"]
+    assert slot.slot_state == "occupied"          # the live source still wins the view
+    assert slot.declared.load_name == "sdl2_96_stacked_filterplate"
+    assert slot.declared.definition == {"ordering": []}
+
+
+def test_build_deck_declaration_survives_a_run_source():
+    deck = build_deck(run={"1": _plate()}, declared={"1": _plate()}, now=_NOW)
+    assert deck.slots["1"].source == "run"
+    assert deck.slots["1"].declared is not None
+
+
+def test_build_deck_declared_module_survives_being_observed():
+    # The declared module is reported separately from the live one, so a caller
+    # can tell a sticky declaration from a movable module that merely showed up.
+    deck = build_deck(
+        repl={"7": SlotModule(module_name="temperature module gen2", serial_number="abc")},
+        declared={"7": SlotModule(module_name="temperature module gen2")},
+        now=_NOW,
+    )
+    slot = deck.slots["7"]
+    assert slot.slot_state == "occupied"
+    assert slot.module.serial_number == "abc"  # live telemetry
+    assert slot.declared_module.module_name == "temperature module gen2"
+
+
+def test_build_deck_observed_only_slot_has_no_declaration():
+    slot = build_deck(repl={"5": _plate()}, now=_NOW).slots["5"]
+    assert slot.declared is None
+    assert slot.declared_module is None
+
+
+def test_build_deck_live_only_module_is_not_reported_as_declared():
+    slot = build_deck(repl={"7": SlotModule(module_name="temperature module gen2")}, now=_NOW).slots[
+        "7"
+    ]
+    assert slot.declared_module is None
+
+
+def test_build_deck_mismatch_keeps_reporting_the_losing_declaration():
+    observed = make_slot_labware("corning_96_wellplate_360ul_flat")
+    declared = make_slot_labware("corning_24_wellplate_3.4ml_flat")
+    slot = build_deck(repl={"2": observed}, declared={"2": declared}, now=_NOW).slots["2"]
+    assert slot.slot_state == "mismatch"
+    assert slot.declared.kind == "24-well"
+
+
+# ---------------------------------------------------------------------------
 # build_deck — plate-well attachment (unifying PlateStateStore)
 # ---------------------------------------------------------------------------
 
@@ -287,6 +355,21 @@ def test_build_deck_loaded_plate_declares_its_slot_when_unobserved():
     assert slot.slot_state == "declared"
     assert slot.labware.plate_id == "D"
     assert slot.labware.wells[0].well == "A1"
+
+
+def test_build_deck_tracked_plate_is_not_an_operator_declaration():
+    # The tracked plate is folded onto its slot to carry its wells, not as
+    # operator intent -- reporting it as declared would make a caller's
+    # full-layout round-trip persist it as a sticky declaration.
+    for kwargs in ({}, {"repl": {"4": _plate()}}):
+        slot = build_deck(
+            loaded_plate=_loaded_plate("D"),
+            nickname_to_slot={"D": "4"},
+            now=_NOW,
+            **kwargs,
+        ).slots["4"]
+        assert slot.declared is None
+        assert slot.declared_module is None
 
 
 # ---------------------------------------------------------------------------

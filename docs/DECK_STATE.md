@@ -72,7 +72,8 @@ class DeckSlot(BaseModel):
     module: Optional[SlotModule] = None
     slot_state: SlotState = "empty"
     source: DeckSource = "empty"
-    declared: Optional[SlotLabware] = None   # populated only on mismatch
+    declared: Optional[SlotLabware] = None        # the declaration on this slot, whatever won
+    declared_module: Optional[SlotModule] = None  # ditto, when the declaration is a module
 
 class DeckState(BaseModel):
     source: DeckSource            # highest-precedence source contributing any slot
@@ -124,6 +125,21 @@ This declared-vs-observed reconciliation is the contract the workflow repos
 asked for: declaring records *intent* (pure metadata, no hardware); the robot
 observation wins on conflict, and the disagreement is flagged per slot rather
 than silently resolved.
+
+`slot_state` is therefore about the *slot*, not about the declaration: rows 4
+and 5 both hold a declaration while saying `occupied`. So the declaration is
+reported separately, on **every** declared slot, in `declared` (labware) or
+`declared_module` (a sticky module) — not only on the mismatch row. Anything
+reconstructing the declared layout must read those two fields. `slot_state`
+alone loses every slot the robot has loaded, and because
+`POST /control/deck/declare` is a full-layout replace, re-sending a layout built
+that way **deletes** those declarations device-side. That was live for the
+panel until 2026-08-19: a declared custom plate used by one successful run
+became unclearable in the UI and was then wiped — definition included — by the
+next unrelated declare, which brought back the `FileNotFoundError` that
+auto-loading a custom plate without its definition raises. The
+orchestrator-tracked plate is excluded from both fields: it is folded onto its
+slot to carry its wells, not as operator intent.
 
 ## Store unification (no parallel structures)
 

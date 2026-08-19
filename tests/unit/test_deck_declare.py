@@ -73,7 +73,9 @@ def test_declared_confirmed_by_observation_is_occupied_not_mismatch(tmp_path):
 
     slot2 = service.get_status().details["snapshot"]["deck"]["slots"]["2"]
     assert slot2["slot_state"] == "occupied"
-    assert slot2["declared"] is None
+    # Confirmed, not contradicted -- but the declaration is still reported, so a
+    # caller rebuilding the full declared layout does not drop this slot.
+    assert slot2["declared"]["load_name"] == "corning_96_wellplate_360ul_flat"
 
 
 # ---------------------------------------------------------------------------
