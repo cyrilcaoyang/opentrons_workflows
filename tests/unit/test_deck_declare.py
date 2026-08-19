@@ -137,6 +137,29 @@ def test_declare_endpoint_accepts_object_and_legacy_kind(tmp_path):
     assert body["slots"]["10"]["labware"]["kind"] == "24-well"
 
 
+def test_declare_endpoint_uses_attached_definition_for_unknown_load_name(tmp_path):
+    """A load_name the regex classifier can't parse (no recognizable category
+    token, e.g. a dashboard custom upload) still resolves real geometry once
+    the caller attaches the full definition, instead of ``kind: "unknown"``
+    with null rows/columns."""
+    _app, client = _client(tmp_path, enforce_claims=False)
+    definition = {
+        "parameters": {"loadName": "plate_a", "isTiprack": False},
+        "metadata": {"displayName": "Plate A", "displayCategory": "wellPlate"},
+        "ordering": [["A1", "B1"], ["A2", "B2"], ["A3", "B3"]],
+    }
+    resp = client.post(
+        "/control/deck/declare",
+        json={"slots": {"2": {"load_name": "plate_a", "definition": definition}}},
+    )
+    assert resp.status_code == 200
+    labware = resp.json()["slots"]["2"]["labware"]
+    assert labware["kind"] == "well_plate"
+    assert labware["rows"] == 2
+    assert labware["columns"] == 3
+    assert labware["display_name"] == "Plate A"
+
+
 def test_declare_endpoint_clear_via_delete(tmp_path):
     _app, client = _client(tmp_path, enforce_claims=False)
     client.post("/control/deck/declare", json={"slots": {"2": "96-well"}})

@@ -145,6 +145,36 @@ def make_slot_labware(
     )
 
 
+def _slot_labware_from_definition(
+    load_name: str, definition: Dict[str, Any], *, display_name: Optional[str] = None
+) -> SlotLabware:
+    """Build a :class:`SlotLabware` from a full Opentrons schema-2 definition
+    instead of guessing the grid from ``load_name`` alone.
+
+    Used when a declared slot arrives with its real definition attached (e.g.
+    a dashboard custom-labware upload this gateway has no local copy of) —
+    ``ordering`` gives the exact grid and ``parameters``/``metadata`` give the
+    tiprack flag and display name/category, all authoritative over the
+    regex-based :func:`classify_labware` guess.
+    """
+
+    ordering = definition.get("ordering")
+    if isinstance(ordering, list) and ordering and isinstance(ordering[0], list):
+        rows, columns = len(ordering[0]), len(ordering)
+    else:
+        rows = columns = None
+    meta = definition.get("metadata") or {}
+    params = definition.get("parameters") or {}
+    return make_slot_labware(
+        load_name,
+        is_tiprack=bool(params.get("isTiprack")),
+        display_name=display_name or meta.get("displayName"),
+        display_category=meta.get("displayCategory"),
+        rows=rows,
+        columns=columns,
+    )
+
+
 def normalize_repl_slots(
     repl_deck: Optional[Dict[str, Any]],
 ) -> Dict[str, Union[SlotLabware, SlotModule]]:
@@ -570,6 +600,11 @@ def _coerce_declaration(value: Union[str, Dict[str, Any]]) -> Union[SlotLabware,
         if isinstance(kind, str) and kind in _MODULE_KINDS:
             return SlotModule(module_name=_MODULE_KINDS[kind])
         if value.get("load_name"):
+            definition = value.get("definition")
+            if isinstance(definition, dict):
+                return _slot_labware_from_definition(
+                    value["load_name"], definition, display_name=value.get("display_name")
+                )
             return make_slot_labware(value["load_name"], display_name=value.get("display_name"))
         if kind:
             return _kind_only(kind, display_name=value.get("display_name"))

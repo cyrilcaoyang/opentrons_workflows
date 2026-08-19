@@ -383,6 +383,15 @@ class DeckDeclareRequest(StrictRequest):
     ``null`` to clear that slot. An empty ``slots`` map clears the whole
     declaration. Declared modules are sticky fixtures; movable modules flow
     through the live run instead.
+
+    A labware slot may also be given as ``{"load_name": ..., "definition":
+    {...}}``, where ``definition`` is a full Opentrons schema-2 labware
+    definition. When present, the gateway derives ``kind``/``rows``/
+    ``columns``/``is_tiprack`` from the real definition (via ``ordering`` and
+    ``parameters``) instead of guessing from ``load_name`` alone — this is how
+    a custom labware the gateway has no local copy of (e.g. one built in the
+    dashboard's labware library) still resolves to real geometry rather than
+    ``kind: "unknown"``.
     """
 
     slots: Dict[str, Optional[Union[str, Dict[str, Any]]]] = Field(default_factory=dict)
