@@ -252,11 +252,19 @@ export const postSetLights = (token: string | null, on: boolean) =>
 export const postTipsReset = (token: string | null, slot: string) =>
   controlPost("tips/reset", { slot }, token);
 
-/** Full-layout declared-deck replace. Values are load_names, module keys, or
- *  legacy kind strings; an empty map clears the declaration. */
+/** One slot's declared value: a load_name / module key / legacy kind string,
+ *  or `{load_name, definition}` for a custom labware whose full Opentrons
+ *  schema-2 definition is attached so the gateway derives real geometry
+ *  instead of guessing from load_name alone (`DeckDeclareRequest` on the
+ *  gateway side already supports this — see gateway/models.py). */
+export type DeckDeclareValue = string | { load_name: string; definition: unknown } | null;
+
+/** Full-layout declared-deck replace. Values are load_names, module keys,
+ *  legacy kind strings, or a load_name+definition object for custom labware;
+ *  an empty map clears the declaration. */
 export const postDeckDeclare = (
   token: string | null,
-  slots: Record<string, string | null>,
+  slots: Record<string, DeckDeclareValue>,
 ): Promise<DeviceDeck> => controlPost<DeviceDeck>("deck/declare", { slots }, token);
 
 export function deleteDeckDeclare(token: string | null): Promise<DeviceDeck> {

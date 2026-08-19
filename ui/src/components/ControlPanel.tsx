@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   deleteDeckDeclare,
+  getLabStoreDefinition,
   getLabStoreList,
   getLabwareList,
   postDeckDeclare,
+  type DeckDeclareValue,
   postHome,
   postPause,
   postResume,
@@ -216,6 +218,40 @@ export function ControlPanel({
         .sort((a, b) => a - b)
     : [];
 
+  /** Attach each labstore-backed slot's full definition before POSTing a
+   *  declare body. Fails soft per slot: a lookup failure (store unreachable,
+   *  definition deleted since the picker fetched its summary) falls back to
+   *  the bare load_name — the pre-existing, "unknown"-grid behavior — rather
+   *  than blocking the whole declare over one bad entry. Fetches are deduped
+   *  and run in parallel; there are at most 12 slots. */
+  function withLabwareDefinitions(
+    next: Record<string, string>,
+    entries: CatalogEntry[],
+  ): Promise<Record<string, DeckDeclareValue>> {
+    const labstoreNames = new Set(
+      entries.filter((e) => e.category === "labstore").map((e) => e.declare),
+    );
+    const uniqueLoadNames = [...new Set(Object.values(next))].filter((v) =>
+      labstoreNames.has(v),
+    );
+    return Promise.all(
+      uniqueLoadNames.map((loadName) =>
+        getLabStoreDefinition(loadName).then(
+          (definition) => [loadName, definition] as const,
+          () => [loadName, null] as const,
+        ),
+      ),
+    ).then((pairs) => {
+      const definitions = new Map(pairs.filter(([, d]) => d != null));
+      const resolved: Record<string, DeckDeclareValue> = {};
+      for (const [slot, value] of Object.entries(next)) {
+        const definition = definitions.get(value);
+        resolved[slot] = definition ? { load_name: value, definition } : value;
+      }
+      return resolved;
+    });
+  }
+
   function declare(entry: CatalogEntry | null) {
     if (locked || selectedSlot == null || declaring) return;
     setActionError(null);
@@ -223,7 +259,17 @@ export function ControlPanel({
     // Full-layout replace: re-send every currently-declared slot (exact
     // load_names preserved by declaredMapFromDeck) with this slot updated.
     const next = nextDeclaration(declaredMap, selectedSlot, entry?.declare ?? null);
-    postDeckDeclare(token, next)
+    // A bare load_name is only complete for a standard Opentrons definition
+    // (the gateway's classify_labware guesses geometry from the name). Any
+    // slot whose value matches a "labstore" entry (a lab-custom definition
+    // from the dashboard's labware store) needs its full definition attached
+    // instead, or it silently resolves to kind "unknown" with no grid on the
+    // gateway — the same bug this fetch closes for every declared slot, not
+    // just the one being changed right now (declare is a full-layout
+    // replace, so an unrelated edit would otherwise re-send every other
+    // custom slot as a bare, now-degraded name).
+    withLabwareDefinitions(next, labwareEntries)
+      .then((resolved) => postDeckDeclare(token, resolved))
       .then(() => refetch())
       .catch((e: unknown) => reportError(e, "deck.declare"))
       .finally(() => setDeclaring(false));
