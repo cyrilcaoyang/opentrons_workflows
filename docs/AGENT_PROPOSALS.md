@@ -83,10 +83,16 @@ completion record with no one's name on it.
 ## What can be planned
 
 `GET /plans/actions` returns the catalog with each action's JSON schema — the
-authoritative list. Fourteen actions: `home`, `setup`, `move_to`,
+authoritative list. Sixteen actions: `home`, `setup`, `move_to`,
 `pick_up_tip`, `aspirate`, `dispense`, `drop_tip`, `move_labware`,
 `plate.load`, `plate.unload`, `well.update`, `tips.reset`, `lights.set`,
-`deck.declare`.
+`deck.declare`, `tempmod.set`, `tempmod.deactivate`.
+
+`tempmod.set` sets the temperature-module *target* and returns; it does not
+wait for the ramp (a cool-down to 4 °C is minutes, and would blow the HTTP
+command timeout). Current vs target is already on `/status`. Address the
+module by `module` (recipe nickname or deck slot); omit `module` when exactly
+one temperature module is declared.
 
 Five control actions are deliberately **not** plannable:
 

@@ -12,6 +12,8 @@ import {
   postResume,
   postReconcile,
   postSetLights,
+  postSetTempmod,
+  postDeactivateTempmod,
   postTipsReset,
   postShutdown,
   postStartup,
@@ -27,12 +29,13 @@ import {
   nextDeclaration,
   pairModuleSlots,
   pipetteLabel,
+  moduleFamily,
   robotInfoFromStatus,
   robotModulesFromStatus,
   tipRacksFromStatus,
 } from "../lib/ot2-deck";
 import { catalogEntryFromLabware, OT2_CATALOG, type CatalogEntry } from "../lib/ot2-catalog";
-import type { GatewaySnapshot } from "../lib/types";
+import type { GatewaySnapshot, RobotModule } from "../lib/types";
 
 import { ActionErrorBadge } from "./ActionErrorBadge";
 import { DeckPanel, ModuleReadout } from "./DeckPanel";
@@ -106,6 +109,63 @@ function Dot({ ok }: { ok: boolean }) {
       }`}
       aria-hidden
     />
+  );
+}
+
+function TempModuleControls({
+  slot,
+  live,
+  disabled,
+  hint,
+  onSet,
+  onOff,
+}: {
+  slot: number;
+  live: RobotModule | null;
+  disabled: boolean;
+  hint?: string;
+  onSet: (celsius: number) => void;
+  onOff: () => void;
+}) {
+  const [draft, setDraft] = useState(() =>
+    String(live?.target_temperature ?? live?.current_temperature ?? 4),
+  );
+  const celsius = Number(draft);
+  const valid = Number.isFinite(celsius) && celsius >= 4 && celsius <= 95;
+  return (
+    <div className="flex items-center gap-1">
+      <input
+        type="number"
+        min={4}
+        max={95}
+        step={0.5}
+        value={draft}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        aria-label={`Target °C for temperature module on slot ${slot}`}
+        title={hint}
+        className="w-14 rounded border border-slate-300 bg-white px-1 py-0.5 text-right text-xs tabular-nums text-ink disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+      />
+      <span className="text-[10px] text-ink-subtle dark:text-slate-500">°C</span>
+      <button
+        type="button"
+        disabled={disabled || !valid}
+        onClick={() => onSet(celsius)}
+        title={hint ?? `Set target to ${draft} °C`}
+        className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
+      >
+        Set
+      </button>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onOff}
+        title={hint ?? "Turn the temperature module off"}
+        className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
+      >
+        Off
+      </button>
+    </div>
   );
 }
 
@@ -673,12 +733,36 @@ export function ControlPanel({
                   .map(([slot, m]) => (
                     <li
                       key={slot}
-                      className="flex items-center justify-between gap-2 rounded-md border border-slate-200 px-2 py-1.5 dark:border-slate-800"
+                      className="flex flex-col gap-1.5 rounded-md border border-slate-200 px-2 py-1.5 dark:border-slate-800"
                     >
-                      <span className="min-w-0 truncate text-xs text-ink dark:text-slate-200">
-                        <span className="font-semibold">Slot {slot}</span> · {m.name}
-                      </span>
-                      <ModuleReadout live={m.live} compact />
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate text-xs text-ink dark:text-slate-200">
+                          <span className="font-semibold">Slot {slot}</span> · {m.name}
+                        </span>
+                        <ModuleReadout live={m.live} compact />
+                      </div>
+                      {moduleFamily(m.name) === "temperature" && (
+                        <TempModuleControls
+                          slot={slot}
+                          live={m.live}
+                          disabled={
+                            locked ||
+                            pending ||
+                            !allowedActions.includes("tempmod.set")
+                          }
+                          hint={controlHint}
+                          onSet={(celsius) =>
+                            runControl("tempmod.set", () =>
+                              postSetTempmod(token, celsius, String(slot)),
+                            )
+                          }
+                          onOff={() =>
+                            runControl("tempmod.deactivate", () =>
+                              postDeactivateTempmod(token, String(slot)),
+                            )
+                          }
+                        />
+                      )}
                     </li>
                   ))}
               </ul>

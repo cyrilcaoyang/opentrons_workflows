@@ -180,9 +180,10 @@ class OT2Control:
         nickname = module["nickname"]
         module_name = module["module_name"]
         location = module["location"]
-        adapter = module["adapter"]
+        adapter = module.get("adapter")
         self.invoke(f"{nickname} = protocol.load_module(module_name = '{module_name}', location = '{location}')")
-        self.invoke(f"{nickname}_adapter = {nickname}.load_adapter(name = '{adapter}')")
+        if adapter:
+            self.invoke(f"{nickname}_adapter = {nickname}.load_adapter(name = '{adapter}')")
 
     def load_trash_bin(self, nickname: str = "default_trash", location: str = "A3"):
         """Flex only; the OT-2's fixed trash is always present in slot 12."""
@@ -492,6 +493,19 @@ class OT2Control:
         return self._invoke_float(f"{nickname}.current_temperature")
 
     # ---- temperature module -----------------------------------------------------------
+
+    def tempmod_start_set_temperature(self, nickname: str, celsius: float):
+        """Set the target without waiting. Public ``set_temperature`` blocks.
+
+        Protocol API < 2.13 exposed ``start_set_temperature``; later cores keep
+        the same non-blocking call on ``_core``. One expression so a single
+        REPL invoke covers both.
+        """
+        self.invoke(
+            f"{nickname}.start_set_temperature(celsius = {celsius}) "
+            f"if hasattr({nickname}, 'start_set_temperature') else "
+            f"{nickname}._core.set_target_temperature({celsius})"
+        )
 
     def tempmod_set_temperature(self, nickname: str, celsius: float):
         self.invoke(f"{nickname}.set_temperature(celsius = {celsius})")

@@ -141,12 +141,14 @@ def test_module_wrappers():
     control = RecordingControl()
     control.hs_set_and_wait_temperature("hs", 37.5)
     control.tempmod_set_temperature("tm", 4)
+    control.tempmod_start_set_temperature("tm", 4)
     control.magmod_engage("mm", height_from_base=5.0)
     control.magmod_engage("mm")
     control.thermocycler_set_block_temperature("tc", 95, hold_time_seconds=30)
     assert control.invoked == [
         "hs.set_and_wait_for_temperature(celsius = 37.5)",
         "tm.set_temperature(celsius = 4)",
+        "tm.start_set_temperature(celsius = 4) if hasattr(tm, 'start_set_temperature') else tm._core.set_target_temperature(4)",
         "mm.engage(height_from_base = 5.0)",
         "mm.engage()",
         "tc.set_block_temperature(temperature = 95, hold_time_seconds = 30)",

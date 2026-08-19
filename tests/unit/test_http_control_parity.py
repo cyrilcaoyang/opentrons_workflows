@@ -586,6 +586,18 @@ def test_tempmod_set_temperature_sets_and_waits():
     assert _last(client)[0] == "temperatureModule/deactivate"
 
 
+def test_tempmod_start_set_does_not_wait():
+    """The gateway operator path must not block on the ramp."""
+    ctl, client = _loaded_control()
+    ctl.load_module({"nickname": "tm", "module_name": "temperatureModuleV2", "location": "4"})
+    ctl.tempmod_start_set_temperature("tm", 4)
+    assert _last(client) == (
+        "temperatureModule/setTargetTemperature",
+        {"moduleId": "tm", "celsius": 4.0},
+    )
+    assert "temperatureModule/waitForTemperature" not in _types(client)
+
+
 def test_magmod_engage_validation():
     ctl, client = _loaded_control()
     ctl.load_module({"nickname": "mag", "module_name": "magneticModuleV2", "location": "6"})

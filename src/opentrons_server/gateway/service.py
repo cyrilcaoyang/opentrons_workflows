@@ -126,12 +126,38 @@ _RUN_STARTING_ACTIONS = frozenset(
         "drop_tip",
         "move_labware",
         "resume",
+        "tempmod.set",
+        "tempmod.deactivate",
     }
 )
 
 
 # Run statuses that mean the robot-server has finished with a run.
 _RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "stopped"})
+
+
+def _module_family(name: Optional[str]) -> Optional[str]:
+    """Classify a module label the same way the UI does (ot2-deck.ts)."""
+
+    t = (name or "").lower().replace("-", " ")
+    if "temperature" in t:
+        return "temperature"
+    if "magnetic" in t:
+        return "magnetic"
+    if "heater" in t and "shaker" in t:
+        return "heater_shaker"
+    if "thermocycler" in t:
+        return "thermocycler"
+    return None
+
+
+def _tempmod_engine_name(label: str) -> str:
+    """Map a human/declared module_name to the engine's loadModule model."""
+
+    t = label.lower()
+    if "v1" in t or "gen1" in t:
+        return "temperatureModuleV1"
+    return "temperatureModuleV2"
 
 
 def _run_counts_as_active(run: Dict[str, Any]) -> bool:
@@ -309,11 +335,13 @@ class OT2Service:
         }
         # Session auto-provisioning for declared decks (no /control/setup):
         # slot -> the nickname this session loaded the declared labware under,
-        # and mount -> the nickname the attached pipette was loaded under.
-        # Both describe the CURRENT control session only, so both reset with it
+        # mount -> the nickname the attached pipette was loaded under, and
+        # slot/nickname -> the nickname a declared module was loaded under.
+        # All describe the CURRENT control session only, so they reset with it
         # (startup / shutdown).
         self._session_labware: Dict[str, str] = {}
         self._session_pipettes: Dict[str, str] = {}
+        self._session_modules: Dict[str, str] = {}
         # Stamp the opening span so `activity_since` is a real instant from the
         # first poll on, rather than "unknown until someone asks".
         self._sync_activity()
@@ -367,6 +395,7 @@ class OT2Service:
             # auto-loaded from the declared deck is gone with it.
             self._session_labware = {}
             self._session_pipettes = {}
+            self._session_modules = {}
             self.state = OT2ServiceState.READY
             self.last_error = None
             self._status_note = None
@@ -425,6 +454,7 @@ class OT2Service:
                 self.control = None
         self._session_labware = {}
         self._session_pipettes = {}
+        self._session_modules = {}
         self.claims.force_clear()
         previous = self.state
         self.state = OT2ServiceState.DRY_RUN if self.dry_run else OT2ServiceState.REQUIRES_INIT
@@ -721,6 +751,106 @@ class OT2Service:
         )
         self._session_labware[name] = nickname
         return nickname
+
+    def _ensure_session_module(
+        self, ref: Optional[str], *, family: str = "temperature"
+    ) -> str:
+        """Resolve a module reference to a control-session nickname.
+
+        Recipe nicknames pass through (setup already loaded them). A deck-slot
+        reference — the only name a declared deck has — is loaded into the
+        session on first use, under ``slot_<n>``. ``ref`` may be omitted when
+        exactly one module of ``family`` is declared or in the setup recipe.
+        Must be called inside a ``_run_action`` closure.
+        """
+
+        name = (ref or "").strip() or None
+        if name:
+            for mod in self.session_recipe.get("modules") or []:
+                nick = mod.get("nickname")
+                loc = str(mod.get("location") or "")
+                if nick and name in {str(nick), loc}:
+                    return str(nick)
+            if name in self._session_modules:
+                return self._session_modules[name]
+
+        slot = self._resolve_module_slot(name, family=family)
+        if slot in self._session_modules:
+            return self._session_modules[slot]
+        nickname = f"slot_{slot}"
+        self._require_control().load_module(
+            {
+                "nickname": nickname,
+                "module_name": self._tempmod_load_name_for_slot(slot),
+                "location": slot,
+            }
+        )
+        self._session_modules[slot] = nickname
+        if name:
+            self._session_modules[name] = nickname
+        return nickname
+
+    def _resolve_module_slot(self, ref: Optional[str], *, family: str) -> str:
+        candidates = self._module_slots(family)
+        if ref:
+            if ref in SLOTS:
+                declared = self._declared_slots().get(ref)
+                declared_name = getattr(declared, "module_name", None)
+                if declared_name and _module_family(declared_name) not in {family, None}:
+                    raise RuntimeError(
+                        f"slot {ref} holds {declared_name}, not a {family} module"
+                    )
+                if ref in candidates or self._probe_has_family(family):
+                    return ref
+                raise RuntimeError(
+                    f"no {family} module at slot {ref} — declare it on the deck "
+                    "or load it via /control/setup"
+                )
+            raise RuntimeError(
+                f"no {family} module named {ref!r}; use a recipe nickname or a deck slot"
+            )
+        if len(candidates) == 1:
+            return candidates[0]
+        if not candidates:
+            raise RuntimeError(
+                f"no {family} module on the deck — declare it or load it via /control/setup"
+            )
+        raise RuntimeError(
+            f"multiple {family} modules ({sorted(candidates)}); pass module as the slot"
+        )
+
+    def _module_slots(self, family: str) -> List[str]:
+        slots: List[str] = []
+        for slot, item in self._declared_slots().items():
+            if isinstance(item, SlotModule) and _module_family(item.module_name) == family:
+                slots.append(str(slot))
+        for mod in self.session_recipe.get("modules") or []:
+            loc = str(mod.get("location") or "")
+            if (
+                loc in SLOTS
+                and loc not in slots
+                and _module_family(str(mod.get("module_name") or "")) == family
+            ):
+                slots.append(loc)
+        return slots
+
+    def _probe_has_family(self, family: str) -> bool:
+        for mod in self._last_probe.get("modules") or []:
+            label = str(mod.get("type") or mod.get("model") or "")
+            if _module_family(label) == family:
+                return True
+        return False
+
+    def _tempmod_load_name_for_slot(self, slot: str) -> str:
+        for mod in self._last_probe.get("modules") or []:
+            model = mod.get("model")
+            label = str(mod.get("type") or model or "")
+            if model and _module_family(label) == "temperature":
+                return str(model)
+        declared = self._declared_slots().get(slot)
+        if isinstance(declared, SlotModule):
+            return _tempmod_engine_name(declared.module_name)
+        return "temperatureModuleV2"
 
     def _bind_pipette_channels(self) -> None:
         """Bind each recipe pipette nickname to its channel count.
@@ -1201,6 +1331,27 @@ class OT2Service:
         # background-refresh interval behind an operator toggle.
         self._last_lights = result
         return result
+
+    def set_tempmod_temperature(self, request: Any) -> None:
+        """Set the temperature-module target; return without waiting for the ramp."""
+
+        def _set() -> None:
+            nick = self._ensure_session_module(getattr(request, "module", None))
+            control = self._require_control()
+            start = getattr(control, "tempmod_start_set_temperature", None)
+            if start is not None:
+                start(nick, request.celsius)
+            else:
+                control.tempmod_set_temperature(nick, request.celsius)
+
+        self._run_action("tempmod.set", _set, idempotent=True)
+
+    def deactivate_tempmod(self, request: Any) -> None:
+        def _off() -> None:
+            nick = self._ensure_session_module(getattr(request, "module", None))
+            self._require_control().tempmod_deactivate(nick)
+
+        self._run_action("tempmod.deactivate", _off, idempotent=True)
 
     def _refresh_lights(self) -> None:
         """Refresh the cached deck-light state from a best-effort read.
@@ -1895,6 +2046,8 @@ class OT2Service:
                 "plate.unload",
                 "well.update",
                 "tips.reset",
+                "tempmod.set",
+                "tempmod.deactivate",
             ]
         if self.state == OT2ServiceState.DRY_RUN:
             return [
@@ -1925,6 +2078,8 @@ class OT2Service:
                 "plate.unload",
                 "well.update",
                 "tips.reset",
+                "tempmod.set",
+                "tempmod.deactivate",
             ]
         if self.state == OT2ServiceState.BUSY:
             return ["pause"]
