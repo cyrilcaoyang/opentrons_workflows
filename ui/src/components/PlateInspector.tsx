@@ -33,6 +33,7 @@ import {
   labStoreAvailable,
 } from "../lib/api";
 import {
+  elevationProfile,
   geometryFromDefinition,
   wellHalfX,
   wellHalfY,
@@ -247,11 +248,13 @@ function PlanView({
 // ---------------------------------------------------------------------------
 
 /**
- * Front elevation, to scale, from the real definition only. The body is
- * `footprintZ` tall; each column's cavity hangs from its well mouth
- * (`z + depth`) down to its floor (`z`), so a tip rack's tips correctly stand
- * proud of the rack body while a plate's wells sit inside it. Tip-rack
- * cavities taper (a tip is conical); plate wells are drawn straight-sided.
+ * Front elevation, to scale, from the real definition only. The body's top edge
+ * comes from `elevationProfile` — `footprintZ` flat for ordinary labware, the
+ * true steps for a stepped block such as the calibration block. Each column's
+ * cavity hangs from its well mouth (`z + depth`) down to its floor (`z`), so a
+ * tip rack's tips correctly stand proud of the rack body while a plate's wells
+ * sit inside it. Tip-rack cavities taper (a tip is conical); plate wells are
+ * drawn straight-sided.
  *
  * A column's 8 wells sit behind one another in this projection, so each
  * column is one shape — filled **proportionally, bottom-up**, to the tips it
@@ -270,9 +273,12 @@ function ElevationView({
 }) {
   const { footprintX, footprintZ } = geometry;
   const shadeTips = model.contents === "tiprack" && geometry.isTiprack;
+  const profile = elevationProfile(geometry);
   const cavities = geometry.ordering.map((column, index) => {
     const g = geometry.wells[column[0]];
-    if (!g) return null;
+    // A zero-depth well is a top face, not a cavity — it is part of the body
+    // silhouette below, and drawing it here would only be a line along it.
+    if (!g || g.depth === 0) return null;
     const halfX = wellHalfX(g);
     const mouthY = Math.max(0, footprintZ - (g.z + g.depth)); // SVG y of the well mouth
     const floorY = Math.min(footprintZ, footprintZ - g.z); // SVG y of the well floor
@@ -338,12 +344,17 @@ function ElevationView({
       aria-label="Side-view labware cross-section"
     >
       {/* The body is an outline only; a section drawing shades the solids it
-          cuts, and here that is just a tip rack's tips. */}
-      <rect
-        x={0}
-        y={0}
-        width={footprintX}
-        height={footprintZ}
+          cuts, and here that is just a tip rack's tips. Its top edge follows
+          the profile, so a stepped block shows its step. */}
+      <polygon
+        points={[
+          `0,${footprintZ}`,
+          ...profile.flatMap((step) => [
+            `${step.x0},${footprintZ - step.top}`,
+            `${step.x1},${footprintZ - step.top}`,
+          ]),
+          `${footprintX},${footprintZ}`,
+        ].join(" ")}
         className="fill-none stroke-slate-400 dark:stroke-slate-500"
         strokeWidth={0.6}
       />

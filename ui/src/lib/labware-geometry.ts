@@ -130,6 +130,62 @@ export function wellHalfX(well: WellGeometry): number {
   return (well.diameter ?? 0) / 2;
 }
 
+/** One run of the body's top edge in the elevation: `x0..x1` mm wide, `top` mm tall. */
+export interface ElevationStep {
+  x0: number;
+  x1: number;
+  top: number;
+}
+
+/** Faces must tile the footprint to this tolerance (mm) to be believed. */
+const TILING_TOLERANCE_MM = 1;
+
+/**
+ * The body's top edge across x, left to right, in mm.
+ *
+ * Nearly all labware is a box of one height, so this is a single step at
+ * `footprintZ`. A **stepped block** is not: the tip-length calibration block's
+ * two "wells" are the flat top faces of its short and tall halves, at 33 mm and
+ * 62.5 mm, and `zDimension` records only the taller one. Drawn as a full-height
+ * box it loses the step the block exists for — and with it the only thing that
+ * distinguishes `short_side_left` from `short_side_right`.
+ *
+ * A zero-depth well is a face, not a cavity, so when *every* column is one and
+ * the faces tile the footprint in x with the tallest reaching `footprintZ`, the
+ * faces are the top edge. Anything less than that and we would be inventing a
+ * silhouette, so fall back to the box.
+ */
+export function elevationProfile(geometry: LabwareGeometry): ElevationStep[] {
+  const box: ElevationStep[] = [{ x0: 0, x1: geometry.footprintX, top: geometry.footprintZ }];
+  const faces: ElevationStep[] = [];
+  for (const column of geometry.ordering) {
+    const wells = column.map((well) => geometry.wells[well]).filter((w) => w != null);
+    if (wells.length === 0 || wells.length !== column.length) return box;
+    const [first] = wells;
+    if (wells.some((w) => w.depth !== 0 || w.z !== first.z)) return box;
+    const halfX = wellHalfX(first);
+    if (halfX <= 0 || wells.some((w) => w.x !== first.x)) return box;
+    faces.push({ x0: first.x - halfX, x1: first.x + halfX, top: first.z });
+  }
+  faces.sort((a, b) => a.x0 - b.x0);
+
+  const spans =
+    Math.abs(faces[0].x0) <= TILING_TOLERANCE_MM &&
+    Math.abs(faces[faces.length - 1].x1 - geometry.footprintX) <= TILING_TOLERANCE_MM &&
+    faces.every((face, i) => i === 0 || Math.abs(face.x0 - faces[i - 1].x1) <= TILING_TOLERANCE_MM);
+  const reachesTop =
+    Math.abs(Math.max(...faces.map((f) => f.top)) - geometry.footprintZ) <= TILING_TOLERANCE_MM;
+  if (!spans || !reachesTop) return box;
+
+  // Snap to the footprint and split each seam down the middle, so the
+  // definition's rounding (2 x 63.88 for a 127.75 mm block) leaves no sliver.
+  return faces.map((face, i) => ({
+    x0: i === 0 ? 0 : (faces[i - 1].x1 + face.x0) / 2,
+    x1: i === faces.length - 1 ? geometry.footprintX : (face.x1 + faces[i + 1].x0) / 2,
+    top: face.top,
+  }));
+}
+
 /** Half-depth (mm) of a well in the y axis, for the top-down plan. */
 export function wellHalfY(well: WellGeometry): number {
   if (well.shape === "rectangular") return (well.yDimension ?? 0) / 2;
