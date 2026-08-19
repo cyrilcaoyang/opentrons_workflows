@@ -165,13 +165,18 @@ def _slot_labware_from_definition(
         rows = columns = None
     meta = definition.get("metadata") or {}
     params = definition.get("parameters") or {}
-    return make_slot_labware(
-        load_name,
-        is_tiprack=bool(params.get("isTiprack")),
+    is_tiprack = bool(params.get("isTiprack"))
+    kind, _, _ = classify_labware(
+        load_name, is_tiprack=is_tiprack, display_category=meta.get("displayCategory")
+    )
+    return SlotLabware(
+        kind=kind,
+        load_name=load_name,
         display_name=display_name or meta.get("displayName"),
-        display_category=meta.get("displayCategory"),
+        is_tiprack=is_tiprack,
         rows=rows,
         columns=columns,
+        definition=definition,
     )
 
 

@@ -415,6 +415,31 @@ def test_declare_mixed_labware_and_module(tmp_path):
     assert isinstance(result["11"], SlotModule)
 
 
+def test_declare_custom_labware_keeps_the_full_definition(tmp_path):
+    """A declared custom plate must carry its schema-2 definition so the
+    auto-load path can ship it to the robot (the opentrons namespace 404s
+    on custom load_names). Without this, a plan that dispenses into a
+    custom slot fails at loadLabware — observed live 2026-08-19."""
+    store = _store(tmp_path)
+    definition = {
+        "ordering": [["A1", "B1", "C1", "D1", "E1", "F1", "G1", "H1"]] * 12,
+        "metadata": {"displayName": "SDL2 96 Stacked Filterplate"},
+        "namespace": "custom",
+        "parameters": {"loadName": "sdl2_96_stacked_filterplate", "isTiprack": False},
+        "version": 2,
+    }
+    result = store.declare({"3": {"load_name": "sdl2_96_stacked_filterplate", "definition": definition}})
+    slot = result["3"]
+    assert isinstance(slot, SlotLabware)
+    assert slot.load_name == "sdl2_96_stacked_filterplate"
+    assert slot.definition == definition
+    # Survives a restart (the definition round-trips through model_dump).
+    reborn = DeckDeclarationStore(state_path=store.state_path)
+    revived = reborn.get()["3"]
+    assert isinstance(revived, SlotLabware)
+    assert revived.definition == definition
+
+
 def test_declare_none_value_clears_that_slot(tmp_path):
     store = _store(tmp_path)
     store.declare({"2": "96-well", "3": None})

@@ -741,14 +741,28 @@ class OT2Service:
                 "or load it via /control/setup"
             )
         nickname = f"slot_{name}"
-        self._require_control().load_labware(
-            {
-                "ot_default": True,
-                "nickname": nickname,
-                "loadname": load_name,
-                "location": name,
-            }
-        )
+        definition = getattr(declared, "definition", None)
+        if isinstance(definition, dict) and definition:
+            # Custom labware the gateway has no local copy of: ship the full
+            # schema-2 definition so the robot loads it by value instead of
+            # looking it up in the opentrons namespace (which 404s).
+            self._require_control().load_labware(
+                {
+                    "ot_default": False,
+                    "nickname": nickname,
+                    "config": definition,
+                    "location": name,
+                }
+            )
+        else:
+            self._require_control().load_labware(
+                {
+                    "ot_default": True,
+                    "nickname": nickname,
+                    "loadname": load_name,
+                    "location": name,
+                }
+            )
         self._session_labware[name] = nickname
         return nickname
 

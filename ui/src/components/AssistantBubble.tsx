@@ -31,17 +31,14 @@ import type {
  *
  * The assistant can only propose. What it drafts renders here as a plan card
  * the operator can approve and run **in the chat** — the same claim-gated
- * calls the Proposed-plans panel makes, with the same two review properties
- * preserved:
+ * calls the gateway's human-approval surface, with the same two review
+ * properties preserved:
  *
  *  - **Approve sends the hash of the steps this card is showing.** The card
  *    renders from the live plan (re-fetched, not the proposal-time preview),
  *    so what is approved is what is on screen; a plan revised elsewhere gets
- *    a 409 and a re-read, exactly as in the panel.
- *  - **Approve and Run stay two clicks**, for the same reason as the panel.
- *
- * The panel remains the overview surface (plans from other agents, history
- * of settled plans); this card is the fast path for what THIS chat proposed.
+ *    a 409 and a re-read.
+ *  - **Approve and Run stay two clicks.**
  */
 
 const STORAGE_KEY = "ot2-assistant-thread";
@@ -69,6 +66,7 @@ export function AssistantBubble({
   const [model, setModel] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [panelSize, setPanelSize] = useState({ width: 460, height: 520 });
   // Drag offset from the bottom-right anchor, in px (x/y ≤ 0 moves left/up).
   // Component state only: a reload snaps back to the corner, which beats
   // restoring a position that an old window size may have made unreachable.
@@ -77,6 +75,12 @@ export function AssistantBubble({
     null,
   );
   const panelRef = useRef<HTMLElement | null>(null);
+  const resizeRef = useRef<{
+    startX: number;
+    startY: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const [thread, setThread] = useState<AssistantMessage[]>(loadThread);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
@@ -154,8 +158,8 @@ export function AssistantBubble({
 
   const clearThread = useCallback(() => {
     // Forgets the conversation only. Plans the assistant drafted live on the
-    // gateway and stay visible in the Proposed-plans panel — clearing a chat
-    // must never silently discard something awaiting review.
+    // gateway — clearing a chat must never silently discard something awaiting
+    // review. It will no longer be rendered in a separate page panel.
     setThread([]);
     setPlanStates({});
     setError(null);
@@ -245,8 +249,7 @@ export function AssistantBubble({
         onProgress,
       );
       // Fetch the steps of any plan it drafted so the operator sees what was
-      // proposed *in the chat*, not just "go look elsewhere". Best-effort: the
-      // panel is still the source of truth, so a failed fetch just omits the
+      // proposed *in the chat*. Best-effort: a failed fetch just omits the
       // inline preview rather than failing the turn.
       let steps: PlanStep[] | undefined;
       if (res.plan_id) {
@@ -341,6 +344,33 @@ export function AssistantBubble({
     dragRef.current = null;
   }
 
+  function onResizeStart(e: React.PointerEvent<HTMLElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      width: panelSize.width,
+      height: panelSize.height,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function onResizeMove(e: React.PointerEvent<HTMLElement>) {
+    const r = resizeRef.current;
+    if (!r) return;
+    const maxWidth = Math.max(320, window.innerWidth - 32);
+    const maxHeight = Math.max(360, window.innerHeight - 100);
+    setPanelSize({
+      width: Math.min(maxWidth, Math.max(320, r.width + r.startX - e.clientX)),
+      height: Math.min(maxHeight, Math.max(360, r.height + r.startY - e.clientY)),
+    });
+  }
+
+  function onResizeEnd() {
+    resizeRef.current = null;
+  }
+
   if (!available) return null;
 
   return (
@@ -391,17 +421,30 @@ export function AssistantBubble({
       ref={panelRef}
       role="dialog"
       aria-label="OT-2 assistant"
-      style={{ transform: `translate(${dragOffset.x}px, ${dragOffset.y}px)` }}
-      className={[
-        "fixed bottom-20 right-5 z-40 flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-purple-300 bg-surface-raised shadow-2xl dark:border-purple-800 dark:bg-slate-900",
-        // Two sizes rather than a drag-resize: anchored bottom-right, a CSS
-        // resize handle would grow the panel off-screen. Default matches the
-        // dashboard's 460x520 panel; expanded is for reading longer replies.
-        expanded
-          ? "h-[min(46rem,calc(100vh-2rem))] w-[44rem]"
-          : "h-[520px] w-[460px] max-h-[calc(100vh-2rem)]",
-      ].join(" ")}
+      style={{
+        transform: `translate(${dragOffset.x}px, ${dragOffset.y}px)`,
+        width: expanded ? 704 : panelSize.width,
+        height: expanded ? 736 : panelSize.height,
+      }}
+      className="fixed bottom-20 right-5 z-40 flex max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-purple-300 bg-surface-raised shadow-2xl dark:border-purple-800 dark:bg-slate-900"
     >
+      <div
+        className="absolute left-0 top-0 z-10 h-5 w-5 cursor-nwse-resize"
+        onPointerDown={onResizeStart}
+        onPointerMove={onResizeMove}
+        onPointerUp={onResizeEnd}
+        onPointerCancel={onResizeEnd}
+        role="separator"
+        aria-label="Resize the assistant window"
+        title="Drag to resize"
+      >
+        <span
+          className="pointer-events-none absolute left-1 top-0.5 text-[11px] leading-none text-purple-400"
+          aria-hidden
+        >
+          ↖
+        </span>
+      </div>
       <header
         onPointerDown={onDragStart}
         onPointerMove={onDragMove}
@@ -435,7 +478,7 @@ export function AssistantBubble({
             disabled={thread.length === 0}
             className="rounded border border-slate-300 px-2 py-1 text-[11px] font-medium text-ink-subtle transition hover:bg-slate-100 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
             aria-label="Clear the conversation"
-            title="Clear the conversation — proposed plans stay in the panel"
+            title="Clear the conversation"
           >
             Clear
           </button>
@@ -644,11 +687,10 @@ function stepLine(s: PlanStep): string {
  *
  * Renders from the LIVE plan (`live`), never from the proposal-time preview,
  * so the hash sent by Approve is the hash of exactly what is displayed — the
- * same review property the panel enforces. Without live state (fetch failed,
+ * same review property the gateway enforces. Without live state (fetch failed,
  * gateway restarted) the card degrades to the read-only preview.
  */
 function ChatPlanCard({
-  planId,
   live,
   previewSteps,
   busy,
@@ -676,25 +718,6 @@ function ChatPlanCard({
     );
   }
 
-  const jump = (
-    <button
-      type="button"
-      onClick={() => {
-        const el = document.getElementById(`plan-${planId}`);
-        if (el) {
-          // Re-trigger :target even if we're already there, so the ring
-          // flashes on a repeat click.
-          window.location.hash = "";
-          window.location.hash = `plan-${planId}`;
-          el.scrollIntoView({ behavior: "smooth", block: "center" });
-        }
-      }}
-      className="text-[10px] text-ink-subtle underline decoration-dotted hover:text-ink dark:text-slate-500 dark:hover:text-slate-300"
-    >
-      view in panel
-    </button>
-  );
-
   if (live === undefined) {
     // No live state: show what was proposed, but never an Approve button —
     // approving requires the hash of a plan we can actually see fresh.
@@ -709,7 +732,6 @@ function ChatPlanCard({
             ))}
           </ol>
         )}
-        {jump}
       </div>
     );
   }
@@ -731,7 +753,6 @@ function ChatPlanCard({
         >
           {live.status}
         </span>
-        <span className="ml-auto">{jump}</span>
       </div>
       <ol className="mb-1 flex flex-col gap-0.5">
         {live.steps.map((s, si) => {

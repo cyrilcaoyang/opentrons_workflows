@@ -386,6 +386,12 @@ class SlotLabware(BaseModel):
     plate_id: Optional[str] = None
     wells: Optional[List[WellSample]] = None
     nickname: Optional[str] = None
+    # Full Opentrons schema-2 definition, when the declaration carried one
+    # (e.g. a custom labware built in the dashboard store). The gateway has
+    # no local copy of custom definitions, so auto-loading a declared custom
+    # slot must send this to `load_labware` as `ot_default: False` — the
+    # default path looks it up in the opentrons namespace and 404s.
+    definition: Optional[Dict[str, Any]] = None
 
 
 class SlotModule(BaseModel):

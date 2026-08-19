@@ -2,7 +2,6 @@ import { useEffect } from "react";
 
 import { AssistantBubble } from "./components/AssistantBubble";
 import { ControlPanel } from "./components/ControlPanel";
-import { PlanReviewPanel } from "./components/PlanReviewPanel";
 import { panelTitle } from "./lib/format";
 import { useClaim } from "./lib/use-claim";
 import { useGatewayStatus } from "./lib/use-status";
@@ -29,12 +28,6 @@ export function App() {
         </p>
       )}
       {snapshot && <ControlPanel snapshot={snapshot} refetch={refetch} claim={claim} />}
-      {/* Below the controls, not above: the panel appears and disappears with
-          the plans themselves, and on top it shoved the whole page down every
-          time an agent drafted something. The chat's plan card is the primary
-          review surface now; this is the overview (other agents' proposals,
-          settled plans), reachable via each card's "view in panel" link. */}
-      {snapshot && <PlanReviewPanel claim={claim} />}
       <AssistantBubble claim={claim} snapshot={snapshot ?? null} />
     </main>
   );

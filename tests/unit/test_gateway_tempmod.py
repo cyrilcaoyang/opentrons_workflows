@@ -167,3 +167,73 @@ def test_endpoints_dry_run_and_validation():
     catalog = client.get("/plans/actions").json()
     names = {row["action"] for row in catalog["actions"]}
     assert {"tempmod.set", "tempmod.deactivate"} <= names
+
+
+def test_custom_labware_auto_load_ships_the_definition(tmp_path):
+    """A declared custom slot must auto-load by value, not by name — the
+    opentrons namespace does not carry `sdl2_96_stacked_filterplate`, so the
+    default load path 404s (observed live 2026-08-19). The declared
+    definition travels on the SlotLabware and is sent as `ot_default: False`."""
+    from opentrons_server.gateway.deck import DeckDeclarationStore
+
+    service = OT2Service(
+        dry_run=False,
+        decks=DeckDeclarationStore(state_path=tmp_path / "deck.json"),
+        plates=PlateStateStore(state_path=tmp_path / "plate.json"),
+        tips=TipStateStore(state_path=tmp_path / "tips.json"),
+    )
+    control = Mock()
+    service.control = control
+    service.state = OT2ServiceState.READY
+
+    definition = {
+        "ordering": [["A1"] * 8] * 12,
+        "metadata": {"displayName": "SDL2 96 Stacked Filterplate"},
+        "namespace": "custom",
+        "parameters": {"loadName": "sdl2_96_stacked_filterplate", "isTiprack": False},
+        "version": 2,
+    }
+    service.declare_deck(
+        {"3": {"load_name": "sdl2_96_stacked_filterplate", "definition": definition}}
+    )
+
+    # Resolving slot 3 (as a plan step would) loads it into the session.
+    nick = service._resolve_session_labware("3")
+    assert nick == "slot_3"
+
+    control.load_labware.assert_called_once_with(
+        {
+            "ot_default": False,
+            "nickname": "slot_3",
+            "config": definition,
+            "location": "3",
+        }
+    )
+
+
+def test_standard_labware_auto_load_still_uses_the_default_path(tmp_path):
+    """A standard load_name resolves through the default path (ot_default: True),
+    not the custom-definition path — regression guard for the fix above."""
+    from opentrons_server.gateway.deck import DeckDeclarationStore
+
+    service = OT2Service(
+        dry_run=False,
+        decks=DeckDeclarationStore(state_path=tmp_path / "deck.json"),
+        plates=PlateStateStore(state_path=tmp_path / "plate.json"),
+        tips=TipStateStore(state_path=tmp_path / "tips.json"),
+    )
+    control = Mock()
+    service.control = control
+    service.state = OT2ServiceState.READY
+
+    service.declare_deck({"3": "corning_96_wellplate_360ul_flat"})
+    service._resolve_session_labware("3")
+
+    control.load_labware.assert_called_once_with(
+        {
+            "ot_default": True,
+            "nickname": "slot_3",
+            "loadname": "corning_96_wellplate_360ul_flat",
+            "location": "3",
+        }
+    )
