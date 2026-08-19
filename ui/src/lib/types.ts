@@ -239,6 +239,8 @@ export interface Plan {
 export interface AssistantMessage {
   role: "user" | "assistant";
   content: string;
+  /** Tool calls made while producing this reply, retained with the transcript. */
+  tools?: AssistantToolProgress[];
   /** Set when this turn produced a draft plan, so the bubble can point at it. */
   planId?: string;
   /** The drafted steps, shown read-only inline. The panel remains authoritative;
@@ -258,3 +260,23 @@ export interface AssistantReply {
   plan_id: string | null;
   model: string;
 }
+
+export interface AssistantToolProgress {
+  id: string;
+  name: string;
+  status: "running" | "succeeded" | "failed";
+  error?: string;
+}
+
+export type AssistantProgressEvent =
+  | { type: "thinking"; round: number }
+  | { type: "tool_started"; id: string; name: string }
+  | {
+      type: "tool_finished";
+      id: string;
+      name: string;
+      success: boolean;
+      error: string | null;
+    }
+  | { type: "complete"; result: AssistantReply }
+  | { type: "error"; message: string };

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 import threading
@@ -11,7 +12,7 @@ from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
@@ -781,6 +782,25 @@ def create_app(
     # approve or run anything.
     # -----------------------------------------------------------------
 
+    def _assistant_config_for_request(http_request: Request) -> AssistantConfig:
+        """Validate login, configuration, and claim before starting a turn."""
+        if require_login:
+            _require_identity(http_request)
+        config = AssistantConfig.from_env()
+        unavailable = config.unavailable_reason()
+        if unavailable:
+            raise HTTPException(status_code=503, detail=unavailable)
+        if enforce_claims and not service.claims.current():
+            raise ClaimHTTPError(
+                status_code=423,
+                payload={
+                    "detail": "take control of the device before using the assistant",
+                    "claimed_by": None,
+                    "retry_after_s": None,
+                },
+            )
+        return config
+
     @app.get("/assistant/health", tags=["assistant"])
     def assistant_health() -> dict[str, Any]:
         """Whether the bubble should render, and if not, why.
@@ -811,26 +831,12 @@ def create_app(
         and it keeps an unauthenticated visitor from spending the lab's API
         budget by talking to a robot they do not control.
         """
-        if require_login:
-            _require_identity(http_request)
         # Availability before the claim gate, deliberately. On a gateway with
         # no assistant configured, "take control of the device" is advice that
         # leads nowhere — taking the claim would change nothing. Answer the
         # question the caller actually hit. Nothing is disclosed by ordering it
         # this way: /assistant/health already reports configured-ness openly.
-        config = AssistantConfig.from_env()
-        unavailable = config.unavailable_reason()
-        if unavailable:
-            raise HTTPException(status_code=503, detail=unavailable)
-        if enforce_claims and not service.claims.current():
-            raise ClaimHTTPError(
-                status_code=423,
-                payload={
-                    "detail": "take control of the device before using the assistant",
-                    "claimed_by": None,
-                    "retry_after_s": None,
-                },
-            )
+        config = _assistant_config_for_request(http_request)
         try:
             return Assistant(service, plans, config).chat(
                 [m.model_dump() for m in request.messages]
@@ -840,6 +846,43 @@ def create_app(
         except Exception as exc:
             logger.warning("assistant turn failed: %s", exc)
             raise HTTPException(status_code=502, detail=f"assistant request failed: {exc}")
+
+    @app.post("/assistant/chat/stream", tags=["assistant"])
+    def assistant_chat_stream(
+        request: AssistantChatRequest, http_request: Request
+    ) -> StreamingResponse:
+        """One conversation turn as server-sent progress events.
+
+        Only tool boundaries are exposed — never model reasoning. Access is
+        validated before the stream starts so login/configuration/claim
+        failures retain their normal HTTP status. Provider failures after the
+        stream starts arrive as a terminal ``error`` event.
+        """
+        config = _assistant_config_for_request(http_request)
+        messages = [m.model_dump() for m in request.messages]
+
+        def events() -> Any:
+            try:
+                for event in Assistant(service, plans, config).chat_events(messages):
+                    yield f"data: {json.dumps(event, default=str)}\n\n"
+            except AssistantDisabled as exc:
+                yield f"data: {json.dumps({'type': 'error', 'message': exc.reason})}\n\n"
+            except Exception as exc:
+                logger.warning("assistant streaming turn failed: %s", exc)
+                body = {
+                    "type": "error",
+                    "message": f"assistant request failed: {exc}",
+                }
+                yield f"data: {json.dumps(body, default=str)}\n\n"
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get("/plans/actions", tags=["plans"])
     def plan_actions() -> dict[str, Any]:

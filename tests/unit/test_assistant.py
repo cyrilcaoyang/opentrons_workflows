@@ -228,6 +228,42 @@ def test_reads_are_scoped_to_this_service(monkeypatch):
     assert result["tools_used"] == ["get_status"]
 
 
+def test_chat_events_report_tool_progress(monkeypatch):
+    a = Assistant(OT2Service(dry_run=True), PlanStore(), _config())
+    _fake_openai(monkeypatch, [_tool_call("get_status", {}), _text("It is ready.")])
+
+    events = list(a.chat_events([{"role": "user", "content": "status"}]))
+
+    assert [event["type"] for event in events] == [
+        "thinking",
+        "tool_started",
+        "tool_finished",
+        "thinking",
+        "complete",
+    ]
+    assert events[1]["name"] == "get_status"
+    assert events[2]["success"] is True
+    assert events[-1]["result"]["reply"] == "It is ready."
+
+
+def test_chat_events_mark_a_failed_tool(monkeypatch):
+    a = Assistant(OT2Service(dry_run=True), PlanStore(), _config())
+    _fake_openai(
+        monkeypatch,
+        [
+            _tool_call("propose_plan", {"steps": [{"action": "nuke", "args": {}}]}),
+            _text("That action is unavailable."),
+        ],
+    )
+
+    events = list(a.chat_events([{"role": "user", "content": "nuke it"}]))
+    finished = next(event for event in events if event["type"] == "tool_finished")
+
+    assert finished["name"] == "propose_plan"
+    assert finished["success"] is False
+    assert "unknown action" in finished["error"]
+
+
 def test_tool_rounds_are_bounded(monkeypatch):
     """A model that keeps calling tools must not spin against the robot's read
     path. It gets a truthful 'I didn't finish' rather than an invented summary."""
@@ -263,6 +299,29 @@ def test_chat_requires_the_claim(monkeypatch):
     ok = client.post("/assistant/chat", json={"messages": [{"role": "user", "content": "hi"}]})
     assert ok.status_code == 200
     assert ok.json()["reply"] == "Hello."
+
+
+def test_stream_endpoint_emits_sse_progress(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k-test")
+    client = TestClient(create_app(dry_run=True, enforce_claims=True, ui=False))
+    client.post("/control/claim", json=CLAIM)
+    _fake_openai(monkeypatch, [_tool_call("get_status", {}), _text("Hello.")])
+
+    response = client.post(
+        "/assistant/chat/stream",
+        json={"messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert any(event["type"] == "tool_started" for event in events)
+    assert events[-1]["type"] == "complete"
+    assert events[-1]["result"]["reply"] == "Hello."
 
 
 @pytest.mark.parametrize("enforce_claims", [False, True])

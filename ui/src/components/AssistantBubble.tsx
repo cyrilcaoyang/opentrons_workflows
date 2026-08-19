@@ -4,14 +4,21 @@ import {
   ApiError,
   abortPlan,
   approvePlan,
-  assistantChat,
+  assistantChatStream,
   deletePlan,
   executePlan,
   getAssistantHealth,
   getPlan,
 } from "../lib/api";
 import type { ClaimState } from "../lib/use-claim";
-import type { AssistantMessage, GatewaySnapshot, Plan, PlanStep } from "../lib/types";
+import type {
+  AssistantMessage,
+  AssistantProgressEvent,
+  AssistantToolProgress,
+  GatewaySnapshot,
+  Plan,
+  PlanStep,
+} from "../lib/types";
 
 /**
  * Optional chat popup for simple operations on THIS OT-2.
@@ -74,6 +81,9 @@ export function AssistantBubble({
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toolProgress, setToolProgress] = useState<AssistantToolProgress[]>([]);
+  const toolProgressRef = useRef<AssistantToolProgress[]>([]);
+  const [progressLabel, setProgressLabel] = useState<string | null>(null);
   // Live plan state per plan id — what the cards render and approve from.
   // "gone" = deleted/dismissed (or died with a gateway restart). Not
   // persisted: statuses are re-fetched when the bubble opens, so a stale
@@ -149,6 +159,9 @@ export function AssistantBubble({
     setThread([]);
     setPlanStates({});
     setError(null);
+    toolProgressRef.current = [];
+    setToolProgress([]);
+    setProgressLabel(null);
     try {
       sessionStorage.removeItem(STORAGE_KEY);
     } catch {
@@ -184,8 +197,53 @@ export function AssistantBubble({
     setDraft("");
     setPending(true);
     setError(null);
+    toolProgressRef.current = [];
+    setToolProgress([]);
+    setProgressLabel("Thinking…");
+
+    const updateProgress = (
+      transform: (current: AssistantToolProgress[]) => AssistantToolProgress[],
+    ) => {
+      const updated = transform(toolProgressRef.current);
+      toolProgressRef.current = updated;
+      setToolProgress(updated);
+    };
+
+    const onProgress = (event: AssistantProgressEvent) => {
+      if (event.type === "thinking") {
+        setProgressLabel(
+          toolProgressRef.current.length > 0 ? "Reviewing tool results…" : "Thinking…",
+        );
+      } else if (event.type === "tool_started") {
+        updateProgress((current) => [
+          ...current,
+          { id: event.id, name: event.name, status: "running" },
+        ]);
+        setProgressLabel(`Using ${toolLabel(event.name)}…`);
+      } else if (event.type === "tool_finished") {
+        updateProgress((current) =>
+          current.map((tool) =>
+            tool.id === event.id
+              ? {
+                  ...tool,
+                  status: event.success ? "succeeded" : "failed",
+                  error: event.error ?? undefined,
+                }
+              : tool,
+          ),
+        );
+        setProgressLabel(event.success ? "Thinking…" : "Tool failed; trying to recover…");
+      } else if (event.type === "complete") {
+        setProgressLabel("Finishing…");
+      }
+    };
+
     try {
-      const res = await assistantChat(next.slice(-MAX_KEPT), claim.token);
+      const res = await assistantChatStream(
+        next.slice(-MAX_KEPT),
+        claim.token,
+        onProgress,
+      );
       // Fetch the steps of any plan it drafted so the operator sees what was
       // proposed *in the chat*, not just "go look elsewhere". Best-effort: the
       // panel is still the source of truth, so a failed fetch just omits the
@@ -206,21 +264,39 @@ export function AssistantBubble({
         {
           role: "assistant" as const,
           content: res.reply || (res.plan_id ? "Proposed a plan for your review." : "…"),
+          tools: toolProgressRef.current,
           planId: res.plan_id ?? undefined,
           steps,
         },
       ]);
+      toolProgressRef.current = [];
+      setToolProgress([]);
+      setProgressLabel(null);
     } catch (err) {
       // The turn failed, so no assistant message is appended — showing an
       // empty bubble would read as the assistant having said nothing rather
       // than as the request never landing.
-      setError(
+      const message =
         err instanceof ApiError && err.status === 423
           ? "Take control of the device to use the assistant."
           : err instanceof Error
             ? err.message
-            : String(err),
-      );
+            : String(err);
+      setError(message);
+      updateProgress((current) => [
+        ...current.map((tool) =>
+          tool.status === "running"
+            ? { ...tool, status: "failed" as const, error: message }
+            : tool,
+        ),
+        {
+          id: `request:${Date.now()}`,
+          name: "assistant_request",
+          status: "failed",
+          error: message,
+        },
+      ]);
+      setProgressLabel(null);
     } finally {
       setPending(false);
     }
@@ -400,6 +476,9 @@ export function AssistantBubble({
                   : "max-w-[85%] self-start rounded-lg bg-slate-100 px-3 py-2 text-[13px] leading-relaxed text-ink dark:bg-slate-800 dark:text-slate-100"
               }
             >
+              {m.role === "assistant" && m.tools && m.tools.length > 0 && (
+                <ToolPills tools={m.tools} className="mb-1.5" />
+              )}
               <span className="whitespace-pre-wrap break-words">{m.content}</span>
               {m.planId && (
                 <ChatPlanCard
@@ -425,8 +504,15 @@ export function AssistantBubble({
             </li>
           ))}
         </ul>
-        {pending && (
-          <p className="mt-2 text-[13px] text-ink-subtle opacity-60 dark:text-slate-500">…</p>
+        {toolProgress.length > 0 && (
+          <div className="mt-2">
+            <ToolPills tools={toolProgress} />
+          </div>
+        )}
+        {pending && progressLabel && (
+          <p className="mt-1 text-[11px] text-ink-subtle dark:text-slate-500">
+            {progressLabel}
+          </p>
         )}
         {error && (
           <div
@@ -484,6 +570,44 @@ export function AssistantBubble({
     </section>
       )}
     </>
+  );
+}
+
+const TOOL_TONE: Record<AssistantToolProgress["status"], string> = {
+  running:
+    "border-purple-300 bg-purple-50 text-purple-800 dark:border-purple-700 dark:bg-purple-950/50 dark:text-purple-300",
+  succeeded:
+    "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
+  failed:
+    "border-rose-400 bg-rose-100 text-rose-900 dark:border-rose-700 dark:bg-rose-950/60 dark:text-rose-200",
+};
+
+function toolLabel(name: string): string {
+  return name.replaceAll("_", " ");
+}
+
+function ToolPills({
+  tools,
+  className = "",
+}: {
+  tools: AssistantToolProgress[];
+  className?: string;
+}) {
+  return (
+    <div className={`flex flex-wrap gap-1 ${className}`}>
+      {tools.map((tool) => (
+        <span
+          key={tool.id}
+          title={tool.error}
+          className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+            TOOL_TONE[tool.status]
+          } ${tool.status === "running" ? "animate-pulse" : ""}`}
+        >
+          {tool.status === "running" ? "↻" : tool.status === "succeeded" ? "✓" : "×"}{" "}
+          {toolLabel(tool.name)}
+        </span>
+      ))}
+    </div>
   );
 }
 

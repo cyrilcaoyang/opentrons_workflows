@@ -31,7 +31,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, Iterator, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -398,7 +398,15 @@ class Assistant:
 
     # -- the turn ----------------------------------------------------------
 
-    def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    def chat_events(self, messages: List[Dict[str, str]]) -> Iterator[Dict[str, Any]]:
+        """Run one turn and yield operator-safe progress events.
+
+        Model requests can take tens of seconds and a useful turn commonly
+        needs several of them. Exposing the tool boundary lets the UI show
+        truthful progress without streaming the model's private reasoning.
+        The final event always has type ``complete`` unless an exception
+        escapes to the HTTP layer.
+        """
         reason = self._config.unavailable_reason()
         if reason:
             raise AssistantDisabled(reason)
@@ -417,7 +425,8 @@ class Assistant:
         used: List[str] = []
         plan_id: Optional[str] = None
 
-        for _ in range(self.MAX_TOOL_ROUNDS):
+        for round_index in range(self.MAX_TOOL_ROUNDS):
+            yield {"type": "thinking", "round": round_index + 1}
             response = client.chat.completions.create(
                 model=self._config.model,
                 messages=convo,
@@ -427,12 +436,16 @@ class Assistant:
             choice = response.choices[0].message
             calls = getattr(choice, "tool_calls", None) or []
             if not calls:
-                return {
-                    "reply": choice.content or "",
-                    "tools_used": used,
-                    "plan_id": plan_id,
-                    "model": response.model,
+                yield {
+                    "type": "complete",
+                    "result": {
+                        "reply": choice.content or "",
+                        "tools_used": used,
+                        "plan_id": plan_id,
+                        "model": response.model,
+                    },
                 }
+                return
 
             convo.append(
                 {
@@ -454,6 +467,12 @@ class Assistant:
             for call in calls:
                 name = call.function.name
                 used.append(name)
+                event_id = f"{round_index + 1}:{call.id}"
+                yield {
+                    "type": "tool_started",
+                    "id": event_id,
+                    "name": name,
+                }
                 try:
                     args = json.loads(call.function.arguments or "{}")
                 except json.JSONDecodeError:
@@ -467,6 +486,18 @@ class Assistant:
                     except Exception as exc:  # surfaced to the model, not the operator
                         logger.warning("assistant tool %s failed: %s", name, exc)
                         result = {"error": str(exc)}
+                tool_error = (
+                    str(result["error"])
+                    if isinstance(result, dict) and result.get("error")
+                    else None
+                )
+                yield {
+                    "type": "tool_finished",
+                    "id": event_id,
+                    "name": name,
+                    "success": tool_error is None,
+                    "error": tool_error,
+                }
                 if name == "propose_plan" and isinstance(result, dict):
                     plan_id = result.get("plan_id") or plan_id
                 convo.append(
@@ -479,15 +510,25 @@ class Assistant:
 
         # Out of rounds with the model still calling tools. Say so rather than
         # inventing a summary of work whose outcome we did not see.
-        return {
-            "reply": (
-                "I wasn't able to finish that within my tool-call budget. "
-                "Try asking for one smaller step."
-            ),
-            "tools_used": used,
-            "plan_id": plan_id,
-            "model": self._config.model,
+        yield {
+            "type": "complete",
+            "result": {
+                "reply": (
+                    "I wasn't able to finish that within my tool-call budget. "
+                    "Try asking for one smaller step."
+                ),
+                "tools_used": used,
+                "plan_id": plan_id,
+                "model": self._config.model,
+            },
         }
+
+    def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Compatibility wrapper for non-streaming callers."""
+        for event in self.chat_events(messages):
+            if event["type"] == "complete":
+                return event["result"]
+        raise RuntimeError("assistant turn ended without a completion")
 
 
 class AssistantMessage(BaseModel):

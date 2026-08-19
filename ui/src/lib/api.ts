@@ -21,6 +21,7 @@
 import type {
   AssistantHealth,
   AssistantMessage,
+  AssistantProgressEvent,
   AssistantReply,
   ClaimResponse,
   DeviceDeck,
@@ -72,6 +73,23 @@ export class ApiError extends Error {
   }
 }
 
+async function apiErrorFromResponse(res: Response, path: string): Promise<ApiError> {
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    /* non-JSON body */
+  }
+  const retryAfter = res.headers.get("Retry-After");
+  return new ApiError(
+    res.status,
+    res.statusText,
+    body,
+    path,
+    retryAfter != null ? Number(retryAfter) : null,
+  );
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return fetchJsonAt<T>(apiUrl(path), path, init);
 }
@@ -81,20 +99,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 async function fetchJsonAt<T>(url: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
-    let body: unknown = null;
-    try {
-      body = await res.json();
-    } catch {
-      /* non-JSON body */
-    }
-    const retryAfter = res.headers.get("Retry-After");
-    throw new ApiError(
-      res.status,
-      res.statusText,
-      body,
-      path,
-      retryAfter != null ? Number(retryAfter) : null,
-    );
+    throw await apiErrorFromResponse(res, path);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -341,4 +346,55 @@ export function assistantChat(
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     }),
   });
+}
+
+/** One turn with live, reasoning-free progress at each tool boundary. */
+export async function assistantChatStream(
+  messages: AssistantMessage[],
+  token: string | null,
+  onEvent: (event: AssistantProgressEvent) => void,
+): Promise<AssistantReply> {
+  const path = "/assistant/chat/stream";
+  const res = await fetch(apiUrl(path), {
+    method: "POST",
+    headers: withToken(token),
+    body: JSON.stringify({
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    }),
+  });
+  if (!res.ok) throw await apiErrorFromResponse(res, path);
+  if (!res.body) throw new Error("assistant stream ended without a response body");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let completed: AssistantReply | null = null;
+
+  const consumeRecord = (record: string) => {
+    const payload = record
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!payload) return;
+    const event = JSON.parse(payload) as AssistantProgressEvent;
+    onEvent(event);
+    if (event.type === "complete") completed = event.result;
+    if (event.type === "error") throw new Error(event.message);
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    let boundary = buffer.match(/\r?\n\r?\n/);
+    while (boundary?.index != null) {
+      consumeRecord(buffer.slice(0, boundary.index));
+      buffer = buffer.slice(boundary.index + boundary[0].length);
+      boundary = buffer.match(/\r?\n\r?\n/);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) consumeRecord(buffer);
+  if (!completed) throw new Error("assistant stream ended without a completion");
+  return completed;
 }
