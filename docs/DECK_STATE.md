@@ -240,6 +240,14 @@ is ported to the other (`6c46e57` here, `6b95e86` / `a35ad41` there):
 - The declared outline and legend are `page`-variant only. On the compact
   tile nearly every slot is declared, so outlining them all would say nothing
   while shouting.
+
+**Editing a declaration takes two acts.** A slot that already declares
+something cannot be re-declared in place: the picker's catalog and free-text
+field go inert, only **Clear slot** stays live, and `ControlPanel.declare`
+refuses a non-null entry for an already-declared slot. A declaration is not a
+label — the gateway *auto-loads* labware from it — so a slot changed by a stray
+click reaches the robot. **Clear all declared intent** likewise confirms before
+firing, being the one declare action with no per-slot undo.
 - **Workflow repos** consume `details.loaded_plate` (unchanged contract) and
   gain the per-slot deck + mismatch flags.
 - **xArm** never reports placements — the OT-2 owns its own loaded truth;
