@@ -740,6 +740,102 @@ def test_refill_accepts_the_slot_or_the_legacy_nickname(service):
     assert service.tips.status("4", "B1") == "new"
 
 
+def test_marking_columns_corrects_only_those_columns(service):
+    """The case a whole-rack reset cannot express: some columns used, the rest
+    full. Overstating it as a refill is what sends the head onto bare holes."""
+
+    service.setup_protocol(RECIPE)
+    service.mark_tips("4", status="empty", columns=[1, 2, 3, 10, 11])
+
+    summary = service.tips.summary()["4"]
+    assert summary["empty"] == 40
+    assert summary["available"] == 56
+    assert service.tips.status("4", "A1") == "empty"
+    assert service.tips.status("4", "A4") == "new"
+
+    # And back again, one column at a time.
+    service.mark_tips("4", status="new", columns=[2])
+    assert service.tips.status("4", "A2") == "new"
+    assert service.tips.status("4", "A1") == "empty"
+    assert service.tips.summary()["4"]["available"] == 64
+
+
+def test_marking_accepts_the_slot_or_the_legacy_nickname(service):
+    service.setup_protocol(RECIPE)
+
+    service.mark_tips("tips_300", status="empty", columns=[1])
+    assert service.tips.status("4", "A1") == "empty"
+
+
+def test_marking_explicit_wells_leaves_the_rest_of_the_column(service):
+    service.setup_protocol(RECIPE)
+
+    service.mark_tips("4", status="empty", wells=["A1", "B1"])
+
+    assert service.tips.status("4", "B1") == "empty"
+    assert service.tips.status("4", "C1") == "new"
+
+
+def test_marking_an_unknown_well_changes_nothing(service):
+    """`set_statuses` validates the whole set first, so a typo in one column
+    cannot leave the rack half-corrected."""
+
+    service.setup_protocol(RECIPE)
+
+    with pytest.raises(ValueError):
+        service.mark_tips("4", status="empty", wells=["A1", "Z9"])
+
+    assert service.tips.status("4", "A1") == "new"
+
+
+def test_marking_an_untracked_slot_is_refused(service):
+    with pytest.raises(LookupError):
+        service.mark_tips("7", status="empty", columns=[1])
+
+
+def test_allowed_actions_include_tips_mark(service):
+    assert "tips.mark" in service.allowed_actions()
+
+
+def test_api_tips_mark_partial_correction(tmp_path, monkeypatch):
+    monkeypatch.setenv("OT2_TIP_STATE_PATH", str(tmp_path / "tips.json"))
+    monkeypatch.setenv("OT2_PLATE_STATE_PATH", str(tmp_path / "plate.json"))
+    monkeypatch.setenv("OT2_DECK_STATE_PATH", str(tmp_path / "deck.json"))
+    app = create_app(dry_run=True, enforce_claims=False)
+    client = TestClient(app)
+    app.state.service.setup_protocol(RECIPE)
+
+    marked = client.post(
+        "/control/tips/mark", json={"slot": "4", "columns": [1, 12], "status": "empty"}
+    )
+    assert marked.status_code == 200
+    tips = marked.json()["tips"]
+    assert tips["A1"] == "empty" and tips["H12"] == "empty"
+    assert tips["A2"] == "new"
+
+    racks = client.get("/status").json()["details"]["tip_racks"]
+    assert racks["4"]["available"] == 80
+
+    # A slot with no tracked rack is a state problem, not a bad argument.
+    assert (
+        client.post(
+            "/control/tips/mark", json={"slot": "7", "columns": [1], "status": "empty"}
+        ).status_code
+        == 409
+    )
+    # Neither wells nor columns marks nothing while reporting success — refuse.
+    assert (
+        client.post("/control/tips/mark", json={"slot": "4", "status": "new"}).status_code == 422
+    )
+    # "touched" is not assertable: it carries a sample id the gateway observed.
+    assert (
+        client.post(
+            "/control/tips/mark", json={"slot": "4", "columns": [1], "status": "touched"}
+        ).status_code
+        == 422
+    )
+
+
 def test_a_rack_cannot_be_registered_under_a_non_slot_key(service):
     # The loader drops non-slot keys, so accepting one on write would be a
     # silent write-then-lose across the next restart.

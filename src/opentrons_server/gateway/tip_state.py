@@ -66,6 +66,22 @@ def tip_well_order_96() -> List[str]:
     return [f"{row}{col}" for col in range(1, 13) for row in _ROW_LETTERS]
 
 
+def wells_in_columns(columns: List[int]) -> List[str]:
+    """Every well of the given 1-based ``columns``, in column-major order.
+
+    A rack is consumed a column at a time by an 8-channel head, so a column is
+    the unit an operator corrects. Deduplicated, and ordered by column, so a
+    repeated or out-of-order request marks each well exactly once.
+    """
+
+    out: List[str] = []
+    for column in sorted(set(columns)):
+        if not 1 <= column <= 12:
+            raise ValueError(f"Column {column} is outside 1..12")
+        out.extend(f"{row}{column}" for row in _ROW_LETTERS)
+    return out
+
+
 def _split_well(well: str) -> tuple[str, str]:
     """Split ``"A1"`` into ``("A", "1")``; raise on any other shape."""
 
@@ -520,6 +536,7 @@ __all__ = [
     "TipUnavailable",
     "covered_well_span",
     "tip_well_order_96",
+    "wells_in_columns",
     "FRESH",
     "EMPTY",
 ]

@@ -229,6 +229,49 @@ class TipsResetRequest(StrictRequest):
         return self
 
 
+class TipsMarkRequest(StrictRequest):
+    """Correct *part* of a tracked rack — the operator asserting which tips are
+    actually there.
+
+    ``tips.reset`` is all-or-nothing, so the only way to fix a wrong count used
+    to be to claim a full rack. That is a lie whenever the rack is partly used,
+    and a lie that sends the head onto bare holes. This sets the named wells (or
+    whole ``columns``, which is how a rack is consumed and how the panel
+    addresses it) and leaves every other well untouched.
+
+    ``status`` is deliberately only ``new`` or ``empty``: presence is something
+    an operator can see. A *touched* tip carries the sample id it contacted —
+    evidence the gateway recorded during a real aspirate — and is not
+    assertable, so it is not offered here.
+    """
+
+    slot: Optional[str] = Field(default=None, min_length=1)
+    nickname: Optional[str] = Field(default=None, min_length=1)
+    wells: Optional[List[str]] = None
+    columns: Optional[List[int]] = None
+    status: Literal["new", "empty"]
+
+    @property
+    def target(self) -> str:
+        ref = self.slot or self.nickname
+        if not ref:
+            raise ValueError("tips/mark needs a slot")
+        return ref
+
+    @model_validator(mode="after")
+    def _needs_a_target_and_wells(self) -> "TipsMarkRequest":
+        if not (self.slot or self.nickname):
+            raise ValueError("provide slot (preferred) or nickname")
+        if bool(self.wells) == bool(self.columns):
+            # Both would be ambiguous about precedence; neither would silently
+            # mark nothing and report success.
+            raise ValueError("provide exactly one of wells or columns")
+        for column in self.columns or []:
+            if not 1 <= column <= 12:
+                raise ValueError(f"column {column} is outside 1..12")
+        return self
+
+
 class TipRackState(BaseModel):
     """Tracked tip statuses for one rack: well -> "new" | "empty" | sample id."""
 

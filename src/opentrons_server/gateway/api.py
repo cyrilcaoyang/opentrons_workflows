@@ -42,6 +42,7 @@ from .models import (
     TempmodSetRequest,
     TipRackState,
     TipRequest,
+    TipsMarkRequest,
     TipsResetRequest,
     WellSample,
     WellUpdateRequest,
@@ -703,6 +704,30 @@ def create_app(
 
         try:
             return service.reset_tip_rack(request.target, wells=request.wells)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post("/control/tips/mark", response_model=TipRackState, tags=["control"])
+    def tips_mark(request: TipsMarkRequest, _claim: None = Depends(require_claim)) -> TipRackState:
+        """Mark part of a tracked rack ``new`` or ``empty`` — a partial fix.
+
+        ``tips/reset`` can only assert a *whole* fresh rack, so correcting a
+        partly-used rack meant overstating it. This addresses ``wells`` or whole
+        ``columns`` and leaves the rest of the map alone. Metadata only — no
+        robot motion — so, like ``plate.*``, it works in any state including
+        dry-run. 409 when the slot holds no tracked rack; 422 for a well the
+        rack does not have.
+        """
+
+        try:
+            return service.mark_tips(
+                request.target,
+                status=request.status,
+                wells=request.wells,
+                columns=request.columns,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 

@@ -202,6 +202,17 @@ def test_a_refill_records_what_it_discarded(service):
     assert row["total"] == 96
 
 
+def test_a_partial_correction_records_what_it_changed(service):
+    service.mark_tips("5", status="empty", columns=[1, 2])
+
+    row = service.events.of("tips_marked")[0]
+    assert row["status"] == "empty"
+    assert row["columns"] == [1, 2]
+    assert len(row["wells"]) == 16
+    # The counts before the assertion, so history shows what it overrode.
+    assert row["available_before"] == 96
+
+
 def test_session_edges_are_recorded(service):
     service.shutdown()
 

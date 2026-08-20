@@ -8,6 +8,7 @@ from opentrons_server.gateway.tip_state import (
     TipUnavailable,
     covered_well_span,
     tip_well_order_96,
+    wells_in_columns,
 )
 
 
@@ -45,6 +46,20 @@ def test_register_is_non_destructive_but_reset_renews(store):
 
     store.reset_rack("4")
     assert store.status("4", "A1") == "new"
+
+
+def test_wells_in_columns_is_column_major_and_deduplicated():
+    assert wells_in_columns([1]) == ["A1", "B1", "C1", "D1", "E1", "F1", "G1", "H1"]
+    # Repeats and reversed input still mark each well once, in column order.
+    assert wells_in_columns([3, 1, 3])[:2] == ["A1", "B1"]
+    assert len(wells_in_columns([3, 1, 3])) == 16
+    assert len(set(wells_in_columns(list(range(1, 13))))) == 96
+
+
+@pytest.mark.parametrize("column", [0, 13, -1])
+def test_wells_in_columns_refuses_a_column_off_the_rack(column):
+    with pytest.raises(ValueError, match="outside 1..12"):
+        wells_in_columns([column])
 
 
 def test_validate_pick_contamination_guard(store):

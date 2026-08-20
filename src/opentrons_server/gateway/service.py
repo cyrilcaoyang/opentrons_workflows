@@ -46,7 +46,7 @@ from .models import (
     WellSample,
 )
 from .plate_state import PlateStateStore
-from .tip_state import EMPTY, TipStateStore, TipUnavailable
+from .tip_state import EMPTY, TipStateStore, TipUnavailable, wells_in_columns
 
 # Snapshot is run on the OT-2's Python REPL in two invokes. The OT-2 runs
 # only the official Opentrons SDK — `opentrons_server` is NOT installed
@@ -1260,6 +1260,45 @@ class OT2Service:
         )
         return result
 
+    def mark_tips(
+        self,
+        slot: str,
+        *,
+        status: str,
+        wells: Optional[list[str]] = None,
+        columns: Optional[list[int]] = None,
+    ):
+        """Set part of a rack to ``new`` or ``empty`` — a partial correction.
+
+        The counterpart to :meth:`reset_tip_rack`, which can only assert a whole
+        fresh rack. Same audit reasoning: the operator is asserting a physical
+        fact the gateway cannot observe, so the wells and the prior counts go on
+        the event.
+
+        Unlike a reset this never redefines the rack's well list; every named
+        well must already be in it, and ``TipStateStore.set_statuses`` validates
+        all of them before mutating any, so a typo in one column cannot leave
+        the rack half-corrected.
+        """
+
+        slot = self._tiprack_slot(slot) or str(slot)
+        resolved = list(wells) if wells else wells_in_columns(columns or [])
+        if not resolved:
+            raise ValueError("tips/mark needs at least one well or column")
+        before = self.tips.summary().get(slot) if self.tips.has_rack(slot) else None
+        self.tips.set_statuses(slot, resolved, status)
+        self._emit_tip_event(
+            "tips_marked",
+            slot,
+            status=status,
+            wells=resolved,
+            columns=list(columns) if columns else None,
+            available_before=None if before is None else before.get("available"),
+            empty_before=None if before is None else before.get("empty"),
+            touched_before=None if before is None else before.get("touched"),
+        )
+        return self.tips.racks()[slot]
+
     def move_labware(self, request: Any) -> None:
         self._run_action(
             "move_labware",
@@ -2060,6 +2099,7 @@ class OT2Service:
                 "plate.unload",
                 "well.update",
                 "tips.reset",
+                "tips.mark",
                 "tempmod.set",
                 "tempmod.deactivate",
             ]
@@ -2073,6 +2113,7 @@ class OT2Service:
                 "plate.unload",
                 "well.update",
                 "tips.reset",
+                "tips.mark",
             ]
         if self.state == OT2ServiceState.PAUSED:
             return ["resume", "shutdown"]
@@ -2092,6 +2133,7 @@ class OT2Service:
                 "plate.unload",
                 "well.update",
                 "tips.reset",
+                "tips.mark",
                 "tempmod.set",
                 "tempmod.deactivate",
             ]

@@ -79,6 +79,7 @@ from .models import (
     TempmodDeactivateRequest,
     TempmodSetRequest,
     TipRequest,
+    TipsMarkRequest,
     TipsResetRequest,
     WellUpdateRequest,
 )
@@ -165,6 +166,13 @@ PLAN_ACTIONS: Dict[str, ActionSpec] = {
     ),
     "tips.reset": ActionSpec(
         TipsResetRequest, True, lambda svc, a: svc.reset_tip_rack(a.target, wells=a.wells)
+    ),
+    "tips.mark": ActionSpec(
+        TipsMarkRequest,
+        True,
+        lambda svc, a: svc.mark_tips(
+            a.target, status=a.status, wells=a.wells, columns=a.columns
+        ),
     ),
     "lights.set": ActionSpec(LightsRequest, True, lambda svc, a: svc.set_lights(a.on)),
     "deck.declare": ActionSpec(

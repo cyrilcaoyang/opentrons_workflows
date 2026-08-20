@@ -181,6 +181,15 @@ device cannot see tips and will never correct itself. Registration is
 deliberately non-destructive for the same reason — re-declaring or restarting
 must never silently "refill" a rack that has been used.
 
+**Clearing a declaration never touches tip state.** The two stores are
+independent, and `TipStateStore.remove_rack` has no caller: undeclaring a slot
+only hides its rack from the panel, and re-declaring brings the same used-tip
+map back. That is the intended behaviour — declare/undeclare is layout
+bookkeeping, and letting it reset a rack would make a full-layout replace
+(`POST /control/deck/declare`) silently refill every rack it happened to omit.
+Correcting a count is its own explicit act, never a side effect of a layout
+edit.
+
 Boot registration reads `_build_deck_state`, which is cache-only — no HTTP, no
 REPL — so it cannot block or slow startup. It follows the *declared* deck by
 construction, so a robot with no declared layout registers nothing at boot and
@@ -191,6 +200,33 @@ store asserting racks the deck no longer shows.
 The store and the deck are joined on the slot, which is why the join always
 resolves — `labware.nickname` is `null` on every slot until a setup runs, and
 keying on it was why a tracked rack could still render as untracked.
+
+### Correcting a count: reset vs mark
+
+Two operator assertions, both claim-gated, both audited, neither inferable:
+
+| endpoint | scope | says |
+|---|---|---|
+| `POST /control/tips/reset` | whole rack | "a fresh rack is in this slot" |
+| `POST /control/tips/mark` | `wells` or whole `columns` | "*these* tips are present / gone" |
+
+`tips/mark` exists because reset is all-or-nothing, so a rack that is genuinely
+used in some columns and full in others could only be corrected by overstating
+it — and an overstated rack sends the head onto bare holes. It sets only the
+wells it names, and `set_statuses` validates the whole set before mutating any,
+so a typo cannot leave a rack half-corrected. Columns are the primary unit
+because that is how an 8-channel head consumes a rack, and how the panel
+addresses it (`TipColumnEditor`, which hides itself on any rack that is not
+8 rows deep rather than mislabelling which wells a click would touch).
+
+`status` is restricted to `new` | `empty`: **presence is assertable, contact is
+not.** A *touched* tip carries the sample id it contacted, which is evidence the
+gateway recorded during a real aspirate — so amber is a state the panel's column
+editor reads but can never write.
+
+Note `tips/reset`'s `wells` argument is *not* a partial reset — it redefines
+which wells the rack has, all fresh. `{"slot": "4", "wells": ["A4"]}` leaves
+slot 4 tracked as a one-well rack reporting `1/1`. Use `tips/mark` for a subset.
 
 ## Declared-layout endpoints
 
@@ -261,6 +297,8 @@ firing, being the one declare action with no per-slot undo.
 | Pure normalizers + `build_deck` | `gateway/deck.py` |
 | Models (`SlotLabware`, `DeckSlot`, `DeckState`, …) | `gateway/models.py` |
 | Declaration store (JSON-atomic, corrupt-tolerant) | `gateway/deck.py::DeckDeclarationStore` |
+| Tip store + column geometry (`wells_in_columns`) | `gateway/tip_state.py` |
+| Tip corrections (`reset_tip_rack`, `mark_tips`) + column editor | `gateway/service.py`, `ui/src/components/ControlPanel.tsx::TipColumnEditor` |
 | Wiring (`_build_deck_state`, TTL run probe, endpoints) | `gateway/service.py`, `gateway/api.py` |
 | Tests (decision table, normalizers, store, side-effect-free status) | `tests/unit/test_deck.py`, `test_deck_declare.py`, `test_deck_status.py` |
 | Fixtures | `tests/fixtures/status_deck_*.json`, `repl_get_all_states.json`, `robot_run_labware.json` |

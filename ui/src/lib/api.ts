@@ -263,6 +263,17 @@ export const postDeactivateTempmod = (token: string | null, module?: string) =>
 export const postTipsReset = (token: string | null, slot: string) =>
   controlPost("tips/reset", { slot }, token);
 
+/** Mark whole columns of the rack on `slot` fresh or empty, leaving the rest of
+ *  the map alone — the partial counterpart to a refill. Only presence is
+ *  assertable: a *touched* tip carries the sample id it contacted, which is
+ *  evidence the gateway recorded, not something an operator can declare. */
+export const postTipsMark = (
+  token: string | null,
+  slot: string,
+  columns: number[],
+  status: "new" | "empty",
+) => controlPost("tips/mark", { slot, columns, status }, token);
+
 /** One slot's declared value: a load_name / module key / legacy kind string,
  *  or `{load_name, definition}` for a custom labware whose full Opentrons
  *  schema-2 definition is attached so the gateway derives real geometry

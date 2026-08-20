@@ -14,6 +14,7 @@ import {
   postSetLights,
   postSetTempmod,
   postDeactivateTempmod,
+  postTipsMark,
   postTipsReset,
   postShutdown,
   postStartup,
@@ -33,6 +34,7 @@ import {
   robotInfoFromStatus,
   robotModulesFromStatus,
   tipRacksFromStatus,
+  type TipRackSummary,
 } from "../lib/ot2-deck";
 import { catalogEntryFromLabware, OT2_CATALOG, type CatalogEntry } from "../lib/ot2-catalog";
 import type { GatewaySnapshot, RobotModule } from "../lib/types";
@@ -169,6 +171,131 @@ function TempModuleControls({
   );
 }
 
+/** Per-column aggregate of a rack's tip statuses, for one column's swatch. */
+type ColumnState = "fresh" | "empty" | "touched" | "mixed";
+
+const TIP_ROWS = ["A", "B", "C", "D", "E", "F", "G", "H"];
+
+const COLUMN_SWATCH: Record<ColumnState, string> = {
+  fresh: "border-sky-500 bg-sky-100 text-sky-800 dark:bg-sky-900/60 dark:text-sky-200",
+  // An empty column is a hole: hollow, dashed, like the plan view's empty wells.
+  empty:
+    "border-dashed border-slate-400 text-ink-subtle dark:border-slate-600 dark:text-slate-500",
+  touched:
+    "border-amber-500 bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200",
+  mixed: "border-slate-400 bg-slate-100 text-ink dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200",
+};
+
+function columnState(tips: Record<string, string>, column: number): ColumnState {
+  const statuses = TIP_ROWS.map((row) => tips[`${row}${column}`]);
+  // A well absent from `tips` is fresh — the summary carries non-fresh only.
+  if (statuses.every((s) => s === undefined)) return "fresh";
+  if (statuses.every((s) => s === "empty")) return "empty";
+  if (statuses.every((s) => s !== undefined && s !== "empty")) return "touched";
+  return "mixed";
+}
+
+/**
+ * Correct part of a rack, one column at a time.
+ *
+ * "Mark refilled" can only assert a *whole* fresh rack, so an operator whose
+ * rack is genuinely half-used had to overstate it — and an overstated rack
+ * sends the head onto bare holes. Columns are the unit because that is how an
+ * 8-channel head consumes a rack.
+ *
+ * Only presence is offered. A *touched* tip carries the sample id it contacted,
+ * which is evidence the gateway recorded during a real aspirate; an operator
+ * cannot assert it, so amber is a colour this editor reads but never writes.
+ */
+function TipColumnEditor({
+  rack,
+  disabled,
+  hint,
+  onMark,
+}: {
+  rack: TipRackSummary;
+  disabled: boolean;
+  hint?: string;
+  onMark: (columns: number[], status: "new" | "empty") => void;
+}) {
+  const [selected, setSelected] = useState<number[]>([]);
+  const columns = rack.total / TIP_ROWS.length;
+  // The column model is an 8-row rack. Anything else (a partial rack from a
+  // `wells`-scoped reset, a non-standard grid) gets no editor rather than a
+  // grid that mislabels which wells a click would touch.
+  if (!Number.isInteger(columns) || columns < 1 || columns > 12) return null;
+
+  function toggle(column: number) {
+    setSelected((prev) =>
+      prev.includes(column) ? prev.filter((c) => c !== column) : [...prev, column],
+    );
+  }
+
+  function apply(status: "new" | "empty") {
+    onMark([...selected].sort((a, b) => a - b), status);
+    setSelected([]);
+  }
+
+  return (
+    <div className="mt-1.5">
+      <div className="flex flex-wrap gap-1" role="group" aria-label={`Tip columns in slot ${rack.slot}`}>
+        {Array.from({ length: columns }, (_, i) => i + 1).map((column) => {
+          const state = columnState(rack.tips, column);
+          const on = selected.includes(column);
+          return (
+            <button
+              key={column}
+              type="button"
+              disabled={disabled}
+              aria-pressed={on}
+              onClick={() => toggle(column)}
+              title={hint ?? `Column ${column} — ${state}`}
+              className={[
+                "h-5 w-5 rounded border text-[9px] font-semibold tabular-nums disabled:cursor-not-allowed disabled:opacity-50",
+                COLUMN_SWATCH[state],
+                on ? "ring-2 ring-sky-500 ring-offset-1 dark:ring-offset-slate-900" : "",
+              ].join(" ")}
+            >
+              {column}
+            </button>
+          );
+        })}
+      </div>
+      {selected.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <span className="text-[10px] text-ink-subtle dark:text-slate-400">
+            {selected.length === 1 ? "Column" : "Columns"}{" "}
+            {[...selected].sort((a, b) => a - b).join(", ")} —
+          </span>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => apply("new")}
+            className="rounded border border-sky-500 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-sky-300 dark:hover:bg-sky-950/40"
+          >
+            tips present
+          </button>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => apply("empty")}
+            className="rounded border border-slate-400 px-1.5 py-0.5 text-[10px] font-semibold text-ink-subtle hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            no tips
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelected([])}
+            className="text-[10px] text-ink-subtle underline dark:text-slate-400"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The full-page OT-2 interface (ported from the dashboard's Ot2ControlPanel;
 // the CONTROL_PASSWORD lock is replaced by the cooperative-claim gate).
@@ -190,6 +317,8 @@ export function ControlPanel({
   const [pending, setPending] = useState(false);
   // Which rack is awaiting a refill confirmation (nickname), if any.
   const [refillConfirm, setRefillConfirm] = useState<string | null>(null);
+  // Whether "clear all declared intent" is awaiting its confirmation.
+  const [clearAllConfirm, setClearAllConfirm] = useState(false);
 
   // Controls unlock when this browser session holds the device claim.
   const locked = !claim.held;
@@ -239,6 +368,7 @@ export function ControlPanel({
     () => (deviceDeck ? declaredMapFromDeck(deviceDeck) : {}),
     [deviceDeck],
   );
+  const declaredCount = Object.keys(declaredMap).length;
   const tipRacks = tipRacksFromStatus(status);
   const mountedTips = mountedTipsFromStatus(status);
   const claimedBy = claimedByFromStatus(status);
@@ -314,6 +444,11 @@ export function ControlPanel({
 
   function declare(entry: CatalogEntry | null) {
     if (locked || selectedSlot == null || declaring) return;
+    // Declaring over a slot that already holds a declaration is refused —
+    // clearing it is the deliberate first half of a replacement. The gateway
+    // auto-loads labware from the declaration, so a slot changed by a stray
+    // click reaches the robot. Clearing (a null entry) is always allowed.
+    if (entry != null && declaredMap[String(selectedSlot)] != null) return;
     setActionError(null);
     setDeclaring(true);
     // Full-layout replace: re-send every currently-declared slot (exact
@@ -350,6 +485,10 @@ export function ControlPanel({
     runControl("tips.reset", () => postTipsReset(token, slot));
   }
 
+  function markTips(slot: string, columns: number[], status: "new" | "empty") {
+    runControl("tips.mark", () => postTipsMark(token, slot, columns, status));
+  }
+
   /** The labware name for a tracked slot, read off the deck — the tracker
    *  stores only the slot, since a rack has no identity beyond where it is. */
   function rackLabel(slot: string): string | undefined {
@@ -359,6 +498,7 @@ export function ControlPanel({
 
   function clearAll() {
     if (locked || declaring) return;
+    setClearAllConfirm(false);
     setActionError(null);
     setDeclaring(true);
     deleteDeckDeclare(token)
@@ -506,16 +646,42 @@ export function ControlPanel({
               onDeclare={declare}
               customEntries={labwareEntries}
             />
+            {/* Clearing every slot at once is the one declare action with no
+                per-slot undo, so it confirms first — same shape as the tip
+                refill confirm. */}
             <div className="mt-2 border-t border-slate-100 pt-2 dark:border-slate-800">
-              <button
-                type="button"
-                disabled={locked || declaring || Object.keys(declaredMap).length === 0}
-                onClick={clearAll}
-                className="rounded-md border border-rose-300 px-2 py-1 text-xs text-rose-700 hover:border-rose-400 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-900 dark:text-rose-300"
-                title="Clears every operator-declared slot (observed hardware is unaffected)"
-              >
-                Clear all declared intent
-              </button>
+              {clearAllConfirm && declaredCount > 0 ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] text-ink-subtle dark:text-slate-400">
+                    Clear the declaration on all {declaredCount} declared slots?
+                  </span>
+                  <button
+                    type="button"
+                    disabled={locked || declaring}
+                    onClick={clearAll}
+                    className="rounded-md border border-rose-500 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-500 dark:text-rose-300 dark:hover:bg-rose-950/40"
+                  >
+                    Yes, clear all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setClearAllConfirm(false)}
+                    className="text-xs text-ink-subtle underline dark:text-slate-400"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={locked || declaring || declaredCount === 0}
+                  onClick={() => setClearAllConfirm(true)}
+                  className="rounded-md border border-rose-300 px-2 py-1 text-xs text-rose-700 hover:border-rose-400 disabled:cursor-not-allowed disabled:opacity-50 dark:border-rose-900 dark:text-rose-300"
+                  title="Clears every operator-declared slot (observed hardware is unaffected)"
+                >
+                  Clear all declared intent
+                </button>
+              )}
             </div>
           </Section>
         </div>
@@ -839,6 +1005,15 @@ export function ControlPanel({
                         )}
                       </div>
                     )}
+                    {/* The partial counterpart to a refill, for the common case
+                        the all-or-nothing reset cannot express: a rack that is
+                        genuinely used in some columns and full in others. */}
+                    <TipColumnEditor
+                      rack={r}
+                      disabled={locked || pending || !allowedActions.includes("tips.mark")}
+                      hint={controlHint}
+                      onMark={(columns, status) => markTips(r.slot, columns, status)}
+                    />
                   </li>
                 ))}
               </ul>
