@@ -166,8 +166,20 @@ class OT2HttpControl:
         instruments: Optional[List[Dict[str, Any]]] = None,
         modules: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
+        trash_from_recipe = False
         for labware_config in labware or []:
-            self.load_labware(labware_config)
+            if self._is_fixed_trash_labware(labware_config):
+                # The recipe names the OT-2 fixed trash in slot 12. On a modern
+                # robot-server slot 12 is an addressable AREA, not loadable
+                # labware, so sending this through load_labware dies with
+                # AreaNotInDeckConfigurationError and takes the whole setup down
+                # (observed live 2026-08-11, and the reason setup #1 half-loaded
+                # the run). load_trash_bin handles both the preloaded-labware and
+                # addressable-area routes; route the entry there instead.
+                self.load_trash_bin()
+                trash_from_recipe = True
+            else:
+                self.load_labware(labware_config)
         for instrument_config in instruments or []:
             self.load_instrument(instrument_config)
         for module_config in modules or []:
@@ -178,19 +190,38 @@ class OT2HttpControl:
         # dropTipInPlace — the tip landed wherever the pipette happened to be.
         # Registered here (not per-drop) so drop_tip's own precedence
         # (pending location > trash labware > trash area > in place) stays a
-        # pure lookup. Skipped if a recipe deliberately occupies slot 12, or
-        # when a registration (startup-time or an earlier setup) already
-        # happened.
+        # pure lookup. Skipped if a recipe deliberately occupies slot 12 with
+        # *non-trash* labware, if the recipe's own fixed-trash entry was already
+        # routed above, or when a registration (startup-time or an earlier
+        # setup) already happened.
         occupied = {
             str(cfg.get("location"))
             for cfg in [*(labware or []), *(modules or [])]
+            if not self._is_fixed_trash_labware(cfg)
         }
         if (
-            self._trash_nickname is None
+            not trash_from_recipe
+            and self._trash_nickname is None
             and self._trash_area is None
             and _OT2_FIXED_TRASH_SLOT not in occupied
         ):
             self.load_trash_bin()
+        # Success path: the local id maps now match the run. Adopt it explicitly
+        # so the invariant "maps == run" holds even if a load registered an id
+        # under a name the cache did not record (see adopt_run_state).
+        self.adopt_run_state()
+
+    @staticmethod
+    def _is_fixed_trash_labware(cfg: Dict[str, Any]) -> bool:
+        """True for a recipe entry naming the OT-2 fixed trash in slot 12.
+
+        Identified by slot *and* load name so a genuine non-trash labware in
+        slot 12 (e.g. a reservoir) still loads normally: only the fixed-trash
+        family (``opentrons_1_trash_*ml_fixed``, any capacity) reroutes."""
+        if str(cfg.get("location")) != _OT2_FIXED_TRASH_SLOT:
+            return False
+        name = str(cfg.get("loadname") or cfg.get("load_name") or "")
+        return "trash" in name and "fixed" in name
 
     def load_labware(self, labware: Dict[str, Any]) -> str:
         nickname = labware["nickname"]
@@ -1072,17 +1103,75 @@ class OT2HttpControl:
             return OFF_DECK
         return deck_slot(new_location)
 
+    def adopt_run_state(self) -> None:
+        """Rehydrate the nickname->id maps from the run engine's own ids.
+
+        The run is authoritative for what is loaded; ``_labware_ids`` /
+        ``_pipette_ids`` / ``_module_ids`` are a local cache written *only* at
+        load time (each ``load_*`` does ``ids[nickname] = nickname``). A
+        partially-failed setup (some loads succeeded, one raised) or a control
+        object built against a run a previous process loaded therefore leaves
+        entries in the run that are absent from the cache, so ``_labware_id`` /
+        ``_pipette_id`` would raise for a name the run actually knows. Reading
+        the run back closes that gap without a service restart.
+
+        Keyed by the run-engine id, which for anything this gateway loaded *is*
+        the nickname (``load_*`` passes ``labware_id=nickname``), so adopting a
+        run recovers those names too. Non-clobbering (``setdefault``): an
+        existing mapping wins, so a trash nickname pointing at a differently
+        named area id, or an adapter's synthetic id, is never overwritten — this
+        only *fills* gaps. Best-effort: a failed run read must not break a caller
+        that is merely resolving a name.
+        """
+        try:
+            run = self.client.get_run() or {}
+        except Exception:
+            return
+        for lw in run.get("labware") or []:
+            rid = lw.get("id")
+            if rid:
+                self._labware_ids.setdefault(rid, rid)
+        for pip in run.get("pipettes") or []:
+            rid = pip.get("id")
+            if rid:
+                self._pipette_ids.setdefault(rid, rid)
+                mount = pip.get("mount")
+                if mount:
+                    self._pipette_mounts.setdefault(rid, mount)
+        for mod in run.get("modules") or []:
+            rid = mod.get("id")
+            if rid:
+                self._module_ids.setdefault(rid, rid)
+
     def _labware_id(self, nickname: str) -> str:
         try:
             return self._labware_ids[nickname]
         except KeyError:
-            raise RuntimeError(f"labware {nickname!r} is not loaded in this run") from None
+            pass
+        # The name is not in the local cache — the run may still hold it (a
+        # partial setup, an adopted run). Refresh once from the run, then retry.
+        self.adopt_run_state()
+        try:
+            return self._labware_ids[nickname]
+        except KeyError:
+            loaded = ", ".join(sorted(self._labware_ids)) or "none"
+            raise RuntimeError(
+                f"labware {nickname!r} is not loaded in this run (loaded: {loaded})"
+            ) from None
 
     def _pipette_id(self, nickname: str) -> str:
         try:
             return self._pipette_ids[nickname]
         except KeyError:
-            raise RuntimeError(f"pipette {nickname!r} is not loaded in this run") from None
+            pass
+        self.adopt_run_state()
+        try:
+            return self._pipette_ids[nickname]
+        except KeyError:
+            loaded = ", ".join(sorted(self._pipette_ids)) or "none"
+            raise RuntimeError(
+                f"pipette {nickname!r} is not loaded in this run (loaded: {loaded})"
+            ) from None
 
     def _pipette_mount(self, nickname: str) -> str:
         self._pipette_id(nickname)
@@ -1095,7 +1184,15 @@ class OT2HttpControl:
         try:
             return self._module_ids[nickname]
         except KeyError:
-            raise RuntimeError(f"module {nickname!r} is not loaded in this run") from None
+            pass
+        self.adopt_run_state()
+        try:
+            return self._module_ids[nickname]
+        except KeyError:
+            loaded = ", ".join(sorted(self._module_ids)) or "none"
+            raise RuntimeError(
+                f"module {nickname!r} is not loaded in this run (loaded: {loaded})"
+            ) from None
 
     def _module_live_data(self, nickname: str) -> Dict[str, Any]:
         """Live telemetry for a loaded module, matched by hardware serial

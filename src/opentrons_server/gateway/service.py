@@ -420,6 +420,11 @@ class OT2Service:
             )
         control = OT2HttpControl(RunEngineClient(base_url))
         control.initialize_protocol(simulation=self.simulation)
+        # initialize_protocol creates a fresh (usually empty) run, but if the
+        # robot-server preloads labware into new runs — or a future path adopts
+        # an existing run — the id maps must reflect it before any command
+        # resolves a name. Cheap and non-clobbering; a no-op on an empty run.
+        control.adopt_run_state()
         # The OT-2's fixed trash is always physically present. Register it as
         # soon as the run exists so a bare drop_tip routes there even in a
         # setup-less (declared-deck) session; setup_protocol's own registration
@@ -463,6 +468,7 @@ class OT2Service:
         )
 
     def setup_protocol(self, setup: Dict[str, Any]) -> None:
+        previous_recipe = self.session_recipe
         self.session_recipe = {
             "labware": list(setup.get("labware", [])),
             "instruments": list(setup.get("instruments", [])),
@@ -474,7 +480,17 @@ class OT2Service:
                 raise RuntimeError("OT-2 is not initialized")
             self.control.setup_protocol(**self.session_recipe)
 
-        self._run_action("setup", _setup, idempotent=True)
+        try:
+            self._run_action("setup", _setup, idempotent=True)
+        except Exception:
+            # A failed setup must not leave `session_recipe` describing labware
+            # the run never loaded: that divergence is what made the assistant
+            # propose ghost nicknames (e.g. `tiprack9`) that the run engine
+            # rejects with 409. Restore the recipe that matched the run before
+            # this attempt; the partial run-engine load is recovered on demand
+            # by the transport's adopt_run_state (real ids stay resolvable).
+            self.session_recipe = previous_recipe
+            raise
         self.register_tiprack_slots()
         self._bind_pipette_channels()
 
