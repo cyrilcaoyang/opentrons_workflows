@@ -206,6 +206,51 @@ def test_http_snapshot_populates_deck_parity_from_run(fake_http):
     assert isinstance(service.last_snapshot["modules"], dict)
 
 
+def test_failed_setup_leaves_session_recipe_unchanged(fake_http):
+    # BUG 1 regression: setup_protocol commits session_recipe before the load
+    # runs. If the load fails, the recipe must roll back — otherwise the gateway
+    # describes labware the run never loaded (the divergence that made the
+    # assistant propose ghost nicknames the run engine 409s).
+    service = OT2Service(dry_run=False, transport="http")
+    service.startup()
+    service.state = OT2ServiceState.READY
+
+    good = {
+        "labware": [
+            {"ot_default": True, "nickname": "tips", "loadname": "opentrons_96_tiprack_300ul", "location": "1"}
+        ],
+        "instruments": [
+            {"ot_default": True, "nickname": "p300", "instrument_name": "p300_single_gen2", "mount": "right"}
+        ],
+        "modules": [],
+    }
+    service.setup_protocol(good)
+    assert service.session_recipe["labware"][0]["nickname"] == "tips"
+    committed = service.session_recipe
+
+    # The next setup's load fails at the run engine (e.g. LocationIsOccupied on a
+    # slot a partial run already holds).
+    def _boom(command, **kwargs):
+        raise RuntimeError("409: LocationIsOccupiedError")
+
+    fake_http.execute = _boom
+    with pytest.raises(Exception):
+        service.setup_protocol(
+            {
+                "labware": [
+                    {"ot_default": True, "nickname": "ghost", "loadname": "corning_96_wellplate_360ul_flat", "location": "2"}
+                ],
+                "instruments": [],
+                "modules": [],
+            }
+        )
+
+    # Recipe is exactly what the successful setup committed — no "ghost".
+    assert service.session_recipe == committed
+    assert all(lw["nickname"] != "ghost" for lw in service.session_recipe["labware"])
+    assert service.state == OT2ServiceState.ERROR
+
+
 def test_http_snapshot_keys_entries_by_slot_with_id_fallback(fake_http):
     fake_http.get_run = lambda: {
         "id": "run-1",

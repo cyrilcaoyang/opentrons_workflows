@@ -328,6 +328,101 @@ def test_setup_protocol_skips_the_trash_when_slot_12_is_occupied():
     assert all(c != "moveToAddressableAreaForDropTip" for c, _ in client.commands)
 
 
+def test_setup_protocol_routes_a_recipe_fixed_trash_through_the_trash_registrar():
+    # BUG 3 regression: a recipe that explicitly names the OT-2 fixed trash in
+    # slot 12 must NOT be sent to load_labware — on a modern robot-server slot
+    # 12 is an addressable area, so loadLabware there dies with
+    # AreaNotInDeckConfigurationError and half-loads the run. It must go through
+    # load_trash_bin (addressable-area route) instead.
+    client = FakeClient()
+    ctl = OT2HttpControl(client)
+    ctl.initialize_protocol()
+    ctl.setup_protocol(
+        labware=[
+            {
+                "ot_default": True,
+                "nickname": "tips",
+                "loadname": "opentrons_96_tiprack_300ul",
+                "location": "1",
+            },
+            {
+                "ot_default": True,
+                "nickname": "trash",
+                "loadname": "opentrons_1_trash_3200ml_fixed",
+                "location": "12",
+            },
+        ],
+        instruments=[
+            {
+                "ot_default": True,
+                "nickname": "p300",
+                "instrument_name": "p300_single_gen2",
+                "mount": "right",
+            }
+        ],
+    )
+
+    # The trash was never load_labware'd (no loadLabware for slot 12 / the trash
+    # loadName), so setup did not raise; the tiprack still loaded.
+    load_labware = [p for c, p in client.commands if c == "loadLabware"]
+    assert all(p.get("loadName") != "opentrons_1_trash_3200ml_fixed" for p in load_labware)
+    assert any(p.get("loadName") == "opentrons_96_tiprack_300ul" for p in load_labware)
+    # and a bare drop routes to the fixedTrash area the registrar set up.
+    ctl.drop_tip("p300")
+    move, drop = client.commands[-2], client.commands[-1]
+    assert move[0] == "moveToAddressableAreaForDropTip"
+    assert move[1]["addressableAreaName"] == "fixedTrash"
+    assert drop[0] == "dropTipInPlace"
+
+
+# --- run-state adoption (self-heal after a partial setup) -------------------
+
+
+def test_labware_id_resolves_after_adopting_a_run_loaded_it():
+    # BUG 2 regression: a name absent from the local id cache but present in the
+    # run (a partial setup, or a control object built against an existing run)
+    # must resolve after a lazy refresh from the run — not raise "not loaded".
+    client = FakeClient()
+    client.get_run = lambda: {
+        "id": "run-1",
+        "labware": [
+            {"id": "tiprack300", "location": {"slotName": "9"}},
+            {"id": "plate_slot1", "location": {"slotName": "1"}},
+        ],
+        "pipettes": [{"id": "left_p300", "mount": "left"}],
+        "modules": [],
+    }
+    ctl = OT2HttpControl(client)
+    ctl.initialize_protocol()  # fresh empty local cache — nothing loaded here
+
+    # The run holds these ids though load_* never ran locally; the lazy refresh
+    # inside _labware_id / _pipette_id recovers them.
+    assert ctl._labware_id("tiprack300") == "tiprack300"
+    assert ctl._pipette_id("left_p300") == "left_p300"
+    assert ctl._pipette_mount("left_p300") == "left"
+
+
+def test_labware_id_error_lists_the_loaded_ids():
+    # A genuinely-absent name reports what IS loaded, so the miss is diagnosable
+    # in one round trip rather than guessed at.
+    client = FakeClient()
+    client.get_run = lambda: {
+        "id": "run-1",
+        "labware": [
+            {"id": "tiprack300", "location": {"slotName": "9"}},
+            {"id": "plate_slot1", "location": {"slotName": "1"}},
+        ],
+    }
+    ctl = OT2HttpControl(client)
+    ctl.initialize_protocol()
+
+    with pytest.raises(RuntimeError) as exc:
+        ctl._labware_id("tiprack9")
+    msg = str(exc.value)
+    assert "tiprack9" in msg
+    assert "plate_slot1" in msg and "tiprack300" in msg
+
+
 # --- move labware / handoff -------------------------------------------------
 
 
