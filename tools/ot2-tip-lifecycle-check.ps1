@@ -139,6 +139,18 @@ if (-not $Run) {
     exit 0
 }
 
+# A claim held by someone else — very often the operator's own panel session —
+# makes the POST below a 409 and a raw WebException. Name the holder instead:
+# the fix is a click in the panel, not a retry.
+$held = (Invoke-RestMethod -Uri "$base/status" -TimeoutSec 10).details.claimed_by
+if ($held) {
+    # One format string, not a concatenation: `-f` binds to the string
+    # immediately left of it, so ("a {0}" + "b {1}" -f $x, $y) formats only the
+    # second half and leaves {0} literal.
+    $msg = "The gateway is claimed by {0} (expires {1}). Release control in the operator panel, or wait for the claim to expire, then re-run."
+    throw ($msg -f $held.owner, $held.expires_at)
+}
+
 $claim = Invoke-RestMethod -Uri "$base/control/claim" -Method Post -Headers $auth `
     -ContentType "application/json" -TimeoutSec 15 `
     -Body (@{ owner = "operator:tip-lifecycle-check"; session_id = [guid]::NewGuid().ToString(); ttl_s = 120 } | ConvertTo-Json)
