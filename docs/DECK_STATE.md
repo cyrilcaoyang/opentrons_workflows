@@ -264,10 +264,18 @@ Two operator assertions, both claim-gated, both audited, neither inferable:
 used in some columns and full in others could only be corrected by overstating
 it — and an overstated rack sends the head onto bare holes. It sets only the
 wells it names, and `set_statuses` validates the whole set before mutating any,
-so a typo cannot leave a rack half-corrected. Columns are the primary unit
-because that is how an 8-channel head consumes a rack, and how the panel
-addresses it (`TipColumnEditor`, which hides itself on any rack that is not
-8 rows deep rather than mislabelling which wells a click would touch).
+so a typo cannot leave a rack half-corrected.
+
+**Columns and wells are different units for different jobs.** Columns are the
+primary one: that is how an 8-channel head consumes a rack. Wells are the
+*repair* unit — a tracker that has drifted by one tip needs two wells set to
+**different** statuses ("A1 has a tip, B1 is the hole"), which no column
+selection can express. The panel offers both (`TipEditor`, column mode by
+default; it hides itself on any rack that is not 8 rows deep rather than
+mislabelling which wells a click would touch). It shipped column-only, so the
+one-well repair — the case a drifted tracker actually presents — had to be made
+with a raw API call carrying a machine key, past both operator surfaces. The
+endpoint always accepted `wells`; only the UI could not say it.
 
 `status` is restricted to `new` | `empty`: **presence is assertable, contact is
 not.** A *touched* tip carries the sample id it contacted, which is evidence the

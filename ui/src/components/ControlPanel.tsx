@@ -15,6 +15,7 @@ import {
   postSetTempmod,
   postDeactivateTempmod,
   postTipsMark,
+  type TipSelection,
   postTipsReset,
   postShutdown,
   postStartup,
@@ -186,6 +187,19 @@ const COLUMN_SWATCH: Record<ColumnState, string> = {
   mixed: "border-slate-400 bg-slate-100 text-ink dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200",
 };
 
+/** One well's state, in the same vocabulary the column swatch uses.
+ *
+ * `on_pipette` is deliberately folded in with `empty`: both mean the hole has
+ * no tip in it, which is the only question this editor lets an operator answer.
+ * The distinction (gone for good vs. riding a head) is the gateway's to make
+ * and the inspector's to draw, not something a human asserts by clicking. */
+function wellState(tips: Record<string, string>, well: string): ColumnState {
+  const status = tips[well];
+  if (status === undefined) return "fresh";
+  if (status === "empty" || status === "on_pipette") return "empty";
+  return "touched";
+}
+
 function columnState(tips: Record<string, string>, column: number): ColumnState {
   const statuses = TIP_ROWS.map((row) => tips[`${row}${column}`]);
   // A well absent from `tips` is fresh — the summary carries non-fresh only.
@@ -207,7 +221,7 @@ function columnState(tips: Record<string, string>, column: number): ColumnState 
  * which is evidence the gateway recorded during a real aspirate; an operator
  * cannot assert it, so amber is a colour this editor reads but never writes.
  */
-function TipColumnEditor({
+function TipEditor({
   rack,
   disabled,
   hint,
@@ -216,9 +230,11 @@ function TipColumnEditor({
   rack: TipRackSummary;
   disabled: boolean;
   hint?: string;
-  onMark: (columns: number[], status: "new" | "empty") => void;
+  onMark: (selection: TipSelection, status: "new" | "empty") => void;
 }) {
   const [selected, setSelected] = useState<number[]>([]);
+  const [wells, setWells] = useState<string[]>([]);
+  const [byWell, setByWell] = useState(false);
   const columns = rack.total / TIP_ROWS.length;
   // The column model is an 8-row rack. Anything else (a partial rack from a
   // `wells`-scoped reset, a non-standard grid) gets no editor rather than a
@@ -231,13 +247,99 @@ function TipColumnEditor({
     );
   }
 
+  function toggleWell(well: string) {
+    setWells((prev) =>
+      prev.includes(well) ? prev.filter((w) => w !== well) : [...prev, well],
+    );
+  }
+
   function apply(status: "new" | "empty") {
-    onMark([...selected].sort((a, b) => a - b), status);
+    if (byWell) {
+      // Column-major, matching how the rack is consumed and how the gateway
+      // orders its own well list — so the audit row reads in rack order.
+      const ordered = [...wells].sort(
+        (a, b) =>
+          Number(a.slice(1)) - Number(b.slice(1)) ||
+          a.charCodeAt(0) - b.charCodeAt(0),
+      );
+      onMark({ wells: ordered }, status);
+      setWells([]);
+      return;
+    }
+    onMark({ columns: [...selected].sort((a, b) => a - b) }, status);
     setSelected([]);
   }
 
+  const chosen = byWell ? wells.length : selected.length;
+
   return (
     <div className="mt-1.5">
+      {/* Columns stay the default: they are how an 8-channel head consumes a
+          rack, and the common correction. Wells are the repair unit for a
+          tracker that has drifted by one or two tips — the case that used to
+          need a raw API call, because this editor could only speak columns. */}
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-[10px] text-ink-subtle dark:text-slate-500">Correct by</span>
+        {([
+          [false, "column"],
+          [true, "well"],
+        ] as const).map(([mode, label]) => (
+          <button
+            key={label}
+            type="button"
+            disabled={disabled}
+            aria-pressed={byWell === mode}
+            onClick={() => {
+              setByWell(mode);
+              setSelected([]);
+              setWells([]);
+            }}
+            className={[
+              "rounded px-1.5 py-0.5 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-50",
+              byWell === mode
+                ? "bg-sky-100 text-sky-800 dark:bg-sky-900/60 dark:text-sky-200"
+                : "text-ink-subtle hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800",
+            ].join(" ")}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {byWell ? (
+        <div
+          className="grid w-fit gap-0.5"
+          style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+          role="group"
+          aria-label={`Tip wells in slot ${rack.slot}`}
+        >
+          {TIP_ROWS.flatMap((row) =>
+            Array.from({ length: columns }, (_, i) => i + 1).map((column) => {
+              const well = `${row}${column}`;
+              const state = wellState(rack.tips, well);
+              const on = wells.includes(well);
+              return (
+                <button
+                  key={well}
+                  type="button"
+                  disabled={disabled}
+                  aria-pressed={on}
+                  aria-label={`${well} — ${state}`}
+                  onClick={() => toggleWell(well)}
+                  title={hint ?? `${well} — ${state}`}
+                  className={[
+                    "h-4 w-4 rounded-full border text-[0px] disabled:cursor-not-allowed disabled:opacity-50",
+                    COLUMN_SWATCH[state],
+                    on ? "ring-2 ring-sky-500 ring-offset-1 dark:ring-offset-slate-900" : "",
+                  ].join(" ")}
+                >
+                  {well}
+                </button>
+              );
+            }),
+          )}
+        </div>
+      ) : (
       <div className="flex flex-wrap gap-1" role="group" aria-label={`Tip columns in slot ${rack.slot}`}>
         {Array.from({ length: columns }, (_, i) => i + 1).map((column) => {
           const state = columnState(rack.tips, column);
@@ -261,11 +363,21 @@ function TipColumnEditor({
           );
         })}
       </div>
-      {selected.length > 0 && (
+      )}
+      {chosen > 0 && (
         <div className="mt-1.5 flex flex-wrap items-center gap-2">
           <span className="text-[10px] text-ink-subtle dark:text-slate-400">
-            {selected.length === 1 ? "Column" : "Columns"}{" "}
-            {[...selected].sort((a, b) => a - b).join(", ")} —
+            {byWell
+              ? `${wells.length === 1 ? "Well" : "Wells"} ${[...wells]
+                  .sort(
+                    (a, b) =>
+                      Number(a.slice(1)) - Number(b.slice(1)) ||
+                      a.charCodeAt(0) - b.charCodeAt(0),
+                  )
+                  .join(", ")} —`
+              : `${selected.length === 1 ? "Column" : "Columns"} ${[...selected]
+                  .sort((a, b) => a - b)
+                  .join(", ")} —`}
           </span>
           <button
             type="button"
@@ -285,7 +397,10 @@ function TipColumnEditor({
           </button>
           <button
             type="button"
-            onClick={() => setSelected([])}
+            onClick={() => {
+              setSelected([]);
+              setWells([]);
+            }}
             className="text-[10px] text-ink-subtle underline dark:text-slate-400"
           >
             Cancel
@@ -485,8 +600,8 @@ export function ControlPanel({
     runControl("tips.reset", () => postTipsReset(token, slot));
   }
 
-  function markTips(slot: string, columns: number[], status: "new" | "empty") {
-    runControl("tips.mark", () => postTipsMark(token, slot, columns, status));
+  function markTips(slot: string, selection: TipSelection, status: "new" | "empty") {
+    runControl("tips.mark", () => postTipsMark(token, slot, selection, status));
   }
 
   /** The labware name for a tracked slot, read off the deck — the tracker
@@ -1012,11 +1127,11 @@ export function ControlPanel({
                     {/* The partial counterpart to a refill, for the common case
                         the all-or-nothing reset cannot express: a rack that is
                         genuinely used in some columns and full in others. */}
-                    <TipColumnEditor
+                    <TipEditor
                       rack={r}
                       disabled={locked || pending || !allowedActions.includes("tips.mark")}
                       hint={controlHint}
-                      onMark={(columns, status) => markTips(r.slot, columns, status)}
+                      onMark={(selection, status) => markTips(r.slot, selection, status)}
                     />
                   </li>
                 ))}

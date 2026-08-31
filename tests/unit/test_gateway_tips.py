@@ -917,6 +917,61 @@ def test_api_tips_mark_partial_correction(tmp_path, monkeypatch):
     )
 
 
+def test_api_tips_mark_repairs_a_single_well(tmp_path, monkeypatch):
+    """The one-well repair, which is what a drifted tracker actually needs.
+
+    Modelled on the real case: the gateway recorded A1 as the empty hole when
+    the tip had really come from B1. Correcting that means marking two wells to
+    *different* statuses — inexpressible in columns, so it forced a raw API call
+    even though the endpoint had always accepted `wells`. The operator panel now
+    sends this shape (`TipEditor`'s well mode), and nothing else covers it.
+    """
+
+    monkeypatch.setenv("OT2_TIP_STATE_PATH", str(tmp_path / "tips.json"))
+    monkeypatch.setenv("OT2_PLATE_STATE_PATH", str(tmp_path / "plate.json"))
+    monkeypatch.setenv("OT2_DECK_STATE_PATH", str(tmp_path / "deck.json"))
+    app = create_app(dry_run=True, enforce_claims=False)
+    client = TestClient(app)
+    app.state.service.setup_protocol(RECIPE)
+    app.state.service.tips.set_status("4", "A1", "empty")  # the wrong well
+
+    assert (
+        client.post(
+            "/control/tips/mark", json={"slot": "4", "wells": ["A1"], "status": "new"}
+        ).status_code
+        == 200
+    )
+    marked = client.post(
+        "/control/tips/mark", json={"slot": "4", "wells": ["B1"], "status": "empty"}
+    )
+    assert marked.status_code == 200
+
+    rack = client.get("/status").json()["details"]["tip_racks"]["4"]
+    assert rack["tips"] == {"B1": "empty"}   # the hole moved, it did not multiply
+    assert rack["available"] == 95
+
+    # Wells and columns together are ambiguous about precedence, not additive.
+    assert (
+        client.post(
+            "/control/tips/mark",
+            json={"slot": "4", "wells": ["A2"], "columns": [3], "status": "empty"},
+        ).status_code
+        == 422
+    )
+    # A well the rack does not have is a bad argument (422, per the endpoint's
+    # own contract — 409 is reserved for the slot holding no tracked rack), and
+    # the whole request is refused: set_statuses validates every well before
+    # mutating any, so a typo cannot leave the rack half-corrected.
+    assert (
+        client.post(
+            "/control/tips/mark",
+            json={"slot": "4", "wells": ["A2", "Z9"], "status": "empty"},
+        ).status_code
+        == 422
+    )
+    assert client.get("/status").json()["details"]["tip_racks"]["4"]["tips"] == {"B1": "empty"}
+
+
 def test_a_rack_cannot_be_registered_under_a_non_slot_key(service):
     # The loader drops non-slot keys, so accepting one on write would be a
     # silent write-then-lose across the next restart.

@@ -267,12 +267,19 @@ export const postTipsReset = (token: string | null, slot: string) =>
  *  the map alone — the partial counterpart to a refill. Only presence is
  *  assertable: a *touched* tip carries the sample id it contacted, which is
  *  evidence the gateway recorded, not something an operator can declare. */
+/** Which tips a `tips/mark` addresses. The gateway takes exactly one of the
+ *  two, and they are different units for different jobs: a column is how an
+ *  8-channel head consumes a rack, and wells are how a tracker that has drifted
+ *  by one or two tips gets repaired. Column-only marking forced that second
+ *  case out to a raw API call. */
+export type TipSelection = { columns: number[] } | { wells: string[] };
+
 export const postTipsMark = (
   token: string | null,
   slot: string,
-  columns: number[],
+  selection: TipSelection,
   status: "new" | "empty",
-) => controlPost("tips/mark", { slot, columns, status }, token);
+) => controlPost("tips/mark", { slot, ...selection, status }, token);
 
 /** One slot's declared value: a load_name / module key / legacy kind string,
  *  or `{load_name, definition}` for a custom labware whose full Opentrons
