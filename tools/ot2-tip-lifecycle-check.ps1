@@ -179,7 +179,10 @@ try {
     if (-not $after) { $after = "new (absent from the map = fresh)" }
     Write-Host ("returned : {0}   <-- expect new" -f $after) -ForegroundColor Green
     $left = "none — mount cleared"
-    if ($d.mounted_tips.PSObject.Properties.Count -ne 0) { $left = ($d.mounted_tips | ConvertTo-Json -Compress) }
+    # -gt 0, not -ne 0: an empty object's property count comes back $null, and
+    # ($null -ne 0) is TRUE — which printed the raw "{}" instead of the plain
+    # answer on the one line the check exists to report.
+    if ($d.mounted_tips.PSObject.Properties.Count -gt 0) { $left = ($d.mounted_tips | ConvertTo-Json -Compress) }
     Write-Host ("mounted  : {0}" -f $left)
 }
 finally {
