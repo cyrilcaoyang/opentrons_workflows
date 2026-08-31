@@ -26,6 +26,14 @@ from typing import Any, Dict, List, Literal, Optional, Union, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .limits import (
+    MAX_PIPETTE_VOLUME_UL,
+    MAX_WELL_OFFSET_MM,
+    MAX_X_MM,
+    MAX_Y_MM,
+    MAX_Z_MM,
+)
+
 from sdl_lab_contract import (
     Activity,
     ClaimedBy,
@@ -139,19 +147,68 @@ class ProtocolSetupRequest(StrictRequest):
 
 
 class WellLocation(StrictRequest):
+    """A well, plus an optional offset from its top or bottom in mm.
+
+    The offsets are bounded (see ``limits.MAX_WELL_OFFSET_MM``) because they
+    were not, and an unbounded one is how a move ends up hundreds of millimetres
+    above a plate — accepted here, refused by the robot mid-motion, with a tip
+    on the head and a run stopped in the middle. Real protocols use single-digit
+    offsets; the bound is a sanity check on intent, not the machine envelope.
+    """
+
     labware_nickname: str
     position: str
-    top: Optional[float] = None
-    bottom: Optional[float] = None
+    top: Optional[float] = Field(
+        default=None,
+        ge=-MAX_WELL_OFFSET_MM,
+        le=MAX_WELL_OFFSET_MM,
+        description=(
+            f"mm above the well top (negative = into the well). Bounded to "
+            f"+/-{MAX_WELL_OFFSET_MM:g} mm; typical values are single-digit."
+        ),
+    )
+    bottom: Optional[float] = Field(
+        default=None,
+        ge=-MAX_WELL_OFFSET_MM,
+        le=MAX_WELL_OFFSET_MM,
+        description=(
+            f"mm above the well bottom. Bounded to +/-{MAX_WELL_OFFSET_MM:g} mm; "
+            "typical values are single-digit."
+        ),
+    )
     center: bool = False
 
 
 class CoordinateLocation(StrictRequest):
-    """Absolute deck coordinates in mm (the robot's deck reference frame)."""
+    """Absolute deck coordinates in mm (the robot's deck reference frame).
 
-    x: float
-    y: float
-    z: float
+    Bounded by the OT-2's own gantry travel. X/Y come from
+    ``opentrons_shared_data``'s robot definition; Z is a conservative constant
+    because that definition publishes no Z extent (see ``limits.py``), so
+    passing this check is "not obviously impossible", not "reachable".
+    """
+
+    x: float = Field(
+        ...,
+        ge=0.0,
+        le=MAX_X_MM,
+        description=f"mm in the deck frame, 0 to {MAX_X_MM:g} (gantry X travel).",
+    )
+    y: float = Field(
+        ...,
+        ge=0.0,
+        le=MAX_Y_MM,
+        description=f"mm in the deck frame, 0 to {MAX_Y_MM:g} (gantry Y travel).",
+    )
+    z: float = Field(
+        ...,
+        ge=0.0,
+        le=MAX_Z_MM,
+        description=(
+            f"mm above the deck, 0 to {MAX_Z_MM:g}. Conservative upper bound: "
+            "the robot definition publishes no Z extent."
+        ),
+    )
 
 
 class MoveToRequest(StrictRequest):
@@ -181,7 +238,20 @@ class MoveToRequest(StrictRequest):
 
 class LiquidMoveRequest(StrictRequest):
     pipette: str
-    volume_ul: float
+    # Bounded by the largest OT-2 pipette. The tighter, *live* bound — what THIS
+    # pipette actually holds — cannot be a schema constant, so it is checked
+    # pre-motion and refused with 412 (`limits.check_volume`). Unbounded, a
+    # negative or 5000 uL aspirate reached the robot untouched.
+    volume_ul: float = Field(
+        ...,
+        gt=0.0,
+        le=MAX_PIPETTE_VOLUME_UL,
+        description=(
+            f"Volume in uL, up to {MAX_PIPETTE_VOLUME_UL:g} (largest OT-2 "
+            "pipette). The attached pipette's own min/max is enforced "
+            "separately and is published on details.pipette_volumes."
+        ),
+    )
     location: WellLocation
     # Flow rate in µL/s. Optional: omit to use the transport's default (the
     # pipette's protocol-API default on SSH; the OT2_HTTP_*_FLOW_UL_S env default

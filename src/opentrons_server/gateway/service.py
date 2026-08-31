@@ -46,6 +46,7 @@ from .models import (
     TipMount,
     WellSample,
 )
+from .limits import OutOfEnvelope, check_volume
 from .plate_state import PlateStateStore
 from .tip_state import (
     EMPTY,
@@ -285,6 +286,9 @@ class OT2Service:
         # robot's own instrument report (see _bind_pipette_channels). Drives how
         # many tip wells a pick consumes; unknown pipettes default to 1.
         self._pipette_channels: Dict[str, int] = {}
+        # pipette nickname -> (min_ul, max_ul), same sourcing as the channel
+        # binding. Drives the live half of the layer-1 volume guard.
+        self._pipette_volumes: Dict[str, tuple[float, float]] = {}
         self._refresh_stop = threading.Event()
         self.started_at = time.monotonic()
         self.state = OT2ServiceState.DRY_RUN if dry_run else OT2ServiceState.REQUIRES_INIT
@@ -502,6 +506,7 @@ class OT2Service:
             raise
         self.register_tiprack_slots()
         self._bind_pipette_channels()
+        self._bind_pipette_volumes()
 
     def register_tiprack_slots(self) -> None:
         """Track every deck slot that holds a tip rack, keyed by the slot.
@@ -924,6 +929,50 @@ class OT2Service:
             if count >= 1:
                 self._pipette_channels[str(nickname)] = count
 
+    def _bind_pipette_volumes(self) -> None:
+        """Bind each recipe pipette nickname to its ``(min_ul, max_ul)``.
+
+        Same sourcing as :meth:`_bind_pipette_channels` — an explicit
+        ``min_volume`` / ``max_volume`` on the recipe entry wins (so dry-run and
+        simulation are testable without a robot), else the robot's own
+        ``GET /instruments`` joined by mount. A pipette that resolves to neither
+        stays unbound, and :func:`limits.check_volume` then passes it: refusing
+        every aspirate because an instrument probe is unreachable would be a
+        worse failure than the one this guards.
+        """
+
+        by_mount = {
+            str(inst.get("mount")).strip().lower(): inst
+            for inst in (self._last_probe.get("instruments") or [])
+            if inst.get("mount")
+        }
+        for inst in self.session_recipe.get("instruments") or []:
+            nickname = inst.get("nickname")
+            if not nickname:
+                continue
+            probed = by_mount.get(str(inst.get("mount") or "").strip().lower(), {})
+            minimum = inst.get("min_volume", probed.get("min_volume"))
+            maximum = inst.get("max_volume", probed.get("max_volume"))
+            try:
+                low, high = float(minimum or 0.0), float(maximum)
+            except (TypeError, ValueError):
+                continue  # unknown max -> stay unbound
+            if high > 0:
+                self._pipette_volumes[str(nickname)] = (low, high)
+
+    def _volume_limits_for(self, pipette: str) -> Optional[tuple[float, float]]:
+        """``(min_ul, max_ul)`` for a pipette nickname, or None if unknown.
+
+        Re-binds on a miss for the same reason :meth:`_channels_for` does: the
+        instrument probe may have landed after setup (boot order, a reconnect).
+        """
+
+        limits = self._pipette_volumes.get(pipette)
+        if limits is None and self._last_probe:
+            self._bind_pipette_volumes()
+            limits = self._pipette_volumes.get(pipette)
+        return limits
+
     def _channels_for(self, pipette: str) -> int:
         """Channel count for a pipette nickname; 1 when it cannot be determined.
 
@@ -1015,6 +1064,15 @@ class OT2Service:
 
     def aspirate(self, request: Any) -> None:
         flow_rate = getattr(request, "flow_rate", None)
+        # Layer 1, live half: refuse a volume this pipette cannot meter, before
+        # any motion. The schema already rejected the absurd cases; this is the
+        # one that depends on what is actually attached.
+        check_volume(
+            request.pipette,
+            request.volume_ul,
+            self._volume_limits_for(request.pipette),
+            action="aspirate",
+        )
 
         def _aspirate() -> None:
             pip = self._ensure_session_pipette(request.pipette)
@@ -1028,6 +1086,12 @@ class OT2Service:
 
     def dispense(self, request: Any) -> None:
         flow_rate = getattr(request, "flow_rate", None)
+        check_volume(
+            request.pipette,
+            request.volume_ul,
+            self._volume_limits_for(request.pipette),
+            action="dispense",
+        )
 
         def _dispense() -> None:
             pip = self._ensure_session_pipette(request.pipette)
@@ -1656,6 +1720,10 @@ class OT2Service:
                     "model": d.get("instrumentModel"),
                     "name": d.get("instrumentName"),
                     "channels": (d.get("data") or {}).get("channels"),
+                    # Carried for the layer-1 volume guard: what THIS pipette
+                    # can meter, which no schema constant can express.
+                    "min_volume": (d.get("data") or {}).get("min_volume"),
+                    "max_volume": (d.get("data") or {}).get("max_volume"),
                 }
                 for d in instruments.get("data", []) or []
             ]
@@ -2068,6 +2136,15 @@ class OT2Service:
         # unbound pipette falls back to 1, and a silent 1 on an 8-channel head is
         # exactly the mis-tracking this exists to prevent.
         details["pipette_channels"] = dict(self._pipette_channels)
+        # The live half of the layer-1 envelope. Published for the same reason
+        # as pipette_channels: a guard that silently passes because the limits
+        # are unknown must be diagnosable — and an agent should be able to size
+        # a transfer before proposing it, rather than learn the limit from a
+        # refusal.
+        details["pipette_volumes"] = {
+            pip: {"min_ul": lo, "max_ul": hi}
+            for pip, (lo, hi) in self._pipette_volumes.items()
+        }
         if self._last_probe:
             details["robot"] = self._last_probe
         claimed_by = self.claims.current()

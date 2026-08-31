@@ -70,6 +70,7 @@ from .plans import (
     StepValidationError,
 )
 from .plate_state import PlateStateStore
+from .limits import OutOfEnvelope
 from .service import OT2Service, UnknownOutcomeError
 from .tip_state import TipStateStore, TipUnavailable
 
@@ -1113,9 +1114,11 @@ def create_app(
         try:
             func()
             return CommandResponse(message=success_message, state=service.state.value)
-        except TipUnavailable as exc:
+        except (TipUnavailable, OutOfEnvelope) as exc:
             # Precondition refusal (STATUS_SPEC §6.1): structured body, top-level
             # fields — never wrapped in {"detail": ...} — and no last_error.
+            # OutOfEnvelope is the live half of the layer-1 limits (a volume this
+            # pipette cannot meter); the static half is a 422 from the schema.
             raise ClaimHTTPError(status_code=412, payload=exc.body)
         except UnknownOutcomeError as exc:
             raise HTTPException(status_code=409, detail=f"unknown outcome: {exc}")

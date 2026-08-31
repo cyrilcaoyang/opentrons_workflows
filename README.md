@@ -914,6 +914,23 @@ Useful control endpoints:
   structured body, issued before any hardware motion.
 - `POST /control/aspirate`
 - `POST /control/dispense`
+
+**Layer-1 limits (`gateway/limits.py`).** Motion coordinates, well offsets, and
+volumes are bounded, in two tiers. **Static** bounds live in the request models
+as `Field(ge=, le=, description=...)`, so a violation is a 422 before anything
+moves *and* the numbers appear in `/openapi.json` and in the assistant's
+`list_actions` — the limit an agent reads is generated from the limit that is
+enforced, so the two cannot drift. X/Y come from `opentrons_shared_data`'s OT-2
+robot definition; **Z is a documented conservative constant** (that definition
+publishes no Z extent), so passing it means "not obviously impossible", not
+"reachable". Well offsets are bounded to ±100 mm as a sanity check on intent —
+real protocols use single-digit offsets, and an unbounded one is how a move ends
+up hundreds of mm above a plate. **Live** bounds — what *this* pipette can
+meter — cannot be schema constants, so `aspirate`/`dispense` refuse them
+pre-motion with HTTP 412 (§6.1) and `/status` publishes
+`details.pipette_volumes` so an agent can size a transfer before proposing it.
+`OT2_MAX_Z_MM`, `OT2_MAX_WELL_OFFSET_MM`, and `OT2_MAX_PIPETTE_VOLUME_UL`
+override the static bounds.
 - `POST /control/drop-tip` — no body location → the fixed trash, on both
   transports (HTTP adopts the run's preloaded trash labware when the server
   provides one, else drops via the `fixedTrash` addressable area; registered
