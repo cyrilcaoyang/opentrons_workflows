@@ -135,7 +135,7 @@ if (-not $Run) {
     Write-Host "  3. read the origin well: expect on_pipette, and a mount record"
     Write-Host "  4. POST /control/drop-tip back into that same well"
     Write-Host "  5. read it again: expect new (the tip never touched liquid)"
-    Write-Host "  6. release the claim"
+    Write-Host "  6. home the gantry, then release the claim"
     exit 0
 }
 
@@ -183,6 +183,21 @@ try {
     Write-Host ("mounted  : {0}" -f $left)
 }
 finally {
+    # Home before releasing, whatever happened. `drop_tip` leaves the head over
+    # the rack it just used — the gateway does not home on its own, and there is
+    # no reason it should mid-protocol — but a bench tool that hands the robot
+    # back parked over a deck slot is a tool that obstructs the next person and
+    # starts the next operation from an arbitrary position. Homing is idempotent
+    # and retracts Z first, so it is also the right thing after a failure.
+    #
+    # Guarded so a homing problem cannot mask the error that brought us here,
+    # and so the claim is always released.
+    try {
+        Invoke-RestMethod -Uri "$base/control/home" -Method Post -Headers $hdr -TimeoutSec 120 | Out-Null
+        Write-Host "homed"
+    } catch {
+        Write-Warning ("home failed: {0} — the head may still be over the deck." -f $_.Exception.Message)
+    }
     Invoke-RestMethod -Uri "$base/control/release" -Method Post -Headers $hdr -TimeoutSec 10 | Out-Null
     Write-Host "released"
 }
