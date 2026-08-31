@@ -927,6 +927,12 @@ Useful control endpoints:
   (re)registers a tip rack with every tip fresh (a physical rack swap).
   `{"nickname": ...}` is accepted as a legacy alias.
   Metadata-only, works in any state including dry-run.
+- `POST /control/tips/mark` — body `{"slot": str, "wells"|"columns": [...],
+  "status": "new"|"empty"}`; corrects *part* of a rack, for the common case
+  reset cannot express (used in some columns, full in others). Presence is
+  assertable, contact is not, hence the two-value `status`. Also the recovery
+  path when the gateway's view of a head disagrees with the bench: it releases
+  any mount whose tips came from the wells it touches. Metadata-only.
 - `POST /control/lights` — body `{"on": bool}`; toggles the deck (rail) lights
   by proxying to the robot's own `POST /robot/lights`. A convenience control:
   `lights.set` appears in `allowed_actions` and `components.lights`
@@ -1063,35 +1069,61 @@ transports:
   slots, and the two are resolved through the session recipe.
 - `/control/pick-up-tip` validates the pick: fresh tips are free; a
   sample-touched tip is reusable only for the same `sample_id` (or with
-  `force: true`); an `"empty"` well is always refused. Violations return
+  `force: true`); a well with no tip in it — `"empty"`, or `"on_pipette"` —
+  is always refused, `force` included (force overrides the contamination
+  guard, never the absence of a tip). Violations return
   HTTP 412 with `{detail, rack, well, tip_status, requested_sample_id}`
   before any hardware motion (`rack` is the slot). Omitting `position` auto-picks the next
   available tip (column-major, matching protocol-API order).
-- Aspirate/dispense stamp the mounted tip with what it touched — the tracked
+- **The rack updates when the tip leaves it, not when it is thrown away.** A
+  pick marks its wells `"on_pipette"` — a hole, like `"empty"`, but one whose
+  tip may come back — *before* the motion, so `/status`, the panel, and the
+  next auto-pick never claim a tip that is riding the head. A pick that fails
+  definitely is rolled back to the well's prior status; one that ends with an
+  unknown outcome keeps the marking and flags the mount `uncertain`, because
+  the unsafe assumption is that the tip is still seated.
+- Aspirate/dispense record what the mounted tip touched — the tracked
   plate's real `sample_id` when the target well has one, else
-  `<labware>_<well>`. Drop marks the origin well `"empty"`.
+  `<labware>_<well>` — plus `contacted_liquid: true`. Both go on the **mount**,
+  not the origin well, which is a hole while the tip is up; they are written
+  back to the rack if the tip is returned to it. Drop marks the origin well
+  `"empty"`.
+- **Which head holds which tips is persisted, not session state** — a tip stays
+  physically on the pipette across a gateway restart, and the record of where
+  it came from is the only thing that can put it back. `details.mounted_tips`
+  survives a restart, so an interrupted run's tip can still be returned with
+  its history intact.
+- `/control/tips/{reset,mark}` release any mount whose tips came from the wells
+  they touch: an operator asserting what is physically in a well contradicts a
+  mount claiming that well's tip is elsewhere. Only the bookkeeping is dropped —
+  a tip on the head stays there, and dropping it to the trash still works. This
+  is the recovery path when the gateway and the bench disagree.
 - **A drop into a tracked rack well is a relocation, not a disposal.** The
   destination wells take the tip and its history — the sample it last touched,
   `"new"` for a tip that never touched liquid (so it stays available), or
   `"unknown"` for an untracked head. The destination must be empty (dropping
   onto a seated tip is a crash and is refused with 412 pre-motion); the head's
   own origin wells are exempt, which is what makes returning a tip to its own
-  well legal. The release descends to ~10 mm above the well bottom so the tip
+  well legal — and it now holds even after a restart, since the pick itself
+  wrote the hole into the rack. The release descends to ~10 mm above the well bottom so the tip
   seats in the hole instead of being dropped from the well top
   (`OT2_TIP_RESEAT_BOTTOM_MM` to tune per rack geometry).
 - `POST /control/tips/reset` takes `{"slot": "4"}` — the operator asserting a
   physical refill, which is never inferred (the gateway cannot see new tips go
   in, and a wrong "full" sends the head onto bare holes). `{"nickname": ...}`
   is still accepted and resolved through the session recipe.
-- `/status` surfaces `details.tip_racks` **keyed by slot** (per-rack counts +
-  non-fresh wells),
+- `/status` surfaces `details.tip_racks` **keyed by slot** (per-rack counts —
+  `available` / `empty` / `on_pipette` / `touched` — plus the non-fresh wells
+  and a `held_by` well → pipette map),
   `details.mounted_tips` (per-pipette rack / addressed well / covered `wells` /
-  `channels` / last sample), and `details.pipette_channels`.
+  `channels` / `last_sample` / `contacted_liquid` / `origin_status` /
+  `picked_at` / `uncertain`), and `details.pipette_channels`.
 
 **Multi-channel pipettes** are tracked per *head*, not per addressed well. An
 N-channel pipette sent to a row-A well takes N tips **downward in the same
 column**, so an 8-channel pick at A1 consumes A1–H1: all eight wells are
-validated, stamped on aspirate/dispense, and set `"empty"` on drop. Consequences
+validated, marked `"on_pipette"` on the pick, and set `"empty"` on drop — one
+mount record speaks for all eight. Consequences
 worth knowing:
 
 - **Auto-pick steps by column.** With `position` omitted, an 8-channel pipette

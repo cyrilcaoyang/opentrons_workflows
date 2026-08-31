@@ -201,6 +201,56 @@ The store and the deck are joined on the slot, which is why the join always
 resolves — `labware.nickname` is `null` on every slot until a setup runs, and
 keying on it was why a tracked rack could still render as untracked.
 
+### A tip off the rack: `on_pipette` and the mount
+
+A well holds one of four things: a fresh tip (`new`), a tip that has touched a
+sample (the sample id), a bare hole (`empty`), or **`on_pipette`** — a hole
+whose tip is on a head and may come back to it.
+
+`on_pipette` is written **when the pick is issued**, not when the tip is
+eventually thrown away. Before that, a rack went on claiming a tip that was
+already riding the head until the run reached a `drop_tip`, with three
+consequences: `/status` and the panel over-counted, `next_available` handed out
+the *same* well again (sending the head back onto a hole it had just emptied),
+and — the reported failure — returning the tip was refused as "would drop onto
+a seated tip", so an interrupted run could not put its tip back without an
+operator correction first.
+
+The marking happens **before** the motion, and the two failure paths are
+deliberately asymmetric:
+
+| the pick | the rack | why |
+|---|---|---|
+| succeeds | stays `on_pipette` | the tip is on the head |
+| fails definitely | rolled back to its prior status | nothing moved; restoring `new` wholesale would erase a returned tip's history, so the *prior* status is what comes back |
+| ends unknown (transport loss) | stays `on_pipette`, mount flagged `uncertain` | assuming otherwise sends the next pick onto a well that may be a bare hole — a crash. A tip needlessly skipped is cheap; a head driven into a hole is not |
+
+The tip's own history is **not** in the rack map while it is off the rack (the
+well says only `on_pipette`). It lives on the pipette's `TipMount`, persisted
+beside the racks and published at `details.mounted_tips`:
+
+| field | answers |
+|---|---|
+| `rack` / `well` / `wells` | where it came from, so it can go back |
+| `channels` | how many tips this one record speaks for |
+| `contacted_liquid` | has it been in a real aspirate/dispense — the question asked before re-seating a tip |
+| `last_sample` | what it touched most recently |
+| `origin_status` | what the well read before the pick, so a return restores it |
+| `picked_at` | when it came up |
+| `uncertain` | the pick or drop never got a definite answer |
+
+**Mounts are persisted, not session state.** A tip stays physically on the head
+across a gateway restart, so the record of where it came from must too — held in
+memory it was lost exactly when it was needed, and the tip was stranded: its
+origin well no longer read as free and nothing recalled its exposure. On a
+return, `last_sample` is written to the destination wells, so a tip that touched
+a sample carries that history back into the rack, and one that never met liquid
+returns as `new`.
+
+`contacted_liquid` is set only by a real aspirate or dispense (`_mark_tip_used`)
+and never inferred. Touching a tracked tiprack does not count as contact — which
+is what lets a tip be picked, moved, and re-seated without being marked used.
+
 ### Correcting a count: reset vs mark
 
 Two operator assertions, both claim-gated, both audited, neither inferable:
@@ -223,6 +273,14 @@ addresses it (`TipColumnEditor`, which hides itself on any rack that is not
 not.** A *touched* tip carries the sample id it contacted, which is evidence the
 gateway recorded during a real aspirate — so amber is a state the panel's column
 editor reads but can never write.
+
+**Both endpoints release any mount whose tips came from the wells they touch.**
+An operator saying "there is a tip in A1" contradicts a mount claiming A1's tip
+is on a head, as squarely as "A1 is a bare hole" contradicts a tip coming back
+to it; leaving the mount would let the rack disagree with itself. Only the
+bookkeeping is dropped — a tip physically on the head stays there, and dropping
+it into the trash remains available. This is what makes `tips/mark` the recovery
+path when the gateway and the bench disagree about what a head is holding.
 
 Note `tips/reset`'s `wells` argument is *not* a partial reset — it redefines
 which wells the rack has, all fresh. `{"slot": "4", "wells": ["A4"]}` leaves
@@ -268,7 +326,10 @@ is ported to the other (`6c46e57` here, `6b95e86` / `a35ad41` there):
   above the deck rather than by a badge on every slot (on a typical deck most
   slots are declared);
 - `busy` / `≠` badges in the cell's top-right corner, in both variants;
-- tip-rack wells tinted green (fresh) / amber (touched) / grey. Grey covers
+- tip-rack wells tinted green (fresh) / amber (touched) / grey. A well whose
+  tip is on a head reads as grey here too — at 2 px the useful question is "is
+  there a tip in it", and *where it went* is the inspector's job (which draws it
+  as a violet hollow ring, distinct from an `empty` hole). Grey covers
   both an emptied well *and* an untracked rack: "no tip" and "no idea" are
   both "do not count on it", and the tooltip carries the distinction. Green
   therefore means "known available", so a rack with no green is either spent

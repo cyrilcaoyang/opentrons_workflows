@@ -10,12 +10,17 @@ from opentrons_server.gateway.api import create_app
 from opentrons_server.gateway.deck import DeckDeclarationStore
 from opentrons_server.gateway.models import (
     LiquidMoveRequest,
+    MoveToRequest,
     TipRequest,
     WellLocation,
     WellSample,
 )
 from opentrons_server.gateway.plate_state import PlateStateStore
-from opentrons_server.gateway.service import OT2Service, OT2ServiceState
+from opentrons_server.gateway.service import (
+    OT2Service,
+    OT2ServiceState,
+    UnknownOutcomeError,
+)
 from opentrons_server.gateway.tip_state import TipStateStore, TipUnavailable
 
 RECIPE = {
@@ -117,12 +122,20 @@ def test_pick_aspirate_dispense_drop_lifecycle(service):
     mounted = service._mounted_tips["p300"]
     assert (mounted["rack"], mounted["well"]) == ("4", "A1")
     service.control.get_location_from_labware.assert_called_with("tips_300", "A1")
+    # The rack reflects the pick immediately: A1 is a hole from the moment the
+    # tip leaves it, not from the moment it is thrown away.
+    assert service.tips.status("4", "A1") == "on_pipette"
+    assert mounted["contacted_liquid"] is False
 
+    # What the tip touches is recorded on the mount — the well is a hole, and
+    # stamping a sample id there would make it read as a re-pickable tip.
     _move(service, "aspirate", "reservoir", "A1")
-    assert service.tips.status("4", "A1") == "reservoir_A1"
+    assert service._mounted_tips["p300"]["last_sample"] == "reservoir_A1"
+    assert service._mounted_tips["p300"]["contacted_liquid"] is True
+    assert service.tips.status("4", "A1") == "on_pipette"
 
     _move(service, "dispense", "plate_D", "B2")
-    assert service.tips.status("4", "A1") == "plate_D_B2"
+    assert service._mounted_tips["p300"]["last_sample"] == "plate_D_B2"
 
     service.drop_tip(TipRequest(pipette="p300"))
     assert service.tips.status("4", "A1") == "empty"
@@ -139,9 +152,40 @@ def test_pick_refuses_cross_sample_reuse(service):
 
     with pytest.raises(TipUnavailable):
         _pick(service, well="A1", sample_id="sample_Y")
-    # Same sample or force is allowed.
+    # Same sample is allowed, and the tip keeps its history while it is up.
     _pick(service, well="A1", sample_id="sample_X")
+    assert service._mounted_tips["p300"]["origin_status"] == "sample_X"
+
+    # Returned to its own well, the history comes back with it — so `force`
+    # still has something to override on the next pick.
+    service.drop_tip(TipRequest(pipette="p300", labware_nickname="tips_300", position="A1"))
+    assert service.tips.status("4", "A1") == "sample_X"
     _pick(service, well="A1", force=True)
+
+
+def test_pick_refuses_a_well_whose_tip_is_already_on_a_head(service):
+    """Force overrides the contamination guard, never the absence of a tip."""
+
+    service.setup_protocol(RECIPE)
+    _pick(service, well="A1")
+
+    with pytest.raises(TipUnavailable) as excinfo:
+        _pick(service, well="A1", force=True)
+    body = excinfo.value.body
+    assert body["tip_status"] == "on_pipette"
+    assert body["held_by"] == "p300"
+    assert "on pipette p300" in body["detail"]
+
+
+def test_auto_pick_advances_past_a_mounted_tip(service):
+    """The old bug: with A1 still reading "new", a second pick re-targeted it."""
+
+    service.setup_protocol(RECIPE)
+    _pick(service)
+    assert service._mounted_tips["p300"]["well"] == "A1"
+
+    _pick(service, pipette="p300")  # no drop in between
+    assert service._mounted_tips["p300"]["well"] == "B1"
 
 
 def test_sample_id_resolves_from_loaded_plate(service):
@@ -154,6 +198,10 @@ def test_sample_id_resolves_from_loaded_plate(service):
 
     _pick(service)
     _move(service, "dispense", "plate_D", "B2")
+    assert service._mounted_tips["p300"]["last_sample"] == "caffeine-001"
+
+    # ...and it lands in the rack when the tip is put back.
+    service.drop_tip(TipRequest(pipette="p300", labware_nickname="tips_300", position="A1"))
     assert service.tips.status("4", "A1") == "caffeine-001"
 
 
@@ -161,6 +209,12 @@ def test_touching_the_rack_itself_does_not_mark(service):
     service.setup_protocol(RECIPE)
     _pick(service)
     _move(service, "aspirate", "tips_300", "A1")
+    mounted = service._mounted_tips["p300"]
+    assert mounted["last_sample"] is None
+    assert mounted["contacted_liquid"] is False
+
+    # A tip that never met liquid returns to the rack fresh, not "used".
+    service.drop_tip(TipRequest(pipette="p300", labware_nickname="tips_300", position="A1"))
     assert service.tips.status("4", "A1") == "new"
 
 
@@ -497,16 +551,32 @@ def test_multichannel_auto_pick_advances_by_column(service):
     assert service._mounted_tips["p20"]["wells"] == _column(2)
 
 
-def test_multichannel_sample_marking_stamps_the_whole_column(service):
+def test_multichannel_marking_covers_the_whole_column(service):
+    """One mount speaks for all 8 tips: the column moves as a unit, never
+    into a mixed state where some wells still look pickable."""
+
     service.setup_protocol(MULTI_RECIPE)
     _pick(service, well="A1", pipette="p20", rack="tips_20")
+    assert _statuses(service, COLUMN_1) == {"on_pipette"}
 
     _move(service, "aspirate", "reservoir", "A1", pipette="p20")
-    assert _statuses(service, COLUMN_1) == {"reservoir_A1"}
+    assert service._mounted_tips["p20"]["last_sample"] == "reservoir_A1"
+    assert _statuses(service, COLUMN_1) == {"on_pipette"}
 
     # Pick/drop round-trips: the column goes empty, not back to a mixed state.
     service.drop_tip(TipRequest(pipette="p20"))
     assert _statuses(service, COLUMN_1) == {"empty"}
+
+
+def test_multichannel_return_restores_the_columns_history(service):
+    service.setup_protocol(MULTI_RECIPE)
+    _pick(service, well="A1", pipette="p20", rack="tips_20")
+    _move(service, "aspirate", "reservoir", "A1", pipette="p20")
+
+    service.drop_tip(
+        TipRequest(pipette="p20", labware_nickname="tips_20", position="A1")
+    )
+    assert _statuses(service, COLUMN_1) == {"reservoir_A1"}
 
 
 def test_multichannel_pick_refuses_a_partial_column(service):
@@ -564,9 +634,20 @@ def test_status_surfaces_tip_state(service):
     _move(service, "aspirate", "reservoir", "A1")
 
     details = service.get_status().details
-    assert details["tip_racks"]["4"]["available"] == 95
-    assert details["tip_racks"]["4"]["tips"] == {"A1": "reservoir_A1"}
-    assert details["mounted_tips"]["p300"]["well"] == "A1"
+    rack = details["tip_racks"]["4"]
+    assert rack["available"] == 95
+    # The well is a hole while the tip is up, counted apart from both the
+    # tips still in the rack and the ones thrown away.
+    assert rack["tips"] == {"A1": "on_pipette"}
+    assert (rack["on_pipette"], rack["empty"], rack["touched"]) == (1, 0, 0)
+    assert rack["held_by"] == {"A1": "p300"}
+
+    mounted = details["mounted_tips"]["p300"]
+    assert mounted["well"] == "A1"
+    assert mounted["last_sample"] == "reservoir_A1"
+    assert mounted["contacted_liquid"] is True
+    assert mounted["uncertain"] is False
+    assert mounted["picked_at"]
 
 
 def test_status_surfaces_pipette_channels(service):
@@ -875,3 +956,132 @@ def test_legacy_nickname_keyed_racks_are_dropped_on_load(tmp_path):
 
     assert sorted(store.racks()) == ["4"]
     assert store.status("4", "A1") == "empty"  # the real one is untouched
+
+
+# ---------------------------------------------------------------------------
+# Interrupted runs: the tip is on the head and the run stopped there
+#
+# The reported failure. A protocol picked a tip, a later step raised, and the
+# tip could not be put back: the rack still showed its well as holding a tip,
+# so the return was refused as "would drop onto a seated tip". Marking the well
+# at pick time is what fixes it — the well is a hole from the moment the tip
+# leaves, whether or not the run ever reaches a drop.
+# ---------------------------------------------------------------------------
+
+
+def test_return_after_a_failed_step_is_allowed(service):
+    service.setup_protocol(RECIPE)
+    _pick(service)
+
+    # A later step blows up (e.g. a move to an out-of-range height).
+    service.control.move_to_pip.side_effect = RuntimeError("out of range")
+    with pytest.raises(RuntimeError):
+        service.move_to(
+            MoveToRequest(
+                pipette="p300",
+                location=WellLocation(labware_nickname="plate_D", position="A1"),
+            )
+        )
+    service.control.move_to_pip.side_effect = None
+
+    # The tip goes back where it came from, no operator correction needed.
+    service.drop_tip(
+        TipRequest(pipette="p300", labware_nickname="tips_300", position="A1")
+    )
+    assert service.tips.status("4", "A1") == "new"
+    assert "p300" not in service._mounted_tips
+
+
+def test_mount_survives_a_gateway_restart(tmp_path):
+    """A tip stays on the head across a restart, so the record of it must too."""
+
+    def build() -> OT2Service:
+        svc = OT2Service(
+            dry_run=False,
+            plates=PlateStateStore(state_path=tmp_path / "plate.json"),
+            decks=DeckDeclarationStore(state_path=tmp_path / "deck.json"),
+            tips=TipStateStore(state_path=tmp_path / "tips.json"),
+        )
+        svc.control = Mock()
+        svc.refresh_snapshot = Mock(return_value={})
+        svc.state = OT2ServiceState.READY
+        return svc
+
+    first = build()
+    first.setup_protocol(RECIPE)
+    _pick(first)
+    _move(first, "aspirate", "reservoir", "A1")
+
+    restarted = build()
+    restarted.setup_protocol(RECIPE)  # re-setup, as on any restart
+
+    mounted = restarted._mounted_tips["p300"]
+    assert (mounted["rack"], mounted["well"]) == ("4", "A1")
+    assert mounted["last_sample"] == "reservoir_A1"
+    assert mounted["contacted_liquid"] is True
+    assert restarted.tips.status("4", "A1") == "on_pipette"
+
+    # And the tip can still be returned, with its exposure intact.
+    restarted.drop_tip(
+        TipRequest(pipette="p300", labware_nickname="tips_300", position="A1")
+    )
+    assert restarted.tips.status("4", "A1") == "reservoir_A1"
+
+
+def test_failed_pick_rolls_the_well_back(service):
+    """A pick that definitely did not happen must not consume the tip."""
+
+    service.setup_protocol(RECIPE)
+    service.tips.set_status("4", "A1", "sample_X")
+    service.control.pick_up_tip.side_effect = RuntimeError("no tip detected")
+
+    with pytest.raises(RuntimeError):
+        _pick(service, well="A1", force=True)
+
+    # Restored to what it was, not flattened to "new".
+    assert service.tips.status("4", "A1") == "sample_X"
+    assert "p300" not in service._mounted_tips
+
+
+def test_pick_with_an_unknown_outcome_keeps_the_tip_reserved(service):
+    """The unsafe direction is assuming the tip is still in the rack: the next
+    auto-pick would send the head back onto that well."""
+
+    service.setup_protocol(RECIPE)
+    service.control.pick_up_tip.side_effect = OSError("connection reset")
+
+    with pytest.raises(UnknownOutcomeError):
+        _pick(service, well="A1")
+
+    assert service.tips.status("4", "A1") == "on_pipette"
+    assert service._mounted_tips["p300"]["uncertain"] is True
+    # ...so the next pick goes elsewhere.
+    service.control.pick_up_tip.side_effect = None
+    service.state = OT2ServiceState.READY
+    _pick(service)
+    assert service._mounted_tips["p300"]["well"] == "B1"
+
+
+def test_tips_mark_releases_a_stale_mount(service):
+    """The recovery path when the gateway's belief and the bench disagree."""
+
+    service.setup_protocol(RECIPE)
+    _pick(service)
+    assert "p300" in service._mounted_tips
+
+    # The operator looks at the rack and says: A1 has a tip in it.
+    service.mark_tips("4", status="new", wells=["A1"])
+
+    assert service.tips.status("4", "A1") == "new"
+    assert "p300" not in service._mounted_tips  # no claim on a well that is full
+
+
+def test_rack_reset_releases_mounts_from_that_rack(service):
+    service.setup_protocol(RECIPE)
+    _pick(service)
+
+    service.reset_tip_rack("4")  # a fresh rack was physically swapped in
+
+    assert service.tips.summary()["4"]["available"] == 96
+    # The old tip may still be on the head, but it has no origin to return to.
+    assert "p300" not in service._mounted_tips

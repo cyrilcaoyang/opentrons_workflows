@@ -10,10 +10,21 @@ Tip status vocabulary (per well):
 
 - ``"new"`` — fresh tip, never used. Absent wells never occur: the map is full.
 - ``"empty"`` — tip was dropped to trash; the well has no tip.
+- ``"on_pipette"`` — the tip left this well on a pipette head and has not come
+  back. Physically a hole, exactly like ``"empty"``, which is why neither is
+  pickable and both are droppable-into; the difference is that this hole has a
+  tip that may return to it. Written the moment the pick is issued, so a rack
+  never claims a tip that is riding the head.
 - any other string — a **sample id** the tip has touched (e.g. ``"D_A3"`` or an
   orchestrator sample id). A tip that touched sample X may be re-picked *for
   sample X* (or with ``force=true``), but never silently for another sample —
   that is the cross-contamination guard.
+
+While a tip is off the rack its history is not in the rack map (the well says
+only ``"on_pipette"``); it lives on the :class:`~.models.TipMount` for the
+pipette holding it, which this store persists beside the racks. That record is
+what lets a tip be returned to its own well with its exposure intact — and what
+survives the gateway restart that used to strand it.
 
 A pick is tracked per *pipette head*, not per addressed well: an N-channel
 pipette sent to a row-A well removes the whole N-well column (see
@@ -38,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from .models import TipRackState
+from .models import TipMount, TipRackState
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +65,18 @@ _FRESH_STATUSES = {"", "new", "unused", "clean", "available"}
 
 FRESH = "new"
 EMPTY = "empty"
+ON_PIPETTE = "on_pipette"
+
+# Statuses that mean "this well has no tip in it right now". Both are refused
+# for a pick and both are free to drop into; they differ only in whether a tip
+# is expected back.
+_HOLE_STATUSES = {EMPTY, ON_PIPETTE}
+
+
+def is_hole(status: str) -> bool:
+    """True when ``status`` means the well is physically empty."""
+
+    return str(status).strip().lower() in _HOLE_STATUSES
 
 
 def tip_well_order_96() -> List[str]:
@@ -146,6 +169,10 @@ class TipStateStore:
         self._path = _resolve_state_path(state_path)
         self._lock = threading.Lock()
         self._racks: Dict[str, TipRackState] = {}
+        # pipette nickname -> the tips that head is holding. Persisted with the
+        # racks: a tip stays physically on the head across a restart, and the
+        # record of where it came from is the only thing that can put it back.
+        self._mounts: Dict[str, TipMount] = {}
         self._load_from_disk()
 
     @property
@@ -193,6 +220,66 @@ class TipStateStore:
         with self._lock:
             if self._racks.pop(nickname, None) is not None:
                 self._persist_locked()
+
+    # ---- mounts (which head holds which tips) --------------------------
+
+    def mounts(self) -> Dict[str, TipMount]:
+        with self._lock:
+            return {p: m.model_copy(deep=True) for p, m in self._mounts.items()}
+
+    def get_mount(self, pipette: str) -> Optional[TipMount]:
+        with self._lock:
+            mount = self._mounts.get(pipette)
+            return mount.model_copy(deep=True) if mount is not None else None
+
+    def set_mount(self, mount: TipMount) -> TipMount:
+        """Record (or replace) what ``mount.pipette`` is holding."""
+
+        with self._lock:
+            self._mounts[mount.pipette] = mount.model_copy(deep=True)
+            self._persist_locked()
+            return mount.model_copy(deep=True)
+
+    def update_mount(self, pipette: str, **fields: Any) -> Optional[TipMount]:
+        """Patch fields on an existing mount; no-op when nothing is mounted."""
+
+        with self._lock:
+            mount = self._mounts.get(pipette)
+            if mount is None:
+                return None
+            updated = mount.model_copy(update=fields)
+            self._mounts[pipette] = updated
+            self._persist_locked()
+            return updated.model_copy(deep=True)
+
+    def clear_mount(self, pipette: str) -> Optional[TipMount]:
+        """Forget what ``pipette`` was holding; returns the cleared record."""
+
+        with self._lock:
+            mount = self._mounts.pop(pipette, None)
+            if mount is not None:
+                self._persist_locked()
+            return mount
+
+    def holder_of(self, nickname: str, well: str) -> Optional[str]:
+        """Which pipette holds the tip taken from ``nickname`` ``well``."""
+
+        with self._lock:
+            for pipette, mount in self._mounts.items():
+                if mount.rack == nickname and well in (mount.wells or []):
+                    return pipette
+        return None
+
+    def mounts_covering(self, nickname: str, wells: List[str]) -> List[str]:
+        """Pipettes whose mounted tips came from any of ``wells`` in ``nickname``."""
+
+        target = set(wells)
+        with self._lock:
+            return sorted(
+                pipette
+                for pipette, mount in self._mounts.items()
+                if mount.rack == nickname and target.intersection(mount.wells or [])
+            )
 
     # ---- per-tip status ------------------------------------------------
 
@@ -339,6 +426,28 @@ class TipStateStore:
         normalized = status.strip().lower()
         if normalized in _FRESH_STATUSES:
             return None
+        if normalized == ON_PIPETTE:
+            # Refused even with `force`: force overrides the contamination
+            # guard, never the absence of a tip. Naming the holder makes the
+            # refusal actionable — the fix is to drop or return that tip, not
+            # to retry.
+            holder = self.holder_of(nickname, well)
+            raise TipUnavailable(
+                {
+                    "detail": (
+                        f"No tip at {nickname} {well}: it is on pipette "
+                        f"{holder}" if holder else
+                        f"No tip at {nickname} {well}: it is on a pipette"
+                    )
+                    + "; drop or return that tip first",
+                    "rack": nickname,
+                    "well": well,
+                    "tip_status": ON_PIPETTE,
+                    "held_by": holder,
+                    "requested_sample_id": sample_id,
+                    "retry_after_s": None,
+                }
+            )
         if normalized == EMPTY:
             raise TipUnavailable(
                 {
@@ -423,21 +532,39 @@ class TipStateStore:
         normalized = status.strip().lower()
         if normalized in _FRESH_STATUSES:
             return True
+        if normalized in _HOLE_STATUSES:
+            return False  # no tip to pick, whatever sample was asked for
         return sample_id is not None and status == sample_id
 
     def summary(self) -> Dict[str, Any]:
         """Compact per-rack view for ``/status`` — full map plus counts."""
 
         out: Dict[str, Any] = {}
+        mounts = self.mounts()
         for nickname, rack in self.racks().items():
             fresh = sum(1 for s in rack.tips.values() if s.strip().lower() in _FRESH_STATUSES)
             empty = sum(1 for s in rack.tips.values() if s.strip().lower() == EMPTY)
+            on_pipette = sum(1 for s in rack.tips.values() if s.strip().lower() == ON_PIPETTE)
+            # Who is holding this rack's tips, so a reader that only takes the
+            # summary can still explain an `on_pipette` well without joining
+            # `details.mounted_tips` itself.
+            held_by = {
+                well: pipette
+                for pipette, mount in mounts.items()
+                if mount.rack == nickname
+                for well in (mount.wells or [])
+            }
             out[nickname] = {
                 "total": len(rack.tips),
                 "available": fresh,
                 "empty": empty,
-                "touched": len(rack.tips) - fresh - empty,
+                "on_pipette": on_pipette,
+                # "touched" stays what it always meant: tips still in the rack
+                # that have contacted a sample. A tip riding a head is counted
+                # under `on_pipette`, never here.
+                "touched": len(rack.tips) - fresh - empty - on_pipette,
                 "tips": {w: s for w, s in rack.tips.items() if s.strip().lower() not in _FRESH_STATUSES},
+                "held_by": held_by,
                 "registered_at": rack.registered_at.isoformat(),
             }
         return out
@@ -519,9 +646,23 @@ class TipStateStore:
                 ", ".join(sorted(legacy)),
             )
         self._racks = parsed
+        # Mounts are restored verbatim: the tips they describe are physically on
+        # the head, and a restart does not put them back. A malformed record is
+        # dropped rather than guessed at, which degrades to the pre-mount
+        # behaviour (an untracked tip) instead of inventing an origin.
+        mounts: Dict[str, TipMount] = {}
+        for pipette, mount_raw in (raw.get("mounts") or {}).items():
+            try:
+                mounts[str(pipette)] = TipMount.model_validate(mount_raw)
+            except Exception:
+                logger.exception("tip state mount %s is malformed; ignoring", pipette)
+        self._mounts = mounts
 
     def _persist_locked(self) -> None:
-        body = {"racks": {n: r.model_dump(mode="json") for n, r in self._racks.items()}}
+        body = {
+            "racks": {n: r.model_dump(mode="json") for n, r in self._racks.items()},
+            "mounts": {p: m.model_dump(mode="json") for p, m in self._mounts.items()},
+        }
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_suffix(self._path.suffix + ".tmp")
@@ -535,8 +676,10 @@ __all__ = [
     "TipStateStore",
     "TipUnavailable",
     "covered_well_span",
+    "is_hole",
     "tip_well_order_96",
     "wells_in_columns",
     "FRESH",
     "EMPTY",
+    "ON_PIPETTE",
 ]

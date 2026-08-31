@@ -31,6 +31,9 @@ export type WellKind =
   | "touched"
   /** Tip rack: used and dropped — the well is an empty hole. */
   | "empty"
+  /** Tip rack: the tip is on a pipette right now — a hole, but one that has a
+   *  tip which may come back to it. */
+  | "mounted"
   /** Plate: a tracked sample sits in this well. */
   | "sample"
   /** Plate: no sample recorded for this well. */
@@ -38,7 +41,12 @@ export type WellKind =
   /** Nothing is known about this well (an unregistered rack). */
   | "unknown";
 
-export const TIP_KINDS: readonly WellKind[] = ["fresh", "touched", "empty"] as const;
+export const TIP_KINDS: readonly WellKind[] = [
+  "fresh",
+  "touched",
+  "mounted",
+  "empty",
+] as const;
 export const PLATE_KINDS: readonly WellKind[] = ["sample", "vacant"] as const;
 
 export interface WellCell {
@@ -104,6 +112,7 @@ function tipKind(status: string | undefined): { kind: WellKind; detail?: string 
   const normalized = status.trim().toLowerCase();
   if (FRESH_STATUSES.has(normalized)) return { kind: "fresh" };
   if (normalized === "empty") return { kind: "empty" };
+  if (normalized === "on_pipette") return { kind: "mounted" };
   return { kind: "touched", detail: status };
 }
 
@@ -177,7 +186,7 @@ export function buildWellModel({
       kind,
       detail,
       volumeUl,
-      mounted: mountedWells.has(well) || undefined,
+      mounted: mountedWells.has(well) || kind === "mounted" || undefined,
     };
   });
 

@@ -362,9 +362,15 @@ export interface TipRackSummary {
   total: number;
   available: number;
   empty: number;
+  /** Wells whose tip is on a pipette right now — a hole, but one a tip can
+   *  come back to. Counted apart from `empty` (gone for good) and `touched`
+   *  (used, still seated). Absent on a gateway predating mount tracking. */
+  on_pipette?: number;
   touched: number;
-  /** Non-fresh wells only: well -> status ("empty" | sample id | ...). */
+  /** Non-fresh wells only: well -> status ("empty" | "on_pipette" | sample id). */
   tips: Record<string, string>;
+  /** well -> the pipette holding that well's tip, for the `on_pipette` wells. */
+  held_by?: Record<string, string>;
   registered_at?: string;
 }
 
@@ -380,8 +386,13 @@ export function tipRacksFromStatus(status: Status): TipRackSummary[] {
       total: typeof r.total === "number" ? r.total : 0,
       available: typeof r.available === "number" ? r.available : 0,
       empty: typeof r.empty === "number" ? r.empty : 0,
+      on_pipette: typeof r.on_pipette === "number" ? r.on_pipette : undefined,
       touched: typeof r.touched === "number" ? r.touched : 0,
       tips: r.tips && typeof r.tips === "object" ? (r.tips as Record<string, string>) : {},
+      held_by:
+        r.held_by && typeof r.held_by === "object"
+          ? (r.held_by as Record<string, string>)
+          : undefined,
       registered_at: typeof r.registered_at === "string" ? r.registered_at : undefined,
     });
   }
@@ -403,6 +414,14 @@ export interface MountedTip {
   channels?: number;
   last_sample?: string;
   origin_status?: string;
+  /** True once this tip has been in a real aspirate or dispense. The question
+   *  an operator asks before re-seating it in a rack. */
+  contacted_liquid?: boolean;
+  /** When the tip was picked up (UTC ISO-8601). */
+  picked_at?: string;
+  /** The pick or drop ended without a definite answer, so the gateway assumes
+   *  the tip is on the head. Worth a look before trusting the rest. */
+  uncertain?: boolean;
 }
 
 export function mountedTipsFromStatus(status: Status): MountedTip[] {
@@ -422,6 +441,10 @@ export function mountedTipsFromStatus(status: Status): MountedTip[] {
       channels: typeof m.channels === "number" ? m.channels : undefined,
       last_sample: typeof m.last_sample === "string" ? m.last_sample : undefined,
       origin_status: typeof m.origin_status === "string" ? m.origin_status : undefined,
+      contacted_liquid:
+        typeof m.contacted_liquid === "boolean" ? m.contacted_liquid : undefined,
+      picked_at: typeof m.picked_at === "string" ? m.picked_at : undefined,
+      uncertain: typeof m.uncertain === "boolean" ? m.uncertain : undefined,
     });
   }
   return out.sort((a, b) => a.pipette.localeCompare(b.pipette));

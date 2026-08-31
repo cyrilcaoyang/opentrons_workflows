@@ -75,6 +75,11 @@ const MINI_WELL_FILL: Record<string, string> = {
   fresh: "bg-emerald-400 dark:bg-emerald-500",
   touched: "bg-amber-300 dark:bg-amber-600",
   empty: "bg-slate-300 dark:bg-slate-600",
+  // A tip that is on a head is not in the rack, so it reads as a hole here
+  // deliberately — at 2 px the useful question is "is there a tip in it", and
+  // "where did it go" is the inspector's job. Mapped explicitly rather than
+  // falling through to the default, so the choice is visible.
+  mounted: "bg-slate-300 dark:bg-slate-600",
 };
 // Wells with nothing known about them: plates (tip state is a rack concept)
 // and racks the tracker has never registered. Same grey as an emptied well —

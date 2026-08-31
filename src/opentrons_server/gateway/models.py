@@ -230,8 +230,7 @@ class TipsResetRequest(StrictRequest):
 
 
 class TipsMarkRequest(StrictRequest):
-    """Correct *part* of a tracked rack — the operator asserting which tips are
-    actually there.
+    """Correct *part* of a tracked rack: assert which tips are actually there.
 
     ``tips.reset`` is all-or-nothing, so the only way to fix a wrong count used
     to be to claim a full rack. That is a lie whenever the rack is partly used,
@@ -239,10 +238,17 @@ class TipsMarkRequest(StrictRequest):
     whole ``columns``, which is how a rack is consumed and how the panel
     addresses it) and leaves every other well untouched.
 
+    **This is the repair tool for a tracker that has drifted from the bench**,
+    and it is plannable: an assistant should propose it whenever the recorded
+    state and the physical rack disagree. Proposing is not asserting — a plan is
+    a draft until a human approves it, and approving is the operator making the
+    claim about what they can see. Refusing to propose a correction only leaves
+    the drift in place.
+
     ``status`` is deliberately only ``new`` or ``empty``: presence is something
-    an operator can see. A *touched* tip carries the sample id it contacted —
-    evidence the gateway recorded during a real aspirate — and is not
-    assertable, so it is not offered here.
+    a human can look at and confirm. A *touched* tip carries the sample id it
+    contacted — evidence the gateway recorded during a real aspirate — which
+    nobody can confirm by eye, so it is not offered here.
     """
 
     slot: Optional[str] = Field(default=None, min_length=1)
@@ -273,11 +279,52 @@ class TipsMarkRequest(StrictRequest):
 
 
 class TipRackState(BaseModel):
-    """Tracked tip statuses for one rack: well -> "new" | "empty" | sample id."""
+    """Tracked tip statuses for one rack.
+
+    well -> ``"new"`` | ``"empty"`` | ``"on_pipette"`` | sample id. ``on_pipette``
+    is a *hole* like ``empty`` — the tip left the rack on a head — but a hole the
+    tip can still come back to, so the two are not interchangeable. The tip's own
+    history while it is off the rack lives on the :class:`TipMount`.
+    """
 
     nickname: str
     tips: Dict[str, str]
     registered_at: datetime
+
+
+class TipMount(BaseModel):
+    """The tips a pipette is holding right now — custody, origin, and exposure.
+
+    The counterpart to :class:`TipRackState`: a rack answers "what is in this
+    well", a mount answers "where did the tip on this head come from, and what
+    has it touched". Persisted alongside the racks because a tip physically
+    stays on the head across a gateway restart; losing this record used to
+    strand the tip, since the origin well no longer read as free and nothing
+    recalled the tip's exposure.
+
+    ``contacted_liquid`` is the coarse question an operator actually asks — may
+    this tip be re-seated in a rack, or has it been in a sample? It is set by a
+    real aspirate/dispense, never inferred, and never cleared while the tip is
+    on the head.
+    """
+
+    pipette: str
+    # None when the tip's origin is not tracked (picked from an unregistered
+    # rack, or already on the head when the gateway first saw it).
+    rack: Optional[str] = None
+    well: Optional[str] = None  # the addressed origin well
+    wells: List[str] = Field(default_factory=list)  # the covered span
+    channels: int = 1
+    # What the origin well read before the pick, so a rolled-back pick or a
+    # return-to-origin restores the tip's history instead of inventing "new".
+    origin_status: Optional[str] = None
+    last_sample: Optional[str] = None
+    contacted_liquid: bool = False
+    picked_at: datetime
+    # The pick or drop ended without a definite answer (transport loss
+    # mid-command). The tip is *assumed* on the head, because assuming
+    # otherwise sends the next pick onto a well that may be a bare hole.
+    uncertain: bool = False
 
 
 class MoveLabwareRequest(StrictRequest):

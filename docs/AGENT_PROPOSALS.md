@@ -103,6 +103,22 @@ Five control actions are deliberately **not** plannable:
 | `pause` / `resume` | control flow over a running plan; must stay immediate, never queued behind other steps |
 | `reconcile` | clears `unknown_outcome` — the state meaning "nobody knows whether that aspirate happened". A plan that could clear its own ambiguity would erase the signal a human is meant to adjudicate. |
 
+**Everything else in the catalog is proposable, including the bookkeeping
+corrections** — `tips.mark`, `tips.reset`, `plate.load`, `well.update`,
+`deck.declare`. That an action asserts a physical fact the gateway cannot
+observe does not make it operator-only: a proposal is a draft, and *approving*
+it is the operator making the assertion. The distinction is worth stating
+because an assistant got it wrong in the field, telling an operator that
+`tips.mark` was "operator-only, I can't propose it" and leaving them to repair
+a drifted tip rack by hand — while the action sat in `list_actions`, in
+`PLAN_ACTIONS`, and in `allowed_actions` the whole time. The refusal came from
+prose the model reads (the system prompt's operator-only clause, and
+`TipsMarkRequest`'s own docstring, which reaches the model as the action's
+schema description); both now say so explicitly, and
+`test_bookkeeping_corrections_are_proposable` pins it. A drifted tracker is
+precisely when a proposal is most useful — it is one reviewable step versus a
+paragraph of instructions.
+
 Step arguments are validated at proposal time against the same request models
 the matching `/control/*` endpoint uses, so a malformed step is refused with a
 422 naming the field while it is still text. Validation is **strict**: unknown

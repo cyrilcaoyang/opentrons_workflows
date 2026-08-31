@@ -961,9 +961,13 @@ export function ControlPanel({
                         {r.available}/{r.total} available
                       </span>
                     </div>
-                    {(r.empty > 0 || r.touched > 0) && (
+                    {(r.empty > 0 || r.touched > 0 || (r.on_pipette ?? 0) > 0) && (
                       <p className="mt-0.5 text-[10px] text-ink-subtle dark:text-slate-500">
                         {r.empty} used · {r.touched} touched
+                        {/* Neither used nor available: on the head right now.
+                            Named separately so the arithmetic adds up on screen
+                            instead of looking like a missing tip. */}
+                        {(r.on_pipette ?? 0) > 0 && ` · ${r.on_pipette} on a pipette`}
                       </p>
                     )}
                     {/* Refill is always an explicit operator act: the gateway
@@ -1029,12 +1033,46 @@ export function ControlPanel({
                   <li key={t.pipette} className="text-xs text-ink dark:text-slate-200">
                     <span className="font-semibold">{t.pipette}</span>:{" "}
                     <span className="font-mono">
-                      {t.rack ?? "?"} {t.well ?? ""}
+                      {t.rack ? `${t.rack} ${t.well ?? ""}`.trim() : "unknown origin"}
                     </span>
+                    {t.channels != null && t.channels > 1 && (
+                      <span className="text-ink-subtle dark:text-slate-400">
+                        {" "}
+                        · {t.channels} tips
+                      </span>
+                    )}
+                    {/* The question asked before re-seating a tip in a rack:
+                        has it been in liquid, or is it still clean? */}
+                    {t.contacted_liquid != null && (
+                      <span
+                        className={
+                          t.contacted_liquid
+                            ? "text-amber-600 dark:text-amber-400"
+                            : "text-emerald-600 dark:text-emerald-400"
+                        }
+                      >
+                        {" "}
+                        · {t.contacted_liquid ? "used" : "clean"}
+                      </span>
+                    )}
                     {t.last_sample && (
                       <span className="text-ink-subtle dark:text-slate-400">
                         {" "}
                         · last sample <span className="font-mono">{t.last_sample}</span>
+                      </span>
+                    )}
+                    {t.picked_at && (
+                      <span className="text-ink-subtle dark:text-slate-400">
+                        {" "}
+                        · since {t.picked_at.slice(11, 19)}Z
+                      </span>
+                    )}
+                    {/* A pick or drop whose outcome was never confirmed. The
+                        gateway assumes the tip is up; an operator should look. */}
+                    {t.uncertain && (
+                      <span className="text-rose-600 dark:text-rose-400">
+                        {" "}
+                        · unconfirmed — check the head
                       </span>
                     )}
                   </li>

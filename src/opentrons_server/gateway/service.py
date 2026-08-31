@@ -43,10 +43,18 @@ from .models import (
     MetricValue,
     SlotLabware,
     SlotModule,
+    TipMount,
     WellSample,
 )
 from .plate_state import PlateStateStore
-from .tip_state import EMPTY, TipStateStore, TipUnavailable, wells_in_columns
+from .tip_state import (
+    EMPTY,
+    ON_PIPETTE,
+    TipStateStore,
+    TipUnavailable,
+    is_hole,
+    wells_in_columns,
+)
 
 # Snapshot is run on the OT-2's Python REPL in two invokes. The OT-2 runs
 # only the official Opentrons SDK — `opentrons_server` is NOT installed
@@ -266,12 +274,13 @@ class OT2Service:
         self.tips = (
             tips if tips is not None else TipStateStore(state_path="./ot2_tip_state.json")
         )
-        # pipette -> {rack, well, wells, channels, last_sample, origin_status} for
-        # the currently mounted (tracked) tips. `well` is the addressed well and
-        # `wells` every well the head emptied — the same list for a 1-channel
-        # pipette, a whole column for an 8-channel one. In-memory session state,
-        # like session_recipe.
-        self._mounted_tips: Dict[str, Dict[str, Any]] = {}
+        # Which head holds which tips now lives in the tip store, beside the
+        # racks, because it is NOT session state: a tip stays physically on the
+        # pipette across a gateway restart, and the record of where it came from
+        # is the only thing that can put it back. Held in memory it stranded the
+        # tip — the origin well no longer read as free, and nothing recalled the
+        # tip's exposure. `_mounted_tips` is kept as a read-only view for
+        # `/status` and for callers that only ever read it.
         # pipette nickname -> channel count, bound at /control/setup from the
         # robot's own instrument report (see _bind_pipette_channels). Drives how
         # many tip wells a pick consumes; unknown pipettes default to 1.
@@ -1030,6 +1039,67 @@ class OT2Service:
             request.pipette, request.location.labware_nickname, request.location.position
         )
 
+    @property
+    def _mounted_tips(self) -> Dict[str, Dict[str, Any]]:
+        """Read-only view of the persisted mounts, keyed by pipette.
+
+        The dict shape predates the store and is what ``/status`` publishes, so
+        it stays; mutate through :attr:`tips` (``set_mount`` / ``update_mount``
+        / ``clear_mount``), never through this.
+        """
+
+        return {
+            pipette: mount.model_dump(mode="json", exclude={"pipette"})
+            for pipette, mount in self.tips.mounts().items()
+        }
+
+    def _displace_for_pick(self, rack: str, wells: List[str]) -> Dict[str, str]:
+        """Mark ``wells`` as ``on_pipette``; return their prior statuses.
+
+        The return value is the rollback record for a pick that fails
+        definitely — restoring "new" wholesale would erase the history of a tip
+        that had already touched a sample and was returned to its well.
+        """
+
+        previous = {w: self.tips.status(rack, w) for w in wells}
+        self.tips.set_statuses(rack, wells, ON_PIPETTE)
+        return previous
+
+    def _forget_mounts_from(
+        self, rack: str, *, wells: Optional[List[str]] = None
+    ) -> List[str]:
+        """Drop mounts whose tips came from ``rack`` (optionally only ``wells``).
+
+        Used by the operator-correction endpoints, where a human has just
+        asserted a physical fact about those wells. Only the *bookkeeping* is
+        dropped — the tip, if there is one, stays on the head, and dropping it
+        into the trash remains available.
+        """
+
+        if not self.tips.has_rack(rack):
+            return []
+        target = list(wells) if wells else list(self.tips.racks()[rack].tips)
+        released = self.tips.mounts_covering(rack, target)
+        for pipette in released:
+            self.tips.clear_mount(pipette)
+        return released
+
+    def _release_mount(self, pipette: str, *, status: str) -> Optional[TipMount]:
+        """Clear ``pipette``'s mount and stamp ``status`` on its origin wells.
+
+        The pair is deliberately one call: a mount and the ``on_pipette`` wells
+        it explains are two halves of the same fact, and clearing either alone
+        leaves the rack contradicting itself.
+        """
+
+        mount = self.tips.clear_mount(pipette)
+        if mount is None or not mount.rack or not self.tips.has_rack(mount.rack):
+            return mount
+        wells = list(mount.wells or ([mount.well] if mount.well else []))
+        if wells:
+            self.tips.set_statuses(mount.rack, wells, status)
+        return mount
+
     def pick_up_tip(self, request: Any) -> None:
         # The tracker is keyed by slot; protocol calls name labware by nickname.
         nickname = request.labware_nickname
@@ -1095,16 +1165,55 @@ class OT2Service:
                 )
             self._require_control().pick_up_tip(pip)
 
-        self._run_action("pick_up_tip", _pick_up_tip, idempotent=False)
+        # Record the tip as leaving the rack BEFORE the motion, not after it.
+        #
+        # The two possible lies are not symmetric. Marking early and having the
+        # pick fail cleanly leaves a tip the rack thinks is gone: auto-pick
+        # skips it, which wastes a tip. Marking late and losing the answer
+        # (a transport drop mid-pick) leaves a tip the rack thinks is still
+        # seated while it rides the head: the next auto-pick sends the head
+        # back onto that same well — a crash, or a second tip jammed onto the
+        # first. So the rack assumes the tip left, and the clean-failure path
+        # below puts it back.
+        previous = self._displace_for_pick(rack, covered) if tracked and well else {}
         if tracked and well:
-            self._mounted_tips[request.pipette] = {
-                "rack": rack,
-                "well": well,
-                "wells": covered,
-                "channels": channels,
-                "last_sample": sample_id or prior_status,
-                "origin_status": prior_status,
-            }
+            self.tips.set_mount(
+                TipMount(
+                    pipette=request.pipette,
+                    rack=rack,
+                    well=well,
+                    wells=covered,
+                    channels=channels,
+                    origin_status=prior_status,
+                    last_sample=sample_id or prior_status,
+                    # A tip only becomes "contaminated" at a real aspirate or
+                    # dispense (_mark_tip_used). Carrying a sample id from a
+                    # re-pick is history, not fresh contact — but a tip that
+                    # already touched that sample is still exposed, so seed it
+                    # from the prior status rather than from the request.
+                    contacted_liquid=prior_status is not None,
+                    picked_at=datetime.now(timezone.utc),
+                )
+            )
+
+        try:
+            self._run_action("pick_up_tip", _pick_up_tip, idempotent=False)
+        except UnknownOutcomeError:
+            # The command's fate is genuinely unknown, so the marking stands
+            # (see above) and the mount says so. An operator reconciles with
+            # /control/tips/mark once they have looked at the head.
+            self.tips.update_mount(request.pipette, uncertain=True)
+            raise
+        except Exception:
+            # A definite failure: nothing moved, or the robot rejected the
+            # command outright. Put the tips back exactly as they were.
+            if tracked and well:
+                self.tips.clear_mount(request.pipette)
+                for w, status in previous.items():
+                    self.tips.set_status(rack, w, status)
+            raise
+
+        if tracked and well:
             self._emit_tip_event(
                 "tip_pickup",
                 rack,
@@ -1140,35 +1249,38 @@ class OT2Service:
         # head's own origin wells are exempt: they are physically empty while
         # the tips ride the head (that exemption is what makes "return to
         # where it came from" legal).
-        mounted = self._mounted_tips.get(request.pipette)
+        mounted = self.tips.get_mount(request.pipette)
         dest_rack = self._tiprack_slot(nickname) if nickname and position else None
         dest_wells: List[str] = []
         if dest_rack is not None:
-            channels = (mounted or {}).get("channels") or self._channels_for(request.pipette)
+            channels = (mounted.channels if mounted else 0) or self._channels_for(
+                request.pipette
+            )
             # Raises for an unmappable address (unknown well; a multi-channel
             # head not at row A) — refuse rather than move untracked.
             dest_wells = self.tips.covered_wells(dest_rack, position, channels=channels)
-            vacated = (
-                set(mounted.get("wells") or [])
-                if mounted is not None and mounted.get("rack") == dest_rack
-                else set()
-            )
+            # A well is free when it holds no tip — dropped-and-gone (`empty`)
+            # or vacated by the head that is about to fill it (`on_pipette`).
+            # The second case is what makes "return the tip to its own well"
+            # legal without the caller having to assert anything, and it now
+            # holds even when the mount record is missing, because the pick
+            # itself wrote the hole into the rack.
             occupied = [
-                w
-                for w in dest_wells
-                if w not in vacated
-                and self.tips.status(dest_rack, w).strip().lower() != EMPTY
+                w for w in dest_wells if not is_hole(self.tips.status(dest_rack, w))
             ]
             if occupied:
                 raise TipUnavailable(
                     {
                         "detail": (
                             f"Cannot drop into rack {dest_rack} at {position}: "
-                            f"well(s) {', '.join(occupied)} already hold tips"
+                            f"well(s) {', '.join(occupied)} already hold tips. "
+                            "If the rack is actually empty there, correct it "
+                            "with /control/tips/mark (status=empty) and retry"
                         ),
                         "rack": dest_rack,
                         "well": position,
                         "tip_status": self.tips.status(dest_rack, occupied[0]),
+                        "occupied_wells": occupied,
                         "requested_sample_id": None,
                         "retry_after_s": None,
                     }
@@ -1192,12 +1304,21 @@ class OT2Service:
                 )
             self._require_control().drop_tip(pip)
 
-        self._run_action("drop_tip", _drop_tip, idempotent=False)
-        mounted = self._mounted_tips.pop(request.pipette, None)
+        try:
+            self._run_action("drop_tip", _drop_tip, idempotent=False)
+        except UnknownOutcomeError:
+            # Same asymmetry as the pick, mirrored: the tip may or may not have
+            # left the head. Keeping the mount (flagged) keeps the origin wells
+            # reserved and keeps a second drop from being planned as if the head
+            # were empty.
+            self.tips.update_mount(request.pipette, uncertain=True)
+            raise
         # Every well the head emptied goes back to "empty", not just the
         # addressed one — otherwise a multi-channel column stays partly "new"
-        # and the next auto-pick sends the head onto holes.
-        self._mark_mounted_wells(mounted, EMPTY)
+        # and the next auto-pick sends the head onto holes. Clearing the mount
+        # and stamping its origin wells is one operation, so the two can never
+        # disagree.
+        mounted = self._release_mount(request.pipette, status=EMPTY)
         if dest_rack is not None and dest_wells:
             # Complete the relocation: the destination wells now hold the
             # head's tips, carrying their history — the sample they last
@@ -1206,45 +1327,42 @@ class OT2Service:
             # whose tips were never tracked (occupied, but never offered to
             # an auto-pick). Ordered after the origin marking so returning a
             # tip to its own well nets out as that well holding a tip.
-            carried = "unknown" if mounted is None else (mounted.get("last_sample") or "new")
+            carried = "unknown" if mounted is None else (mounted.last_sample or "new")
             self.tips.set_statuses(dest_rack, dest_wells, carried)
         if mounted is not None or dest_rack is not None:
             self._emit_tip_event(
                 "tip_drop",
-                (mounted or {}).get("rack") or dest_rack,
+                (mounted.rack if mounted else None) or dest_rack,
                 pipette=request.pipette,
-                well=(mounted or {}).get("well"),
-                wells=(mounted or {}).get("wells") or None,
-                channels=(mounted or {}).get("channels"),
-                sample_id=(mounted or {}).get("last_sample"),
+                well=mounted.well if mounted else None,
+                wells=(mounted.wells if mounted else None) or None,
+                channels=mounted.channels if mounted else None,
+                sample_id=mounted.last_sample if mounted else None,
+                contacted_liquid=mounted.contacted_liquid if mounted else None,
                 to_rack=dest_rack,
                 to_wells=dest_wells or None,
             )
 
-    def _mark_mounted_wells(
-        self, mounted: Optional[Dict[str, Any]], status: str
-    ) -> None:
-        """Stamp ``status`` on every rack well the mounted head's tips came from."""
-
-        if mounted is None or not self.tips.has_rack(mounted["rack"]):
-            return
-        wells = mounted.get("wells") or [mounted["well"]]
-        self.tips.set_statuses(mounted["rack"], list(wells), status)
-
     def _mark_tip_used(self, pipette: str, labware_nickname: str, position: str) -> None:
         """Record what the mounted tip touched, after a successful liquid step.
 
-        Touching a tracked tiprack is not a sample contact; anything else stamps
-        the tip's origin well with a sample id — the tracked plate's real
-        ``sample_id`` when the target well has one, else ``<labware>_<well>``.
+        Touching a tracked tiprack is not a sample contact; anything else marks
+        the tip as having been in liquid and names what it touched — the tracked
+        plate's real ``sample_id`` when the target well has one, else
+        ``<labware>_<well>``.
+
+        The record goes on the **mount**, not on the origin well: the well is a
+        hole while the tip is off the rack, and stamping a sample id there would
+        make it read as an occupied, re-pickable tip. It is written back to the
+        rack if and when the tip is returned.
         """
 
-        mounted = self._mounted_tips.get(pipette)
-        if mounted is None or self._tiprack_slot(labware_nickname) is not None:
+        if self.tips.get_mount(pipette) is None:
+            return
+        if self._tiprack_slot(labware_nickname) is not None:
             return
         sample = self._resolve_sample_id(labware_nickname, position)
-        mounted["last_sample"] = sample
-        self._mark_mounted_wells(mounted, sample)
+        self.tips.update_mount(pipette, last_sample=sample, contacted_liquid=True)
 
     def _resolve_sample_id(self, labware_nickname: str, position: str) -> str:
         plate = self.plates.get()
@@ -1265,10 +1383,16 @@ class OT2Service:
 
         slot = self._tiprack_slot(slot) or str(slot)
         before = self.tips.summary().get(slot) if self.tips.has_rack(slot) else None
+        # A physical rack swap invalidates every mount that came from it: those
+        # origin wells are now somebody else's fresh tips, so a later "return to
+        # where it came from" would drop onto a seated tip. The tip on the head
+        # is still there — it just has no origin to go home to any more.
+        released = self._forget_mounts_from(slot)
         result = self.tips.reset_rack(slot, wells=wells)
         self._emit_tip_event(
             "tips_reset",
             slot,
+            released_mounts=released or None,
             available_before=None if before is None else before.get("available"),
             empty_before=None if before is None else before.get("empty"),
             touched_before=None if before is None else before.get("touched"),
@@ -1302,12 +1426,20 @@ class OT2Service:
         if not resolved:
             raise ValueError("tips/mark needs at least one well or column")
         before = self.tips.summary().get(slot) if self.tips.has_rack(slot) else None
+        # The operator is asserting what is physically in these wells. If a
+        # mount claims tips from any of them, that claim is now contradicted —
+        # by "there is a tip here" (so nothing is on the head from this well) as
+        # much as by "this is a bare hole" (so nothing is coming back to it).
+        # Dropping the mount is what makes this endpoint the recovery path for a
+        # head the gateway has lost track of.
+        released = self._forget_mounts_from(slot, wells=resolved)
         self.tips.set_statuses(slot, resolved, status)
         self._emit_tip_event(
             "tips_marked",
             slot,
             status=status,
             wells=resolved,
+            released_mounts=released or None,
             columns=list(columns) if columns else None,
             available_before=None if before is None else before.get("available"),
             empty_before=None if before is None else before.get("empty"),

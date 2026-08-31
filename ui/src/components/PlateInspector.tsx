@@ -56,6 +56,10 @@ const WELL_FILL: Record<WellKind, string> = {
   touched: "fill-amber-300 stroke-amber-600 dark:fill-amber-700 dark:stroke-amber-400",
   // An empty well is a hole: no fill, dashed edge.
   empty: "fill-transparent stroke-slate-400 dark:stroke-slate-500",
+  // Also a hole — but one whose tip is on a head and may come back. Hollow
+  // like `empty` so presence reads correctly at a glance, in the ring colour
+  // that marks a mounted tip everywhere else in this panel.
+  mounted: "fill-transparent stroke-violet-500 dark:stroke-violet-400",
   sample: "fill-sky-300 stroke-sky-600 dark:fill-sky-800 dark:stroke-sky-400",
   vacant: "fill-slate-100 stroke-slate-300 dark:fill-slate-800 dark:stroke-slate-600",
   unknown: "fill-slate-200 stroke-slate-300 dark:fill-slate-700 dark:stroke-slate-600",
@@ -77,6 +81,7 @@ const ELEVATION_FILL = {
 const KIND_LABEL: Record<WellKind, string> = {
   fresh: "fresh",
   touched: "used",
+  mounted: "on a pipette",
   empty: "empty",
   sample: "sample",
   vacant: "empty",
@@ -85,7 +90,7 @@ const KIND_LABEL: Record<WellKind, string> = {
 
 /** Legend swatch — a div, so it matches the SVG fills without duplicating them. */
 function Swatch({ kind }: { kind: WellKind }) {
-  const dashed = kind === "empty";
+  const dashed = kind === "empty" || kind === "mounted";
   return (
     <span
       className={[
@@ -97,6 +102,8 @@ function Swatch({ kind }: { kind: WellKind }) {
             ? "border-amber-600 bg-amber-300 dark:border-amber-400 dark:bg-amber-700"
             : kind === "empty"
               ? "border-slate-400 bg-transparent dark:border-slate-500"
+              : kind === "mounted"
+                ? "border-violet-500 bg-transparent dark:border-violet-400"
               : kind === "vacant"
                 ? "border-slate-300 bg-slate-100 dark:border-slate-600 dark:bg-slate-800"
                 : "border-slate-300 bg-slate-200 dark:border-slate-600 dark:bg-slate-700",
@@ -111,6 +118,7 @@ const ROW_LETTERS = "ABCDEFGHIJKLMNOP";
 function wellTitle(cell: WellCell, contents: "tiprack" | "plate"): string {
   const parts = [cell.well];
   if (cell.kind === "touched") parts.push(`tip touched ${cell.detail ?? "a sample"}`);
+  else if (cell.kind === "mounted") parts.push("tip is on a pipette");
   else if (cell.kind === "sample") parts.push(cell.detail ? `sample ${cell.detail}` : "sample");
   else parts.push(contents === "tiprack" ? `tip ${KIND_LABEL[cell.kind]}` : KIND_LABEL[cell.kind]);
   if (cell.volumeUl != null) parts.push(`${cell.volumeUl} µL`);
@@ -212,7 +220,7 @@ function PlanView({
                 height={ry * 2}
                 className={WELL_FILL[cell.kind]}
                 strokeWidth={0.4}
-                strokeDasharray={cell.kind === "empty" ? "1 1" : undefined}
+                strokeDasharray={cell.kind === "empty" || cell.kind === "mounted" ? "1 1" : undefined}
               />
             ) : (
               <ellipse
@@ -222,7 +230,7 @@ function PlanView({
                 ry={ry}
                 className={WELL_FILL[cell.kind]}
                 strokeWidth={0.4}
-                strokeDasharray={cell.kind === "empty" ? "1 1" : undefined}
+                strokeDasharray={cell.kind === "empty" || cell.kind === "mounted" ? "1 1" : undefined}
               />
             )}
             {cell.mounted && (
@@ -231,7 +239,7 @@ function PlanView({
                 cy={cy}
                 rx={rx + 1}
                 ry={ry + 1}
-                className="fill-none stroke-emerald-500 dark:stroke-emerald-400"
+                className="fill-none stroke-violet-500 dark:stroke-violet-400"
                 strokeWidth={0.6}
               />
             )}
@@ -299,6 +307,10 @@ function ElevationView({
       ).length;
       const untracked = cells.length > 0 && cells.every((w) => w.kind === "unknown");
       const anyTouched = cells.some((w) => w.kind === "touched");
+      // A hole whose tip is on a head is still a hole (it is not in `present`),
+      // but calling it "empty" would send an operator looking for a tip that is
+      // on the robot, not in the bin.
+      const upCount = cells.filter((w) => w.kind === "mounted").length;
       const fraction = untracked ? 1 : present / total;
       const fill = untracked
         ? ELEVATION_FILL.unknown
@@ -308,7 +320,10 @@ function ElevationView({
       label = untracked
         ? `Column ${index + 1} — not tracked`
         : `Column ${index + 1} — ${present}/${total} tips` +
-          (total - present > 0 ? ` (${total - present} empty)` : "") +
+          (total - present - upCount > 0
+            ? ` (${total - present - upCount} empty)`
+            : "") +
+          (upCount > 0 ? ` (${upCount} on a pipette)` : "") +
           (anyTouched ? ", incl. used" : "");
       if (fraction > 0) {
         const tCut = 1 - fraction;
@@ -484,7 +499,7 @@ export function PlateInspector({ slot, view, tipRacks, mountedTips }: PlateInspe
   const legendKinds = (
     model.tracked
       ? model.contents === "tiprack"
-        ? (["fresh", "touched", "empty"] as WellKind[])
+        ? (["fresh", "touched", "mounted", "empty"] as WellKind[])
         : (["sample", "vacant"] as WellKind[])
       : (["unknown"] as WellKind[])
   ).filter((k) => (model.counts[k] ?? 0) > 0 || k === "unknown");
@@ -538,10 +553,13 @@ export function PlateInspector({ slot, view, tipRacks, mountedTips }: PlateInspe
             )}
           </span>
         ))}
-        {model.cells.some((c) => c.mounted) && (
+        {/* Only when a mount is known but the rack has not been marked — an
+            older gateway, or a tip whose origin the tracker never saw. The
+            `mounted` kind above already carries the normal case. */}
+        {model.cells.some((c) => c.mounted && c.kind !== "mounted") && (
           <span className="flex items-center gap-1">
             <span
-              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full border-2 border-emerald-500 dark:border-emerald-400"
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full border-2 border-violet-500 dark:border-violet-400"
               aria-hidden
             />
             on a pipette

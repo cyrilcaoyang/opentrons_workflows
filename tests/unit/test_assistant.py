@@ -24,7 +24,7 @@ from opentrons_server.gateway.assistant import (
     AssistantDisabled,
     _tool_schemas,
 )
-from opentrons_server.gateway.plans import PlanStore
+from opentrons_server.gateway.plans import PLAN_ACTIONS, PlanStore
 from opentrons_server.gateway.service import OT2Service
 
 CLAIM = {"owner": "ada@lab", "session_id": "s1", "ttl_s": 30.0}
@@ -172,6 +172,41 @@ def test_no_tool_can_move_the_robot():
         "home",
     ):
         assert forbidden not in names
+
+
+def test_bookkeeping_corrections_are_proposable():
+    """The assistant refused `tips.mark` in the field as "operator-only" — it is
+    not, and never was. It is in the catalog, in `allowed_actions`, and in the
+    tool the model reads. The refusal came from prose (the prompt's operator-only
+    list, and this request model's own docstring, which the model sees as the
+    action's schema description), so both now say plainly that proposing a
+    correction is not the same as asserting it: approving the draft is.
+
+    This matters because a drifted tracker is exactly when the assistant is most
+    useful, and describing the fix in prose leaves an operator to do by hand what
+    the panel could have handed them as one reviewable step."""
+
+    catalog = {a["action"] for a in Assistant._actions()["actions"]}
+    for correction in ("tips.mark", "tips.reset", "plate.load", "well.update", "deck.declare"):
+        assert correction in catalog
+
+    # ...and the model is not told anything that reads as a prohibition on them.
+    assert "tips.mark" in assistant_mod._SYSTEM_PROMPT
+    schema = json.dumps(
+        PLAN_ACTIONS["tips.mark"].model.model_json_schema()
+    )
+    assert "operator asserting" not in schema
+
+
+def test_the_operator_only_list_is_exactly_the_unplannable_actions():
+    """The prompt names five actions as operator-only. If one of them ever
+    becomes plannable, or the prompt grows a sixth, they have drifted apart and
+    the model is being told something false about its own catalog."""
+
+    named = {"startup", "shutdown", "pause", "resume", "reconcile"}
+    assert named.isdisjoint(PLAN_ACTIONS)
+    for action in named:
+        assert f"`{action}`" in assistant_mod._SYSTEM_PROMPT
 
 
 def test_proposing_creates_a_draft_the_operator_must_approve(monkeypatch):
