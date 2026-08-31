@@ -960,17 +960,45 @@ class OT2Service:
             if high > 0:
                 self._pipette_volumes[str(nickname)] = (low, high)
 
+    def _probed_volume_limits(self, pipette: str) -> Optional[tuple[float, float]]:
+        """``(min_ul, max_ul)`` for a **mount-addressed** pipette, from the probe.
+
+        The declared-deck flow has no recipe, so ``_bind_pipette_volumes`` binds
+        nothing and pipettes are addressed by mount (``"left"`` / ``"right"``).
+        The robot's own ``GET /instruments`` knows the limits regardless, which
+        is what makes the guard reachable without a ``/control/setup``.
+        """
+
+        mount = str(pipette).strip().lower()
+        for inst in self._last_probe.get("instruments", []) or []:
+            if str(inst.get("mount", "")).strip().lower() != mount:
+                continue
+            try:
+                low = float(inst.get("min_volume") or 0.0)
+                high = float(inst.get("max_volume"))
+            except (TypeError, ValueError):
+                return None
+            return (low, high) if high > 0 else None
+        return None
+
     def _volume_limits_for(self, pipette: str) -> Optional[tuple[float, float]]:
         """``(min_ul, max_ul)`` for a pipette nickname, or None if unknown.
 
         Re-binds on a miss for the same reason :meth:`_channels_for` does: the
         instrument probe may have landed after setup (boot order, a reconnect).
+        Then falls back to the mount-addressed probe read — without which the
+        volume guard could never engage on a **declared-deck** robot, since
+        there is no recipe to bind from. ``_channels_for`` has always had that
+        fallback; this one was missing it, so on the deployment that actually
+        uses declared decks the guard was dead on arrival.
         """
 
         limits = self._pipette_volumes.get(pipette)
         if limits is None and self._last_probe:
             self._bind_pipette_volumes()
             limits = self._pipette_volumes.get(pipette)
+        if limits is None:
+            limits = self._probed_volume_limits(pipette)
         return limits
 
     def _channels_for(self, pipette: str) -> int:
@@ -2141,10 +2169,23 @@ class OT2Service:
         # are unknown must be diagnosable — and an agent should be able to size
         # a transfer before proposing it, rather than learn the limit from a
         # refusal.
-        details["pipette_volumes"] = {
+        # The *effective* limits, not just the recipe-bound half: a declared-deck
+        # robot binds nothing and addresses pipettes by mount, so publishing only
+        # the recipe map reported "unbound" while the guard was in fact live off
+        # the probe. Reporting less than is enforced is the same class of lie as
+        # reporting more.
+        volumes: Dict[str, Any] = {
             pip: {"min_ul": lo, "max_ul": hi}
             for pip, (lo, hi) in self._pipette_volumes.items()
         }
+        for inst in self._last_probe.get("instruments") or []:
+            mount = str(inst.get("mount") or "").strip().lower()
+            if not mount or mount in volumes:
+                continue
+            probed = self._probed_volume_limits(mount)
+            if probed is not None:
+                volumes[mount] = {"min_ul": probed[0], "max_ul": probed[1]}
+        details["pipette_volumes"] = volumes
         if self._last_probe:
             details["robot"] = self._last_probe
         claimed_by = self.claims.current()

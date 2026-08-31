@@ -189,3 +189,55 @@ def test_status_publishes_the_live_envelope(service):
     service.setup_protocol(RECIPE)
     volumes = service.get_status().details["pipette_volumes"]
     assert volumes["p300"] == {"min_ul": 20.0, "max_ul": 300.0}
+
+
+# ---------------------------------------------------------------------------
+# The declared-deck flow: no recipe, pipettes addressed by mount
+# ---------------------------------------------------------------------------
+
+
+def _probe(svc) -> None:
+    """Stand in for the robot's GET /instruments, as probe_robot caches it."""
+
+    svc._last_probe = {
+        "reachable": True,
+        "instruments": [
+            {"mount": "left", "name": "p300_single_gen2", "channels": 1,
+             "min_volume": 20.0, "max_volume": 300.0},
+            {"mount": "right", "name": "p20_multi_gen2", "channels": 8,
+             "min_volume": 1.0, "max_volume": 20.0},
+        ],
+    }
+
+
+def test_volume_guard_works_without_a_setup(service):
+    """A declared-deck robot has no recipe to bind from, so the guard has to
+    reach the probe or it never engages at all.
+
+    This is how ot2_complexation actually runs — `_channels_for` had the
+    mount-addressed fallback from the start and `_volume_limits_for` did not, so
+    the guard shipped dead on the one deployment that needed it.
+    """
+
+    _probe(service)
+    assert service.session_recipe["instruments"] == []   # no setup has run
+
+    assert service._volume_limits_for("left") == (20.0, 300.0)
+    assert service._volume_limits_for("right") == (1.0, 20.0)
+
+    with pytest.raises(OutOfEnvelope) as exc:
+        check_volume("right", 50.0, service._volume_limits_for("right"))
+    assert exc.value.body["max_ul"] == 20.0
+
+    # An unknown mount is still unknown — it does not borrow another head's.
+    assert service._volume_limits_for("p300") is None
+
+
+def test_status_publishes_mount_addressed_limits(service):
+    """Reporting less than is enforced is the same class of lie as reporting
+    more: the preflight read "unbound" while the guard was live off the probe."""
+
+    _probe(service)
+    volumes = service.get_status().details["pipette_volumes"]
+    assert volumes["left"] == {"min_ul": 20.0, "max_ul": 300.0}
+    assert volumes["right"] == {"min_ul": 1.0, "max_ul": 20.0}
