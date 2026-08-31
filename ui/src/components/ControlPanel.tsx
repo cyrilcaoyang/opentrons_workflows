@@ -77,13 +77,58 @@ function PlayGlyph() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/**
+ * One card in the panel.
+ *
+ * `collapsible` opts a section into a click-to-fold header. Only the long ones
+ * take it: this column is a single scroll, and a rack grid or a slot's plate
+ * view pushes everything below it off-screen even when the operator is done
+ * with it. Fold state is component-local and defaults to open — a section that
+ * hid itself on load would be a section nobody finds, and the poll cycle must
+ * never reopen what someone just closed (which local state gives us, since the
+ * card is not remounted by a status refresh).
+ */
+function Section({
+  title,
+  children,
+  collapsible = false,
+  defaultOpen = true,
+}: {
+  title: string;
+  children: React.ReactNode;
+  collapsible?: boolean;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const heading = "text-[11px] font-semibold uppercase tracking-wider text-ink-subtle dark:text-slate-400";
+
   return (
     <section className="rounded-xl border border-slate-200 bg-surface-raised p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-subtle dark:text-slate-400">
-        {title}
-      </h3>
-      {children}
+      {collapsible ? (
+        <h3 className={open ? `mb-2 ${heading}` : heading}>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            className="flex w-full items-center gap-1.5 text-left hover:text-ink dark:hover:text-slate-200"
+          >
+            <svg
+              viewBox="0 0 8 8"
+              className={[
+                "h-2 w-2 shrink-0 fill-current transition-transform",
+                open ? "rotate-90" : "",
+              ].join(" ")}
+              aria-hidden
+            >
+              <path d="M2 0 L7 4 L2 8 Z" />
+            </svg>
+            {title}
+          </button>
+        </h3>
+      ) : (
+        <h3 className={`mb-2 ${heading}`}>{title}</h3>
+      )}
+      {(!collapsible || open) && children}
     </section>
   );
 }
@@ -917,11 +962,125 @@ export function ControlPanel({
             </TileButton>
           </div>
 
+          {/* Directly under the control strip it belongs to: the strip acts on
+              the robot, and the answers to "did that work" — control state,
+              protocol state, what is on the heads — are right here rather than
+              below a slot card that answers a different question. */}
+          <Section title="Robot" collapsible>
+            <div className="flex flex-col gap-1">
+              <KV k="Robot" v={robot?.robot_name ?? "—"} mono />
+              <KV k="API version" v={robot?.api_version ?? "—"} mono />
+              <KV
+                k="Run active"
+                v={robot?.run_active == null ? "—" : robot.run_active ? "yes" : "no"}
+              />
+              <div className="mt-1 flex items-center gap-3">
+                {/* Show the transport actually in use, not a protocol name. The
+                    old pill read "SSH connected" on a gateway running
+                    OT2_TRANSPORT=http, where no SSH socket exists — it was
+                    reporting that a control object had been constructed. Reads
+                    `control` (ssh | http | dry_run | disconnected) and takes
+                    `connected` from the device rather than string-matching a
+                    state value, so it stays right as states are added. Falls
+                    back to the legacy `ssh` key for a gateway too old to
+                    publish `control`. */}
+                <span
+                  className="flex items-center gap-1.5 text-xs text-ink-subtle dark:text-slate-400"
+                  title={control?.message ?? ssh?.message ?? undefined}
+                >
+                  <Dot ok={(control ?? ssh)?.connected === true} /> Control{" "}
+                  <span className="font-mono">{(control ?? ssh)?.state ?? "—"}</span>
+                </span>
+                <span className="flex items-center gap-1.5 text-xs text-ink-subtle dark:text-slate-400">
+                  <Dot ok={protocol?.state === "connected" || protocol?.state === "ready"} />{" "}
+                  Protocol <span className="font-mono">{protocol?.state ?? "—"}</span>
+                </span>
+              </div>
+
+              {/* What is attached, and what is on it. Both used to be their own
+                  cards, which put three questions about one machine in three
+                  places and pushed the answer to "is a tip up right now" below
+                  the fold. Reads top-down: what the robot is, what is mounted
+                  on it, what those heads are holding. */}
+              <div className="mt-2 border-t border-slate-100 pt-2 dark:border-slate-800">
+                <p className="mb-1 text-[10px] uppercase tracking-wider text-ink-subtle dark:text-slate-500">
+                  Pipettes
+                </p>
+                <KV k="Left mount" v={pipetteLabel(pipLeft?.state)} />
+                <KV k="Right mount" v={pipetteLabel(pipRight?.state)} />
+              </div>
+
+              <div className="mt-2 border-t border-slate-100 pt-2 dark:border-slate-800">
+                <p className="mb-1 text-[10px] uppercase tracking-wider text-ink-subtle dark:text-slate-500">
+                  Mounted tips
+                </p>
+                {mountedTips.length === 0 ? (
+                  <p className="text-xs text-ink-subtle dark:text-slate-500">No tip currently mounted.</p>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {mountedTips.map((t) => (
+                      <li key={t.pipette} className="text-xs text-ink dark:text-slate-200">
+                        <span className="font-semibold">{t.pipette}</span>:{" "}
+                        <span className="font-mono">
+                          {t.rack ? `${t.rack} ${t.well ?? ""}`.trim() : "unknown origin"}
+                        </span>
+                        {t.channels != null && t.channels > 1 && (
+                          <span className="text-ink-subtle dark:text-slate-400">
+                            {" "}
+                            · {t.channels} tips
+                          </span>
+                        )}
+                        {/* The question asked before re-seating a tip in a rack:
+                            has it been in liquid, or is it still clean? */}
+                        {t.contacted_liquid != null && (
+                          <span
+                            className={
+                              t.contacted_liquid
+                                ? "text-amber-600 dark:text-amber-400"
+                                : "text-emerald-600 dark:text-emerald-400"
+                            }
+                          >
+                            {" "}
+                            · {t.contacted_liquid ? "used" : "clean"}
+                          </span>
+                        )}
+                        {t.last_sample && (
+                          <span className="text-ink-subtle dark:text-slate-400">
+                            {" "}
+                            · last sample <span className="font-mono">{t.last_sample}</span>
+                          </span>
+                        )}
+                        {t.picked_at && (
+                          <span className="text-ink-subtle dark:text-slate-400">
+                            {" "}
+                            · since {t.picked_at.slice(11, 19)}Z
+                          </span>
+                        )}
+                        {/* A pick or drop whose outcome was never confirmed. The
+                            gateway assumes the tip is up; an operator should look. */}
+                        {t.uncertain && (
+                          <span className="text-rose-600 dark:text-rose-400">
+                            {" "}
+                            · unconfirmed — check the head
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </Section>
+
+
           {/* Slot metadata and the plate view are one thing: both answer "what
               is on the slot I clicked". They used to sit in opposite columns,
               so reading a mismatch meant looking left for the declared-vs-
               observed line and right for the wells it applied to. */}
-          <Section title={selectedSlot != null ? `Slot ${selectedSlot}` : "Selected slot"}>
+          <Section
+            title={selectedSlot != null ? `Slot ${selectedSlot}` : "Selected slot"}
+            collapsible
+          >
             {selectedView && selectedSlot != null && (
               <div className="mb-3 flex flex-col gap-1">
                 <KV k="State" v={selectedView.state} />
@@ -959,46 +1118,6 @@ export function ControlPanel({
                 tipRacks={tipRacks}
                 mountedTips={mountedTips}
               />
-            </div>
-          </Section>
-
-          <Section title="Robot">
-            <div className="flex flex-col gap-1">
-              <KV k="Robot" v={robot?.robot_name ?? "—"} mono />
-              <KV k="API version" v={robot?.api_version ?? "—"} mono />
-              <KV
-                k="Run active"
-                v={robot?.run_active == null ? "—" : robot.run_active ? "yes" : "no"}
-              />
-              <div className="mt-1 flex items-center gap-3">
-                {/* Show the transport actually in use, not a protocol name. The
-                    old pill read "SSH connected" on a gateway running
-                    OT2_TRANSPORT=http, where no SSH socket exists — it was
-                    reporting that a control object had been constructed. Reads
-                    `control` (ssh | http | dry_run | disconnected) and takes
-                    `connected` from the device rather than string-matching a
-                    state value, so it stays right as states are added. Falls
-                    back to the legacy `ssh` key for a gateway too old to
-                    publish `control`. */}
-                <span
-                  className="flex items-center gap-1.5 text-xs text-ink-subtle dark:text-slate-400"
-                  title={control?.message ?? ssh?.message ?? undefined}
-                >
-                  <Dot ok={(control ?? ssh)?.connected === true} /> Control{" "}
-                  <span className="font-mono">{(control ?? ssh)?.state ?? "—"}</span>
-                </span>
-                <span className="flex items-center gap-1.5 text-xs text-ink-subtle dark:text-slate-400">
-                  <Dot ok={protocol?.state === "connected" || protocol?.state === "ready"} />{" "}
-                  Protocol <span className="font-mono">{protocol?.state ?? "—"}</span>
-                </span>
-              </div>
-            </div>
-          </Section>
-
-          <Section title="Pipettes">
-            <div className="flex flex-col gap-1">
-              <KV k="Left mount" v={pipetteLabel(pipLeft?.state)} />
-              <KV k="Right mount" v={pipetteLabel(pipRight?.state)} />
             </div>
           </Section>
 
@@ -1050,7 +1169,7 @@ export function ControlPanel({
             )}
           </Section>
 
-          <Section title="Tip racks">
+          <Section title="Tip racks" collapsible>
             {tipRacks.length === 0 ? (
               <p className="text-xs text-ink-subtle dark:text-slate-500">
                 No tracked tip racks — declare one on a deck slot, or run a protocol
@@ -1133,63 +1252,6 @@ export function ControlPanel({
                       hint={controlHint}
                       onMark={(selection, status) => markTips(r.slot, selection, status)}
                     />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Section>
-
-          <Section title="Mounted tips">
-            {mountedTips.length === 0 ? (
-              <p className="text-xs text-ink-subtle dark:text-slate-500">No tip currently mounted.</p>
-            ) : (
-              <ul className="flex flex-col gap-1">
-                {mountedTips.map((t) => (
-                  <li key={t.pipette} className="text-xs text-ink dark:text-slate-200">
-                    <span className="font-semibold">{t.pipette}</span>:{" "}
-                    <span className="font-mono">
-                      {t.rack ? `${t.rack} ${t.well ?? ""}`.trim() : "unknown origin"}
-                    </span>
-                    {t.channels != null && t.channels > 1 && (
-                      <span className="text-ink-subtle dark:text-slate-400">
-                        {" "}
-                        · {t.channels} tips
-                      </span>
-                    )}
-                    {/* The question asked before re-seating a tip in a rack:
-                        has it been in liquid, or is it still clean? */}
-                    {t.contacted_liquid != null && (
-                      <span
-                        className={
-                          t.contacted_liquid
-                            ? "text-amber-600 dark:text-amber-400"
-                            : "text-emerald-600 dark:text-emerald-400"
-                        }
-                      >
-                        {" "}
-                        · {t.contacted_liquid ? "used" : "clean"}
-                      </span>
-                    )}
-                    {t.last_sample && (
-                      <span className="text-ink-subtle dark:text-slate-400">
-                        {" "}
-                        · last sample <span className="font-mono">{t.last_sample}</span>
-                      </span>
-                    )}
-                    {t.picked_at && (
-                      <span className="text-ink-subtle dark:text-slate-400">
-                        {" "}
-                        · since {t.picked_at.slice(11, 19)}Z
-                      </span>
-                    )}
-                    {/* A pick or drop whose outcome was never confirmed. The
-                        gateway assumes the tip is up; an operator should look. */}
-                    {t.uncertain && (
-                      <span className="text-rose-600 dark:text-rose-400">
-                        {" "}
-                        · unconfirmed — check the head
-                      </span>
-                    )}
                   </li>
                 ))}
               </ul>
