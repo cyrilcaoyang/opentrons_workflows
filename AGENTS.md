@@ -79,7 +79,27 @@ lab-skills / dashboard / agents          this repo                        robot
   environment; syncing or installing into it can disturb a live gateway (§4).
 - **Never actuate hardware to check a change.** Everything in `tests/unit/` runs
   against `dry_run=True`, mocks, and `tests/fixtures/status_*.json`. Add a
-  fixture rather than reaching for a robot.
+  fixture rather than reaching for a robot. The one sanctioned exception is
+  `tools/ot2-tip-lifecycle-check.ps1` below — an *operator-run acceptance*
+  check, not a development loop. Reach for it to confirm a shipped change
+  behaves on real hardware, never to find out whether your code works.
+- **Bench tools live in `tools/` (PowerShell, run from the device PC).** They
+  exist because the equivalent inline one-liner keeps failing: bash expands
+  `$vars` before PowerShell sees them, and nested quotes inside `"$( ... )"`
+  break its parser.
+
+  | script | does | needs |
+  |---|---|---|
+  | `ot2-preflight.ps1` | one-screen state of both gateways before a session; flags a tip left on a head and whether the volume guard is actually live | nothing — read-only |
+  | `ot2-tip-lifecycle-check.ps1` | picks one tip and returns it on Complexation, printing the rack at each step; plan-and-stop unless `-Run`; homes before releasing | resolves its own API key; **actuates** |
+  | `ot2-enable-assistant.ps1` | toggles `OT2_ASSISTANT_ENABLED` for one gateway **without destroying the rest of its service env** | elevation (RDP session) |
+
+  Run them by absolute path:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File <path>`. Two traps they
+  encode, worth knowing before writing another: `nssm set AppEnvironmentExtra`
+  **replaces** the whole variable block rather than appending, and `nssm get`
+  writes to stderr even when it succeeds — which is a *terminating* error under
+  `ErrorActionPreference = "Stop"` despite `2>$null`.
 - **Live testing happens on Complexation only**, through the edge-gated panel
   at `http://100.64.254.6/ot2/complexation/ui/`. **Never HTE** (`ot2_hte`,
   :8020) — it runs real campaigns. This applies to any hands-on check: manual
