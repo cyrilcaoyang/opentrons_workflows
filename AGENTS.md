@@ -74,8 +74,8 @@ lab-skills / dashboard / agents          this repo                        robot
   the UI's deck-declare picker. Same class of trap as the Cytation's
   `--extra plr`.
 - **Tests: use `.venv.test`, not `.venv`.**
-  `./.venv.test/Scripts/python.exe -m pytest tests/unit -q` — 400 tests, no
-  hardware, a couple of minutes. `.venv/` is the **running services'**
+  `./.venv.test/Scripts/python.exe -m pytest tests/unit -q` — 532 tests, no
+  hardware, about a minute. `.venv/` is the **running services'**
   environment; syncing or installing into it can disturb a live gateway (§4).
 - **Never actuate hardware to check a change.** Everything in `tests/unit/` runs
   against `dry_run=True`, mocks, and `tests/fixtures/status_*.json`. Add a
@@ -103,8 +103,9 @@ lab-skills / dashboard / agents          this repo                        robot
 - **Live testing happens on Complexation only**, through the edge-gated panel
   at `http://100.64.254.6/ot2/complexation/ui/`. **Never HTE** (`ot2_hte`,
   :8020) — it runs real campaigns. This applies to any hands-on check: manual
-  clicks, `curl` against `/control/*`, bench acceptance. The two gateways share
-  a checkout, so a change is live for both; the *testing* is not.
+  clicks, `curl` against `/control/*`, bench acceptance. The two deploy
+  checkouts track the same branch, so a change reaches both robots; the
+  *testing* does not.
 - **UI:** `cd ui && npm run typecheck` / `npm run build`. The build must be
   committed as `ui_dist/` for the wheel to serve `/ui`.
 - **Fail-fast style.** Do not add defensive code that swallows exceptions and
