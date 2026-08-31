@@ -15,11 +15,15 @@
     * `mounted tips` — a tip left on a head by an earlier run. The gateway now
       records this across restarts, so "none" here is a real answer rather than
       an absence of memory.
-    * `channels` / `volumes` — bound from the robot's own instrument report at
-      /control/setup. Until a setup runs they are UNBOUND, and the script says
-      so explicitly, because the failure is silent: a multi-channel pick is
-      tracked as ONE tip instead of eight, and the live per-pipette volume
-      guard passes everything (only the 0-1000 uL schema bound applies).
+    * `channels` / `volumes` — the two pipette bindings, judged SEPARATELY
+      because they resolve differently. Both come from the robot's instrument
+      report, via a /control/setup recipe or (declared-deck flow) per-call by
+      mount. `volumes` empty means the live per-pipette guard is genuinely
+      inactive and only the 0-1000 uL schema bound applies. `channels` empty
+      with a reachable probe is normal on a declared deck — mount-addressed
+      picks still resolve; only a nickname-addressed pipette with no recipe
+      falls back to 1 tip, which would track an 8-channel pick as one.
+      The script spells out which case it is, because both are silent.
 
     Tip-rack counts are the tracker's memory, not an observation. The gateway
     cannot see a refill, so a count only means something if picks/drops or an
@@ -84,12 +88,37 @@ foreach ($p in $Ports) {
     }
     Write-Output ("  plate    : {0}" -f $plate)
 
-    # Interpretation, not just fields — an unbound pipette is the silent case.
+    # Interpretation, not just fields. The two bindings are independent and must
+    # be judged separately: keying both off `channels` claimed the volume guard
+    # was inactive on a declared-deck robot where it is in fact live off the
+    # probe — the exact over-warning this script exists to prevent.
+    $volBound   = ($d.pipette_volumes.PSObject.Properties.Count -gt 0)
+    $haveProbe  = (@($d.robot.instruments).Count -gt 0)
+
+    if (-not $volBound) {
+        Write-Output "  NOTE     : per-pipette volume guard INACTIVE — only the schema bound"
+        Write-Output "             (0-1000 uL) applies, so an over-volume aspirate reaches the robot."
+        if ($haveProbe) {
+            # The probe knows the limits, so the gateway is the part that cannot
+            # read them: a build older than the mount-addressed fallback.
+            Write-Output "             The robot probe DOES report limits, so this gateway predates"
+            Write-Output "             the probe fallback — pull and restart the service to fix it."
+        } else {
+            Write-Output "             No robot probe to read limits from; resolves when the robot"
+            Write-Output "             is reachable."
+        }
+    }
     if (-not $bound) {
-        Write-Output "  NOTE     : no /control/setup since this gateway started, so pipette"
-        Write-Output "             metadata is unbound. A multi-channel pick would be tracked"
-        Write-Output "             as 1 tip, and the live per-pipette volume guard is inactive"
-        Write-Output "             (schema bound 0-1000 uL still applies). Both bind on setup."
+        if ($haveProbe) {
+            Write-Output "  NOTE     : no /control/setup, so channel counts are resolved per-call"
+            Write-Output "             from the robot probe (declared-deck flow). Mount-addressed"
+            Write-Output "             picks track correctly; a nickname-addressed pipette with no"
+            Write-Output "             recipe would fall back to 1 tip."
+        } else {
+            Write-Output "  NOTE     : channel counts UNKNOWN and no robot probe to fall back on."
+            Write-Output "             A multi-channel pick would be tracked as 1 tip. Do not run"
+            Write-Output "             an 8-channel protocol until this resolves."
+        }
     }
     $onHead = 0
     foreach ($k in $d.tip_racks.PSObject.Properties.Name) { $onHead += [int]$d.tip_racks.$k.on_pipette }
