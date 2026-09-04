@@ -179,3 +179,35 @@ def test_rail_lights_and_max_speed():
         "protocol.max_speeds['Z'] = 100",
         "protocol.max_speeds['Z'] = None",
     ]
+
+
+# ---- well-location defaults ---------------------------------------------
+
+
+def test_location_defaults_to_the_well_top():
+    ctl = RecordingControl()
+
+    ctl.get_location_from_labware("plate", "A1")
+
+    assert ctl.invoked[-1] == "location = plate['A1'].top(0)"
+
+
+def test_location_honors_a_caller_chosen_default_origin():
+    # What an aspirate asks for: the well bottom, 1 mm off the glass.
+    ctl = RecordingControl()
+
+    ctl.get_location_from_labware(
+        "plate", "A1", default_origin="bottom", default_offset=1
+    )
+
+    assert ctl.invoked[-1] == "location = plate['A1'].bottom(1)"
+
+
+def test_explicit_offset_overrides_the_default_origin():
+    ctl = RecordingControl()
+
+    ctl.get_location_from_labware(
+        "plate", "A1", top=-2, default_origin="bottom", default_offset=1
+    )
+
+    assert ctl.invoked[-1] == "location = plate['A1'].top(-2)"

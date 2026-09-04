@@ -239,15 +239,30 @@ class OT2Control:
 
     # ---- locations -------------------------------------------------------------
 
-    def get_location_from_labware(self, labware_nickname: str, position: str, top: float = 0, bottom: float = 0, center: float = 0):
+    def get_location_from_labware(
+        self,
+        labware_nickname: str,
+        position: str,
+        top: float = 0,
+        bottom: float = 0,
+        center: float = 0,
+        default_origin: str = "top",
+        default_offset: float = 0,
+    ):
+        """Stash a well location. ``default_origin`` / ``default_offset`` decide
+        the reference when the caller names none — the *action* owns that
+        choice, not this helper (an aspirate defaults to the well bottom, a
+        move to its top), so both are passed in rather than assumed here."""
         if top:
             append = f".top({top})"
         elif bottom:
             append = f".bottom({bottom})"
         elif center:
             append = ".center()"
+        elif default_origin == "center":
+            append = ".center()"
         else:
-            append = ".top(0)"
+            append = f".{default_origin}({default_offset})"
         self.invoke(f"location = {labware_nickname}['{position}']{append}")
 
     def get_location_absolute(self, x: float, y: float, z: float, reference: str = None):

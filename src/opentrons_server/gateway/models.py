@@ -149,6 +149,11 @@ class ProtocolSetupRequest(StrictRequest):
 class WellLocation(StrictRequest):
     """A well, plus an optional offset from its top or bottom in mm.
 
+    With no offset named, the reference is the one the action means: an
+    aspirate is 1 mm above the well *bottom* (it has to be in the liquid), a
+    dispense is at the well *top*, and a plain move is at the well top. See
+    ``service._ASPIRATE_DEFAULT_BOTTOM_MM``.
+
     The offsets are bounded (see ``limits.MAX_WELL_OFFSET_MM``) because they
     were not, and an unbounded one is how a move ends up hundreds of millimetres
     above a plate — accepted here, refused by the robot mid-motion, with a tip

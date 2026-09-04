@@ -38,7 +38,9 @@ def test_move_to_well_sets_location_then_moves():
     )
     service.move_to(request)
     control.get_location_from_labware.assert_called_once_with(
-        "plate", "A1", top=0, bottom=2, center=0
+        # A move keeps the well top when the caller names no offset, unlike an
+        # aspirate — hence the explicit default here.
+        "plate", "A1", top=0, bottom=2, center=0, default_origin="top", default_offset=0
     )
     control.move_to_pip.assert_called_once_with(
         "p300", speed=None, force_direct=None, minimum_z_height=None

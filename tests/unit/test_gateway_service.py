@@ -1052,3 +1052,61 @@ def test_every_last_error_code_in_the_source_is_in_the_taxonomy():
             f"got {ast.dump(first)}"
         )
         assert first.value in ERROR_CODES, f"{first.value!r} is not in ERROR_CODES"
+
+
+def _liquid_service():
+    """A READY service with a mocked transport, for liquid-handling calls."""
+    service = OT2Service(dry_run=False)
+    control = Mock()
+    control.get_location_from_labware.return_value = None
+    service.control = control
+    service.state = OT2ServiceState.READY
+    return service, control
+
+
+def _unqualified(pipette: str = "p300") -> LiquidMoveRequest:
+    """A move naming a well and no offset — the case the defaults decide."""
+    return LiquidMoveRequest(
+        pipette=pipette,
+        volume_ul=50,
+        location=WellLocation(labware_nickname="plate", position="A1"),
+    )
+
+
+def test_unqualified_aspirate_references_the_well_bottom():
+    # An aspirate at the well top draws air. The default has to be in the
+    # liquid, and off the glass (0 mm occludes the tip).
+    service, control = _liquid_service()
+
+    service.aspirate(_unqualified())
+
+    kwargs = control.get_location_from_labware.call_args.kwargs
+    assert kwargs["default_origin"] == "bottom"
+    assert kwargs["default_offset"] == service_module._ASPIRATE_DEFAULT_BOTTOM_MM
+    assert kwargs["default_offset"] > 0
+
+
+def test_unqualified_dispense_references_the_well_top():
+    service, control = _liquid_service()
+
+    service.dispense(_unqualified())
+
+    kwargs = control.get_location_from_labware.call_args.kwargs
+    assert kwargs["default_origin"] == "top"
+    assert kwargs["default_offset"] == service_module._DISPENSE_DEFAULT_TOP_MM
+
+
+def test_explicit_offset_still_beats_the_action_default():
+    service, control = _liquid_service()
+
+    service.aspirate(
+        LiquidMoveRequest(
+            pipette="p300",
+            volume_ul=50,
+            location=WellLocation(labware_nickname="plate", position="A1", top=-3),
+        )
+    )
+
+    kwargs = control.get_location_from_labware.call_args.kwargs
+    assert kwargs["top"] == -3
+    assert kwargs["bottom"] == 0

@@ -113,6 +113,16 @@ _OT2_SELF_HEAL_INTERVAL = float(os.getenv("OT2_SELF_HEAL_INTERVAL", "60.0"))
 # if a rack geometry needs it.
 _TIP_RESEAT_BOTTOM_MM = float(os.getenv("OT2_TIP_RESEAT_BOTTOM_MM", "10"))
 
+# Where an aspirate / dispense goes when the caller names no offset. An
+# aspirate must be IN the liquid, so it references the well bottom; the old
+# shared default (the well top) put the tip in air above the well and drew
+# nothing. A dispense references the well top, so it never touches the
+# contents of the well it is adding to. The aspirate clearance is not 0: a tip
+# pressed against the well bottom occludes, which is why the Opentrons
+# protocol API defaults to 1 mm as well.
+_ASPIRATE_DEFAULT_BOTTOM_MM = float(os.getenv("OT2_ASPIRATE_BOTTOM_MM", "1"))
+_DISPENSE_DEFAULT_TOP_MM = float(os.getenv("OT2_DISPENSE_TOP_MM", "0"))
+
 # References a drop_tip caller may use for the OT-2 fixed trash. The trash is
 # the *default* drop target and needs no addressing; these route to it rather
 # than being resolved as labware (slot 12 holds no loadable labware — it IS
@@ -1055,13 +1065,29 @@ class OT2Service:
         self._run_action("resume", lambda: self._require_control().resume(), idempotent=True)
         self.state = OT2ServiceState.READY
 
-    def set_location_from_well(self, request: Any) -> None:
+    def set_location_from_well(
+        self,
+        request: Any,
+        *,
+        default_origin: str = "top",
+        default_offset: float = 0,
+    ) -> None:
+        """Stash the request's well as the pending location.
+
+        An explicit ``top`` / ``bottom`` / ``center`` on the request always
+        wins. ``default_origin`` / ``default_offset`` are what the *action*
+        means by an unqualified well, so each caller states its own (see
+        ``_ASPIRATE_DEFAULT_BOTTOM_MM``); a plain move keeps the well top.
+        """
+
         self._require_control().get_location_from_labware(
             self._resolve_session_labware(request.location.labware_nickname),
             request.location.position,
             top=request.location.top or 0,
             bottom=request.location.bottom or 0,
             center=1 if request.location.center else 0,
+            default_origin=default_origin,
+            default_offset=default_offset,
         )
 
     def move_to(self, request: Any) -> None:
@@ -1104,7 +1130,11 @@ class OT2Service:
 
         def _aspirate() -> None:
             pip = self._ensure_session_pipette(request.pipette)
-            self.set_location_from_well(request)
+            self.set_location_from_well(
+                request,
+                default_origin="bottom",
+                default_offset=_ASPIRATE_DEFAULT_BOTTOM_MM,
+            )
             self._require_control().aspirate(pip, request.volume_ul, flow_rate=flow_rate)
 
         self._run_action("aspirate", _aspirate, idempotent=False)
@@ -1123,7 +1153,11 @@ class OT2Service:
 
         def _dispense() -> None:
             pip = self._ensure_session_pipette(request.pipette)
-            self.set_location_from_well(request)
+            self.set_location_from_well(
+                request,
+                default_origin="top",
+                default_offset=_DISPENSE_DEFAULT_TOP_MM,
+            )
             self._require_control().dispense(pip, request.volume_ul, flow_rate=flow_rate)
 
         self._run_action("dispense", _dispense, idempotent=False)

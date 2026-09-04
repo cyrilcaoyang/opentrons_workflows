@@ -642,3 +642,30 @@ def test_unknown_module_raises():
     ctl, _ = _loaded_control()
     with pytest.raises(RuntimeError):
         ctl.hs_latch_open("nope")
+
+
+def test_default_origin_matches_the_ssh_transport():
+    """The caller-chosen default must land identically on both transports:
+    SSH emits ``.bottom(1)``, the run engine an origin + z offset."""
+    ctl, client = _loaded_control()
+
+    ctl.get_location_from_labware(
+        "plate", "A1", default_origin="bottom", default_offset=1
+    )
+    ctl.aspirate("p300", 50)
+
+    ctype, params = _last(client)
+    assert ctype == "aspirate"
+    assert params["wellLocation"] == {"origin": "bottom", "offset": {"x": 0, "y": 0, "z": 1.0}}
+
+
+def test_unqualified_location_still_defaults_to_the_well_top():
+    ctl, client = _loaded_control()
+
+    ctl.get_location_from_labware("plate", "A1")
+    ctl.dispense("p300", 50)
+
+    assert _last(client)[1]["wellLocation"] == {
+        "origin": "top",
+        "offset": {"x": 0, "y": 0, "z": 0.0},
+    }

@@ -396,17 +396,22 @@ class OT2HttpControl:
         top: float = 0,
         bottom: float = 0,
         center: float = 0,
+        default_origin: str = "top",
+        default_offset: float = 0,
     ) -> None:
         """Stash the pending well location, mirroring OT2Control's precedence
-        (top, then bottom, then center, else the well top)."""
+        (top, then bottom, then center, else ``default_origin`` at
+        ``default_offset`` — which the calling action chooses)."""
         if top:
             origin, z = "top", top
         elif bottom:
             origin, z = "bottom", bottom
         elif center:
             origin, z = "center", 0.0
+        elif default_origin == "center":
+            origin, z = "center", 0.0
         else:
-            origin, z = "top", 0.0
+            origin, z = default_origin, float(default_offset)
         self._pending = {
             "kind": "well",
             "labware_id": self._labware_id(labware_nickname),
