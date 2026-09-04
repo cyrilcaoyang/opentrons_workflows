@@ -94,6 +94,7 @@ lab-skills / dashboard / agents          this repo                        robot
   | `ot2-tip-lifecycle-check.ps1` | picks one tip and returns it on Complexation, printing the rack at each step; plan-and-stop unless `-Run`; homes before releasing | resolves its own API key; **actuates** |
   | `ot2-enable-assistant.ps1` | toggles `OT2_ASSISTANT_ENABLED` for one gateway **without destroying the rest of its service env** | elevation (RDP session) |
   | `ot2-forget-stale-racks.ps1` | retires tracked tip racks whose slot the deck says holds no rack (a moved rack leaves one, and auto-pick will still send the head there); marks them empty, releasing any mount they explain; plan-and-stop unless `-Run` | resolves its own API key; metadata only, **no motion** — so unlike the tip check it does not refuse HTE |
+  | `ot2-set-robot-url.ps1` | repoints one gateway at its robot (`OT2_HTTP_BASE_URL`, optionally `OT2_HOST_ALIAS`) preserving the other 13 env vars, then re-probes and reports whether the robot actually answered — a stale address hides behind a live session and only surfaces on the next restart; plan-and-stop unless `-Run` | `-Run` needs elevation (RDP session); the dry run does not |
 
   Run them by absolute path:
   `powershell -NoProfile -ExecutionPolicy Bypass -File <path>`. Two traps they
