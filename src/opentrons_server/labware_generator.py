@@ -19,8 +19,10 @@ class LabwareGenerator:
         template (Dict): The base template for the labware definition.
         design (Dict): The user-provided dictionary describing the labware.
     """
+    # x/y are one OT-2 deck slot's bounding box, per opentrons_shared_data
+    # data/deck/definitions/5/ot2_standard.json (identical for all 12 slots).
     MAX_DIMENSIONS = {
-        "x": 127, "y": 85.5, "z": 200
+        "x": 128.0, "y": 86.0, "z": 200
     }
 
     def __init__(
