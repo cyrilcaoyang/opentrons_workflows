@@ -128,7 +128,10 @@ export interface BuildWellModelArgs {
   samples: WellSample[] | null;
   /** Live mounted tips, used to ring the wells whose tips are on a head. */
   mountedTips?: MountedTip[];
-  /** This slot's nickname, for matching mounted tips to this rack. */
+  /** This slot's deck slot key — the join key for a mounted tip's `rack`. */
+  slot?: string | number | null;
+  /** This slot's nickname, accepted as a secondary match for a mount recorded
+   *  by a setup recipe rather than by slot. */
   nickname?: string | null;
 }
 
@@ -145,6 +148,7 @@ export function buildWellModel({
   tipRack,
   samples,
   mountedTips = [],
+  slot,
   nickname,
 }: BuildWellModelArgs): PlateWellModel {
   const order = wellOrder(geometry, rows, columns);
@@ -153,9 +157,21 @@ export function buildWellModel({
 
   // Wells whose tips are on a pipette right now. `wells` is the covered span
   // (a whole column for a multi-channel head); older gateways send only `well`.
+  //
+  // Matched by SLOT, because a mount's `rack` is the tip store's slot key and a
+  // declared deck has no nickname at all — matching on nickname alone left the
+  // comparison against `null`, which drew every mounted tip on every slot (so
+  // one stale 8-tip mount showed A5-H5 "on a head" on every rack and plate).
+  // A slot we cannot identify gets no rings: the mounted-tip panel still
+  // reports the mount, and inventing an owner is what caused the bug.
+  const owners = new Set(
+    [slot == null ? null : String(slot), nickname].filter(
+      (id): id is string => id != null && id !== "",
+    ),
+  );
   const mountedWells = new Set<string>();
   for (const tip of mountedTips) {
-    if (nickname != null && tip.rack != null && tip.rack !== nickname) continue;
+    if (tip.rack == null || !owners.has(tip.rack)) continue;
     for (const well of tip.wells ?? (tip.well ? [tip.well] : [])) mountedWells.add(well);
   }
 

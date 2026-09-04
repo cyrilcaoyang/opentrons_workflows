@@ -493,6 +493,7 @@ export function PlateInspector({ slot, view, tipRacks, mountedTips }: PlateInspe
     tipRack,
     samples: view.wells ?? null,
     mountedTips,
+    slot,
     nickname,
   });
 
