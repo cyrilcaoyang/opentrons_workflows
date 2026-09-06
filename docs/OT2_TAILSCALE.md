@@ -144,6 +144,22 @@ path. If you came in over Tailscale SSH, expect the session to drop at
 `pkill` and reconnect ~10 s later; the boot unit is not involved, but running
 the script by hand is exactly what it would do.
 
+## Per-robot `up` flags
+
+The `tailscale up` line is not identical on every robot, and `up` refuses to
+run if you drop a flag that is already in the saved prefs (it asks for
+`--reset`). Keep each robot's line when rewriting the script:
+
+| robot | `up` flags |
+|---|---|
+| HTE, Flex | `--ssh` |
+| Complexation | `--ssh --advertise-tags=tag:sdl2-devices,tag:tailscale-ssh --accept-dns=false --hostname=sdl2-ot2-training` |
+
+`--accept-dns=false` is worth adopting everywhere at the next touch: in
+userspace-networking mode the robot gains nothing from MagicDNS and it keeps
+Tailscale out of `resolv.conf`. `--hostname` is why the tailnet shows
+`sdl2-ot2-training` while the registry calls it `sdl2-ot2-complexation`.
+
 ## Traps
 
 - **The OT-2's Wi-Fi chip wedges, and it is a driver fault, not the campus
@@ -201,10 +217,17 @@ the script by hand is exactly what it would do.
   persist.
 - **Tailscale SSH is gated by the tailnet ACL, not by `--ssh`.** `RunSSH:
   true` on the node is necessary but the admin console must also tag the
-  machine (`tag:tailscale-SSH` in the original notes) or the connection is
-  refused with `tailnet policy does not permit you to SSH to this node` —
-  which is what `ssh ot2_tailscale` returns for HTE as of 2026-09-06. Plain
-  `sshd` on port 22 over the tailnet address is unaffected.
+  machine (`tag:tailscale-ssh`) or the connection is refused with `tailnet
+  policy does not permit you to SSH to this node`. All three robots were
+  tagged 2026-09-06 — and the refusal persisted from the Cytation PC, whose
+  daemon log line reads `failed to evaluate policy, result: rejected`. The
+  **source** matters too: the Cytation PC is itself a tagged device
+  (`sdl2-pc-03-cytation`, `tag:sdl2-devices`), and an `ssh` ACL rule whose
+  `src` is `autogroup:member` admits users, not tagged machines. To SSH
+  robot-to-robot or from a device PC, the rule needs that tag in `src`;
+  from a person's laptop it should already work. Key-based `sshd` on port 22
+  over the tailnet address works regardless and is what the `*_tailscale`
+  aliases in `~/.ssh/config` use.
 - No `pkill` and no `timeout` on the OT-2; use `killall`, and run long probes
   under a client-side `timeout` in the `ssh` command. On the Flex, `route` and
   `ip` live in `/sbin`, which a non-login `ssh` command does not have on `PATH`.
@@ -220,7 +243,7 @@ the script by hand is exactly what it would do.
 |---|---|---|
 | `ot2_hte` (`ot2cytation`) | `ssh ot2_local` → `root@192.168.254.50`, lab switch | key `~/.ssh/ot2_ssh_key` (passphrase-protected; load it into `ssh-agent` first) |
 | Flex (`sdl2-otflex-01`) | `ssh otflex_local` → `root@192.168.254.81`, lab switch | same key |
-| `ot2_complexation` (`ot2training`) | `root@169.254.40.81`, the USB-B link **on the UPLC PC only** | not reachable from the Cytation PC; the bridge forwards port 31950 only. Either work from the UPLC PC, or wait for the robot's Wi-Fi to come back after a reboot and use `ssh ot2_sim_tailscale` (100.64.254.91) while it lasts. |
+| `ot2_complexation` (`ot2training`) | `ssh -J sdl2@100.64.254.19 root@169.254.40.81` — the USB-B link, jumping through the UPLC PC | the robot key is authorized on the UPLC PC (`administrators_authorized_keys`, 2026-09-06). Direct from the Cytation PC there is no route; the bridge forwards port 31950 only. |
 
 ## Installed versions
 
@@ -228,4 +251,4 @@ the script by hand is exactly what it would do.
 |---|---|---|---|
 | `ot2_hte` | **1.102.3** | 2026-09-06 (was 1.92.5 from 2026-01-15) | symlink layout; boot script has `--timeout`; bogus eth0 gateway removed the same day — online on the tailnet again after 3 weeks |
 | Flex `sdl2-otflex-01` (100.64.254.92) | **1.102.3** arm64 | 2026-09-06 (was 1.84.0 from 2025-06-26, never auto-started: no unit existed) | unit created, bogus eth0 gateway removed; back online after ~200 days offline. Its `opentrons-robot-server` has been stopped since 2026-03-30 — separate issue, untouched |
-| `ot2_complexation` | 1.82.0 (assumed, from the original install notes) | 2025 | not upgraded: no SSH route from the Cytation PC while its Wi-Fi is down; do it from the UPLC PC over `169.254.40.81`, or via `ot2_sim_tailscale` when Wi-Fi is up |
+| `ot2_complexation` `sdl2-ot2-complexation` (100.64.254.91) | **1.102.3** arm | 2026-09-06 (was 1.92.5 from 2026-01-19) | reached via the UPLC PC jump host; Wi-Fi recovered with the `brcmfmac` reload, no reboot. Its `up` line carries extra flags (see *Per-robot `up` flags*) |
