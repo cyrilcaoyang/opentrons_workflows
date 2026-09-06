@@ -174,10 +174,14 @@ lab-skills / dashboard / agents          this repo                        robot
   `ot2training` has no lab Ethernet; its Wi-Fi radio drops on its own after a
   reboot (`wlan0` disconnected, empty scan) and only a hard reboot brings it
   back. Since 2026-09-05 the gateway points at the `netsh` USB bridge
-  `http://100.64.254.19:31951` (DEVICE_BRINGUP.md *Network paths*). A
-  `ConnectionResetError 10054` on a pooled socket plus 2 s connect timeouts on
-  fresh ones means the configured path is dead, whatever `/status` says —
-  `details.robot.reachable` is a cached readback and lags by hours.
+  `http://100.64.254.19:31951` (DEVICE_BRINGUP.md *Network paths*). Since
+  2026-09-06 the gateway watches the path itself: three failed probes (~15 s)
+  flip `/status` to `unknown` with `components.robot: unreachable` and
+  `details.robot.readback_age_s`, robot-touching actions are refused up front,
+  and a robot that rebooted during the outage gets its session rebuilt
+  (README *Robot reachability*). Before that, `ready` and
+  `details.robot.reachable: true` stayed frozen for hours after the robot
+  vanished — do not trust envelopes from older builds on this point.
 - **The SSH REPL breaks on the first `>>>` prompt.** Snapshot reads are sent as
   two separate `invoke`s routed through `compile()`/`exec()` for exactly this
   reason (`service.py` `_REMOTE_SNAPSHOT_*`). Do not "simplify" them into one

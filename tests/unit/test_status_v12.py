@@ -201,6 +201,7 @@ def test_dry_run_reports_its_own_idle_activity():
         "status_deck_occupied.json",
         "status_deck_mismatch.json",
         "status_deck_in_use.json",
+        "status_robot_unreachable.json",
     ],
 )
 def test_fixtures_are_v1_2_shaped(name):

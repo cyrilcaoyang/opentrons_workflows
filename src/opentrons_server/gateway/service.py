@@ -17,7 +17,13 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import paramiko
 import requests
 
-from ..control import OT2Control, OT2HttpControl, RunEngineClient, RunEngineError
+from ..control import (
+    OT2Control,
+    OT2HttpControl,
+    RunEngineClient,
+    RunEngineError,
+    RunEngineHTTPError,
+)
 from ..control import state_readers as _state_readers
 from ..version import __version__ as GATEWAY_VERSION
 from .claims import ClaimManager
@@ -103,6 +109,30 @@ _OT2_RUN_REFRESH_INTERVAL = float(os.getenv("OT2_RUN_REFRESH_INTERVAL", "5.0"))
 # the refresh cadence would keep a struggling robot permanently occupied and
 # bury the real failure in a restart loop.
 _OT2_SELF_HEAL_INTERVAL = float(os.getenv("OT2_SELF_HEAL_INTERVAL", "60.0"))
+
+# Robot reachability monitor. The background refresh probes the robot-server
+# every _OT2_RUN_REFRESH_INTERVAL; this many consecutive failed probes declare
+# the robot unreachable (~15 s at the defaults). Below the threshold a single
+# 2 s timeout on a robot busy loading a protocol is not an outage. Once
+# declared, /status reports `unknown` -- STATUS_SPEC §2.1's rule for a gateway
+# whose own process is fine but cannot reach the hardware; never `error`, which
+# is reserved for a fault the reachable device reported.
+_OT2_UNREACHABLE_AFTER = int(os.getenv("OT2_UNREACHABLE_AFTER", "3"))
+
+# What the gateway still honours while the robot is unreachable: closing its
+# own session, and bookkeeping that touches no hardware. Everything that would
+# talk to the robot is withheld (§6.2 -- the endpoints refuse it the same way).
+_OFFLINE_SAFE_ACTIONS = frozenset(
+    {
+        "shutdown",
+        "plate.load",
+        "plate.unload",
+        "well.update",
+        "tips.reset",
+        "tips.mark",
+        "deck.declare",
+    }
+)
 
 
 # How deep to descend when dropping a tip back INTO a tracked rack well
@@ -325,6 +355,15 @@ class OT2Service:
         # `details.robot.api_version` (with fw/system alongside it).
         self.equipment_version: Optional[str] = GATEWAY_VERSION
         self._last_probe: Dict[str, Any] = {}
+        # Reachability monitor state (see _record_probe). `_robot_last_seen_at`
+        # is the instant of the last probe the robot answered -- published as
+        # `details.robot.last_seen_at` / `readback_age_s` so a reader can tell
+        # a fresh observation from a stale one. `_robot_unreachable_since` is
+        # set once _OT2_UNREACHABLE_AFTER consecutive probes have failed and is
+        # what flips /status to `unknown`; it is the start of the outage span.
+        self._probe_failures = 0
+        self._robot_last_seen_at: Optional[datetime] = None
+        self._robot_unreachable_since: Optional[datetime] = None
         # Cached labware of an active *external* robot-server run (EXTERNAL_CONTROL).
         # None while the gateway owns the REPL (deck then comes from last_snapshot).
         self._last_run_labware: Optional[Dict[str, Any]] = None
@@ -1867,8 +1906,8 @@ class OT2Service:
         """Update cached probe/version from a best-effort HTTP read."""
 
         probe = self.probe_robot()
+        self._record_probe(probe)
         if probe.get("reachable"):
-            self._last_probe = probe
             # The boot note ("Robot unreachable at …") outlives the condition
             # it describes: it is set once at boot and nothing cleared it, so
             # /status went on reporting a robot as unreachable long after it
@@ -1884,6 +1923,158 @@ class OT2Service:
         # an external run, or one that was simply not there yet.
         self._maybe_resume_from_external_control(probe)
         self._maybe_resume_from_unreachable_boot(probe)
+
+    # -- robot reachability monitor -------------------------------------------
+
+    @property
+    def robot_unreachable(self) -> bool:
+        """Has the monitor declared the robot unreachable (threshold reached)?"""
+
+        return self._robot_unreachable_since is not None
+
+    def _record_probe(self, probe: Dict[str, Any]) -> None:
+        """Fold one ``probe_robot()`` result into the reachability monitor.
+
+        Until this existed only a *successful* probe was stored, so
+        ``details.robot.reachable`` froze at ``true`` the moment the robot
+        vanished and ``equipment_status`` stayed ``ready`` -- the gateway's
+        session state machine never learns about a robot that has gone, only a
+        command failing does. Both OT-2s spent 2026-09-05 reading ``ready``
+        with a robot nobody could reach (AGENTS.md §1: never report a state the
+        gateway has not observed).
+
+        Debounced: ``_OT2_UNREACHABLE_AFTER`` consecutive failures declare an
+        outage; the first success ends it. Every probe -- success or failure --
+        is what ``details.robot`` now describes.
+        """
+
+        now = datetime.now(timezone.utc)
+        url = self._probe_base_url() or "unknown host"
+        if probe.get("reachable"):
+            self._probe_failures = 0
+            self._robot_last_seen_at = now
+            self._last_probe = probe
+            if self._robot_unreachable_since is None:
+                return
+            outage_s = (now - self._robot_unreachable_since).total_seconds()
+            self._robot_unreachable_since = None
+            logger.warning("robot reachable again at %s after %.0f s", url, outage_s)
+            self._emit_session_event(
+                "robot_reachable",
+                message=f"Robot reachable again at {url} after {outage_s:.0f} s",
+                url=url,
+                outage_s=round(outage_s),
+            )
+            self._recover_session_after_outage()
+            return
+
+        self._probe_failures += 1
+        if self._robot_unreachable_since is not None:
+            return
+        if self._probe_failures < _OT2_UNREACHABLE_AFTER:
+            return
+        self._robot_unreachable_since = now
+        # Keep the identity the robot last reported (model, pipettes, modules)
+        # so the tile still names the hardware, but say plainly that nobody can
+        # reach it right now.
+        self._last_probe = {**self._last_probe, "reachable": False, "run_active": False}
+        logger.warning(
+            "robot unreachable at %s (%d consecutive probes failed); reporting unknown",
+            url,
+            self._probe_failures,
+        )
+        self._emit_session_event(
+            "robot_unreachable",
+            message=f"Robot unreachable at {url}",
+            url=url,
+            probe_failures=self._probe_failures,
+            last_seen_at=(
+                self._robot_last_seen_at.isoformat(timespec="seconds")
+                if self._robot_last_seen_at
+                else None
+            ),
+        )
+
+    def _session_alive_on_robot(self) -> Optional[bool]:
+        """Does the robot still know the session this gateway holds?
+
+        ``True`` / ``False`` when it can be observed, ``None`` when it cannot
+        (no session, dry run, or the check itself failed to reach the robot).
+
+        * **http** -- the run-engine session *is* a robot-server run. A robot
+          that rebooted during the outage has forgotten it (``GET /runs/{id}``
+          -> 404) or has since opened a newer one (``current: false``); either
+          way every command would now 409 "not the current run".
+        * **ssh** -- paramiko can say whether the socket survived.
+        """
+
+        if self.dry_run or self.control is None:
+            return None
+        if self.transport == "http":
+            client = getattr(self.control, "client", None)
+            if client is None or getattr(client, "run_id", None) is None:
+                return None
+            try:
+                run = client.get_run()
+            except RunEngineHTTPError as exc:
+                return False if exc.status_code in {404, 409} else None
+            except Exception:
+                return None
+            return bool(run.get("current", True))
+        ssh_client = getattr(self.control, "client", None)
+        if hasattr(ssh_client, "is_alive"):
+            try:
+                return bool(ssh_client.is_alive())
+            except Exception:
+                return None
+        return None
+
+    def _drop_dead_session(self, reason: str) -> None:
+        """Forget a session the robot no longer has, so the self-heal can rebuild it.
+
+        Deliberately does not call ``control.shutdown()``: that would try to
+        stop a run the robot has already forgotten and fail on the way out.
+        ``_operator_shutdown`` is left alone -- this is the *robot's* doing, and
+        the operator wanted a session -- so ``_maybe_resume_from_unreachable_boot``
+        re-initialises on the next refresh tick, with its usual guards.
+        """
+
+        previous = self.state
+        self.control = None
+        self._session_labware = {}
+        self._session_pipettes = {}
+        self._session_modules = {}
+        self.state = OT2ServiceState.REQUIRES_INIT
+        self._status_note = f"{reason}; re-initialising the session"
+        logger.warning("session dropped: %s", self._status_note)
+        self._emit_session_event(
+            "session_lost", from_state=previous.value, to_state=self.state.value, message=reason
+        )
+        self._sync_activity()
+
+    def _recover_session_after_outage(self) -> None:
+        """The robot answers again: is the session we held across the outage real?
+
+        If the robot merely lost its network the run is still there and nothing
+        needs doing. If it rebooted, the session is gone and the next command
+        would 409 -- previously latching ``error`` until an operator clicked
+        shutdown then startup (ROADMAP: "self-heal the stale-run 409").
+        """
+
+        if self.state == OT2ServiceState.BUSY:
+            return  # the in-flight command reports its own outcome
+        if self._session_alive_on_robot() is False:
+            self._drop_dead_session("Robot restarted while unreachable")
+
+    def _is_stale_run_error(self, exc: BaseException) -> bool:
+        """A 409 "not the current run" means the robot-server run this session
+        rides is gone (robot rebooted, or another client opened a run)."""
+
+        return (
+            isinstance(exc, RunEngineHTTPError)
+            and exc.status_code == 409
+            and "not the current run" in str(exc.detail).lower()
+        )
 
     def _maybe_resume_from_external_control(self, probe: Dict[str, Any]) -> None:
         """Reclaim the REPL control plane once an external run has finished.
@@ -2004,7 +2195,7 @@ class OT2Service:
         self._boot_started = True
 
         probe = self.probe_robot()
-        self._last_probe = probe
+        self._record_probe(probe)
         # Capture any active external run's labware so the deck reflects it even
         # while the gateway stands off (EXTERNAL_CONTROL). Cheap, best-effort.
         self._refresh_run_labware(force=True)
@@ -2220,8 +2411,8 @@ class OT2Service:
             if probed is not None:
                 volumes[mount] = {"min_ul": probed[0], "max_ul": probed[1]}
         details["pipette_volumes"] = volumes
-        if self._last_probe:
-            details["robot"] = self._last_probe
+        if self._last_probe or self._robot_last_seen_at or self.robot_unreachable:
+            details["robot"] = self._robot_details()
         claimed_by = self.claims.current()
         if claimed_by is not None:
             details["claimed_by"] = claimed_by.model_dump(mode="json")
@@ -2367,6 +2558,10 @@ class OT2Service:
         # where the gateway advertises nothing while an external app owns the robot.
         if self.state != OT2ServiceState.EXTERNAL_CONTROL and "deck.declare" not in actions:
             actions.append("deck.declare")
+        if self.robot_unreachable and not self.dry_run:
+            # Mirrors _run_action's refusal (§6.2): anything that would talk to
+            # the robot is withheld; bookkeeping and closing the session stay.
+            actions = [a for a in actions if a in _OFFLINE_SAFE_ACTIONS]
         return actions
 
     def _blocked_by_activity(self, action: str) -> bool:
@@ -2561,6 +2756,14 @@ class OT2Service:
             return
         if self.state in {OT2ServiceState.BUSY, OT2ServiceState.UNKNOWN_OUTCOME}:
             raise RuntimeError(f"OT-2 is not ready for {name}; current state is {self.state.value}")
+        if self.robot_unreachable:
+            # A precondition refusal, not an operational failure (§6.3): the
+            # monitor already knows the robot is gone, so do not spend 20 s
+            # discovering it again on a dead socket and do not touch last_error.
+            raise RuntimeError(
+                f"OT-2 is not ready for {name}; robot unreachable since "
+                f"{self._robot_unreachable_since.isoformat(timespec='seconds')}"  # type: ignore[union-attr]
+            )
 
         previous_state = self.state
         self.state = OT2ServiceState.BUSY
@@ -2590,6 +2793,12 @@ class OT2Service:
         except Exception as exc:
             self._set_error("command_failed", f"{name}: {exc}", severity="error")
             self._emit_control_action(name, "failed", started, str(exc))
+            if self._is_stale_run_error(exc):
+                # Definitive: the run died with the robot. Drop the reference so
+                # the self-heal recreates it instead of every command 409ing
+                # until an operator cycles shutdown/startup. The error stays on
+                # /status until the re-init succeeds (§6.4 then clears it).
+                self._drop_dead_session("Robot-server run is gone (robot restarted?)")
             raise
         finally:
             if self.state == OT2ServiceState.BUSY:
@@ -2628,6 +2837,11 @@ class OT2Service:
             self.state = OT2ServiceState.ERROR
 
     def _equipment_state(self) -> str:
+        if self.robot_unreachable and self.state != OT2ServiceState.DRY_RUN:
+            # §2.1: the gateway is fine, the hardware cannot be reached, so its
+            # state cannot be determined. Not `error` (nothing faulted) and not
+            # the session state (which describes a robot we last saw minutes ago).
+            return "unknown"
         if self.state == OT2ServiceState.READY:
             return "ready"
         if self.state in {
@@ -2679,6 +2893,8 @@ class OT2Service:
         exactly what we do not know until an operator reconciles.
         """
 
+        if self.robot_unreachable and not self.dry_run:
+            return "unknown"  # nothing can be observed on a robot nobody can reach
         if self.state in {OT2ServiceState.BUSY, OT2ServiceState.EXTERNAL_CONTROL}:
             return "running"
         if self.state == OT2ServiceState.UNKNOWN_OUTCOME:
@@ -2704,6 +2920,14 @@ class OT2Service:
         return self._activity
 
     def _message(self) -> str:
+        if self.robot_unreachable and not self.dry_run:
+            since = self._robot_unreachable_since.isoformat(timespec="seconds")  # type: ignore[union-attr]
+            seen = (
+                f"; last seen {self._robot_last_seen_at.isoformat(timespec='seconds')}"
+                if self._robot_last_seen_at
+                else "; never seen since this gateway started"
+            )
+            return f"Robot unreachable at {self._probe_base_url() or 'unknown host'} since {since}{seen}"
         if self.last_error is not None:
             return self.last_error.message
         if self.state == OT2ServiceState.EXTERNAL_CONTROL:
@@ -2722,6 +2946,8 @@ class OT2Service:
         return f"OT-2 service state: {self.state.value}"
 
     def _required_actions(self) -> list[str]:
+        if self.robot_unreachable and not self.dry_run:
+            return []  # nothing this API can do about a robot that is not there
         if self.state == OT2ServiceState.REQUIRES_INIT:
             return ["startup"]
         if self.state == OT2ServiceState.UNKNOWN_OUTCOME:
@@ -2806,6 +3032,7 @@ class OT2Service:
                 state=self.state.value,
             ),
             "lights": lights,
+            "robot": self._robot_component(),
         }
         # Attached pipettes, surfaced from the (session-independent) HTTP probe.
         for instrument in self._last_probe.get("instruments", []) or []:
@@ -2817,6 +3044,48 @@ class OT2Service:
                 state=instrument.get("name") or instrument.get("model") or "attached",
             )
         return components
+
+    def _robot_component(self) -> ComponentStatus:
+        """The robot-server itself, as the monitor last observed it.
+
+        Distinct from ``control`` (this gateway's session) -- a robot can be
+        reachable with no session, and a session can outlive a robot that has
+        just vanished. ``last_event_at`` is the last probe it answered.
+        """
+
+        if self.dry_run:
+            return ComponentStatus(connected=False, state="dry_run", message="no robot")
+        if self.robot_unreachable:
+            return ComponentStatus(
+                connected=False,
+                state="unreachable",
+                message=f"{self._probe_failures} consecutive probes failed",
+                last_event_at=self._robot_last_seen_at,
+            )
+        if self._robot_last_seen_at is None:
+            return ComponentStatus(connected=False, state="unknown", message="not probed yet")
+        return ComponentStatus(
+            connected=True, state="reachable", last_event_at=self._robot_last_seen_at
+        )
+
+    def _robot_details(self) -> Dict[str, Any]:
+        """``details.robot``: the last probe plus how old it is and what the
+        monitor concluded -- so a reader never mistakes a stale readback for a
+        live one (the Cytation publishes the same ``readback_age_s``)."""
+
+        now = datetime.now(timezone.utc)
+        robot: Dict[str, Any] = dict(self._last_probe)
+        robot["reachable"] = bool(self._last_probe.get("reachable")) and not self.robot_unreachable
+        robot["probe_url"] = self._probe_base_url()
+        robot["last_seen_at"] = self._robot_last_seen_at
+        robot["readback_age_s"] = (
+            round((now - self._robot_last_seen_at).total_seconds(), 1)
+            if self._robot_last_seen_at
+            else None
+        )
+        robot["unreachable_since"] = self._robot_unreachable_since
+        robot["probe_failures"] = self._probe_failures
+        return robot
 
     def _empty_snapshot(self) -> Dict[str, Any]:
         return {

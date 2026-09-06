@@ -1030,6 +1030,54 @@ Never emitted in dry run — a simulation must not enter the lab's history as
 real work. Delivery is best-effort: a bounded queue and a daemon thread, so an
 unreachable dashboard drops rows rather than stalling the control path.
 
+## Robot reachability
+
+The gateway's session state machine only moves when a command fails, so on its
+own it cannot notice a robot that has gone away — until 2026-09-06 both
+gateways reported `ready` for hours about robots nobody could reach. A
+reachability monitor now rides the background refresh loop
+(`OT2_RUN_REFRESH_INTERVAL`, 5 s): every tick probes the robot-server
+(`GET /health`, `OT2_HTTP_TIMEOUT`), and **`OT2_UNREACHABLE_AFTER`
+consecutive failures (default 3, ~15 s) declare an outage**. One timeout on a
+robot busy loading a protocol is not an outage.
+
+While the robot is unreachable, `/status` says so on every surface:
+
+| field | value |
+|---|---|
+| `equipment_status` | `unknown` — STATUS_SPEC §2.1's rule for a healthy gateway that cannot reach its hardware. Never `error`, which means a fault the *reachable* device reported. |
+| `activity` | `unknown` |
+| `message` | `Robot unreachable at <url> since <t>; last seen <t>` |
+| `components.robot` | `connected: false`, `state: unreachable`, `last_event_at` = last answered probe |
+| `details.robot` | the last identity the robot reported plus `reachable: false`, `probe_url`, `last_seen_at`, `readback_age_s`, `unreachable_since`, `probe_failures` |
+| `allowed_actions` | only what needs no robot: `shutdown` and the bookkeeping verbs (`plate.*`, `well.update`, `tips.*`, `deck.declare`) |
+| `required_actions` | empty — nothing this API can do about it |
+
+Endpoints agree with `allowed_actions` (§6.2): a robot-touching action is
+refused immediately with "robot unreachable since …" instead of spending 20 s
+on a dead socket, and the refusal never touches `last_error` (§6.3).
+`details.robot.readback_age_s` is published even when the robot is fine, so a
+reader can always tell a fresh observation from a stale one.
+
+Two history events bracket an outage (`robot_unreachable`, `robot_reachable`
+with `outage_s`), via the same exporter as control actions.
+
+**Recovery is automatic.** The first successful probe ends the outage. The
+gateway then asks the robot whether the session it held is still there
+(`GET /runs/{id}` on the http transport; the socket on ssh). A robot that only
+lost its network keeps its run and nothing changes. A robot that **rebooted**
+has forgotten the run: the session is dropped (`session_lost` event) and the
+existing `requires_init` self-heal re-initialises it on the same tick, with its
+usual guards — never after an operator `shutdown`, never while an external run
+is active, at most once per `OT2_SELF_HEAL_INTERVAL`. The same drop-and-rebuild
+happens if a command meets `409 … is not the current run`, which is definitive
+evidence the run died with the robot; previously that latched `error` until
+someone cycled shutdown/startup.
+
+For the dashboard to render this `unknown` as *unreachable* (and PyPoe to
+alert on it) the registry entry must be marked gateway-fronted — see
+`ac-organic-lab` `docs/STATUS_SPEC.md` §2.1.
+
 ## SSH Failure Policy
 
 The gateway treats SSH failures differently depending on the operation:

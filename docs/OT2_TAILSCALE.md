@@ -144,6 +144,32 @@ path. If you came in over Tailscale SSH, expect the session to drop at
 `pkill` and reconnect ~10 s later; the boot unit is not involved, but running
 the script by hand is exactly what it would do.
 
+## Wi-Fi watchdog (all three robots, since 2026-09-06)
+
+Because the radio wedge recurs, each robot now checks its own Wi-Fi every two
+minutes and reloads the driver when it has died — so the tailnet and SSH come
+back on their own instead of waiting for someone to notice a grey tile.
+
+| Path | Purpose |
+|---|---|
+| `/data/wifi_watchdog.sh` | the check and the recovery (below) |
+| `/data/install_wifi_watchdog.sh` | one-shot installer for the two units (remounts `/` rw, then ro) |
+| `/etc/systemd/system/wifi-watchdog.{service,timer}` | oneshot service + timer (`OnBootSec=3min`, `OnUnitActiveSec=2min`) |
+| `/tmp/wifi-watchdog.log` | every decision; empty while healthy |
+
+How it decides: **healthy** means a ping to `1.1.1.1` (or `8.8.8.8`) leaves
+and returns over the station interface (`wlan0` on the OT-2, `mlan0` on the
+Flex — the Flex's `uap0` access-point interface is never picked). The campus
+gateway does not answer ping, so it is not the probe. It acts only after **two
+consecutive** failed checks (≥ 4 min), at most **once per 10 min**, and always
+exits 0. Recovery is `modprobe -r brcmfmac; modprobe brcmfmac` where that
+driver is loaded (the OT-2s), or `nmcli radio wifi off/on` otherwise (the Flex
+has an NXP chip), followed by `nmcli con up <profile>`.
+
+Like the Tailscale unit, the units live in `/etc` and vanish with an OS
+update; `sh /data/install_wifi_watchdog.sh` puts them back. Check it with
+`systemctl list-timers | grep wifi-watchdog` and `tail /tmp/wifi-watchdog.log`.
+
 ## Per-robot `up` flags
 
 The `tailscale up` line is not identical on every robot, and `up` refuses to
@@ -175,9 +201,10 @@ Tailscale out of `resolv.conf`. `--hostname` is why the tailnet shows
   nmcli con up compsci
   ```
 
-  Wi-Fi was back and `tailscaled` reconnected on its own within a minute.
-  This is what to try on Complexation from the UPLC PC before power-cycling
-  it. Do **not** `nmcli con down compsci` first — it is not needed, and it
+  Wi-Fi was back and `tailscaled` reconnected on its own within a minute
+  (and again on Complexation from the UPLC PC later the same night). The
+  watchdog above now does this automatically; do it by hand only if the log
+  shows it gave up. Do **not** `nmcli con down compsci` first — it is not needed, and it
   leaves the profile inactive so the following `up` has to name it
   explicitly.
 

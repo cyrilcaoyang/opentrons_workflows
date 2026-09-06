@@ -49,16 +49,21 @@ tailnet IP any more. Both robots' tailscale runs over campus Wi-Fi
 **both** robots, wedges on its own (Broadcom `brcmfmac` firmware fault:
 `wlan0` may still read "connected" while nothing passes, or drop and stop
 scanning; HTE 2026-09-06, Complexation 2026-08-30 and 2026-09-04). A
-driver reload over the wired/USB path recovers it without a reboot — see
-`OT2_TAILSCALE.md` *Traps*. This is why neither gateway may depend on a
-robot's Wi-Fi. HTE is on the lab switch by wire. Complexation has no lab
+driver reload over the wired/USB path recovers it without a reboot, and since
+2026-09-06 a timer on each robot does that reload itself — see
+`OT2_TAILSCALE.md` *Wi-Fi watchdog* and *Traps*. This is still why neither
+gateway may depend on a robot's Wi-Fi. HTE is on the lab switch by wire. Complexation has no lab
 Ethernet; its `eth0` (`169.254.40.81`) is the USB-B cable into the UPLC PC
 (`sdl2-pc-06-uplc`, tailnet `100.64.254.19`), where a `netsh` portproxy
 listens on `31951` and forwards to it. The bridge is the standing path since
-2026-09-05. Its known weakness: `iphlpsvc` only binds the listener if the
-tailscale address exists when it starts, so after a UPLC PC reboot run
-`Restart-Service iphlpsvc` there and confirm
-`curl -H 'Opentrons-Version: *' http://100.64.254.19:31951/health` answers.
+2026-09-05. Since 2026-09-06 both bridge rules listen on **`0.0.0.0`** (the
+Windows firewall rules scope them by port, the tailnet ACL by caller), which
+removes the old failure where `iphlpsvc` bound nothing after a reboot because
+the tailscale address did not exist yet. If `31951` ever stops answering,
+`Restart-Service iphlpsvc` on the UPLC PC is still the first thing to try.
+The same PC also forwards **`31952` → `192.168.254.50:31950`**, a second
+route to HTE's wired address for use if the Cytation PC's own lab-switch
+link is ever the problem.
 Repoint a gateway with `tools/ot2-set-robot-url.ps1` (elevated, RDP).
 HTE's wired address is a Buildroot `ifupdown` static config in
 `/etc/network/interfaces` (not a NetworkManager profile). It must **not**
