@@ -169,6 +169,14 @@ lab-skills / dashboard / agents          this repo                        robot
   (8020/8021), and Cytation 5 (8040) all live on `sdl2-pc-03-cytation`. One
   reboot takes out five workflow-critical services, and the USB-enumeration
   race on boot is a known failure mode for the serial devices.
+- **Complexation's robot is reached through the UPLC PC, not its tailnet IP.**
+  `ot2training` has no lab Ethernet; its Wi-Fi radio drops on its own after a
+  reboot (`wlan0` disconnected, empty scan) and only a hard reboot brings it
+  back. Since 2026-09-05 the gateway points at the `netsh` USB bridge
+  `http://100.64.254.19:31951` (DEVICE_BRINGUP.md *Network paths*). A
+  `ConnectionResetError 10054` on a pooled socket plus 2 s connect timeouts on
+  fresh ones means the configured path is dead, whatever `/status` says —
+  `details.robot.reachable` is a cached readback and lags by hours.
 - **The SSH REPL breaks on the first `>>>` prompt.** Snapshot reads are sent as
   two separate `invoke`s routed through `compile()`/`exec()` for exactly this
   reason (`service.py` `_REMOTE_SNAPSHOT_*`). Do not "simplify" them into one

@@ -30,7 +30,7 @@ Pick these before starting; everything below is written in terms of them.
 | `<id>` | `equipment.yaml` id + `OT2_EQUIPMENT_ID` | `ot2_<bench>` — e.g. `ot2_complexation` |
 | `<name>` | human-readable name | `Opentrons OT-2 (<Bench>)` |
 | `<port>` | gateway listen port | next free on the PC: 8020 (HTE), 8021 (complexation), 8022… |
-| `<robot-ip>` | robot's reachable IP (tailnet preferred) | e.g. `100.64.254.91` |
+| `<robot-ip>` | robot's reachable address — a wired or USB path, not the robot's Wi-Fi tailnet IP (see *Network paths* below) | e.g. `192.168.254.50` |
 | `<ssh-alias>` | SSH config `Host` for the robot | the robot's name, e.g. `ot2training` |
 | `<service>` | NSSM service name | `ot2-gateway-<bench>`, always suffixed |
 | `<dir>` | repo clone directory | `C:\Users\sdl2\Projects\opentrons-server` — **one clone serves every instance** on the PC (see the note below) |
@@ -40,8 +40,28 @@ Pick these before starting; everything below is written in terms of them.
 
 | id | robot | robot IP | port | service |
 |---|---|---|---|---|
-| `ot2_hte` | `ot2cytation` | `100.64.254.90` | 8020 | `ot2-gateway-hte` |
-| `ot2_complexation` | `ot2training` | `100.64.254.91` | 8021 | `ot2-gateway-complexation` |
+| `ot2_hte` | `ot2cytation` | `192.168.254.50` (wired, lab switch) | 8020 | `ot2-gateway-hte` |
+| `ot2_complexation` | `ot2training` | `100.64.254.19:31951` (USB bridge on the UPLC PC) | 8021 | `ot2-gateway-complexation` |
+
+**Network paths.** Neither gateway reaches its robot over the robot's own
+tailnet IP any more. Both robots' tailscale runs over campus Wi-Fi
+(`172.31/16`), which has dropped fleet-wide (2026-08-14) and, on
+`ot2training`, drops on its own: after a reboot the robot's `wlan0` joins,
+then within minutes to hours disconnects and cannot even scan
+(`GET /wifi/list` → `[]`) until the next hard reboot (2026-08-30,
+2026-09-04). HTE is on the lab switch by wire. Complexation has no lab
+Ethernet; its `eth0` (`169.254.40.81`) is the USB-B cable into the UPLC PC
+(`sdl2-pc-06-uplc`, tailnet `100.64.254.19`), where a `netsh` portproxy
+listens on `31951` and forwards to it. The bridge is the standing path since
+2026-09-05. Its known weakness: `iphlpsvc` only binds the listener if the
+tailscale address exists when it starts, so after a UPLC PC reboot run
+`Restart-Service iphlpsvc` there and confirm
+`curl -H 'Opentrons-Version: *' http://100.64.254.19:31951/health` answers.
+Repoint a gateway with `tools/ot2-set-robot-url.ps1` (elevated, RDP).
+**Open:** replace the bridge with a direct wired link — a USB-to-Ethernet
+adapter in a robot USB-A port, patched to the lab switch like HTE — then
+repoint the gateway at the lab address and retire the bridge (tracked in
+`ac-organic-lab/docs/ROADMAP.md`, OT-2 sub-tasks).
 
 > ⚠️ **Distinct state paths are mandatory.** The stores default to
 > `./ot2_*.json` relative to the working directory; two instances started
