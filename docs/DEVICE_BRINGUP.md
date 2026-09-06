@@ -46,10 +46,12 @@ Pick these before starting; everything below is written in terms of them.
 **Network paths.** Neither gateway reaches its robot over the robot's own
 tailnet IP any more. Both robots' tailscale runs over campus Wi-Fi
 (`172.31/16`), which has dropped fleet-wide (2026-08-14) and, on
-`ot2training`, drops on its own: after a reboot the robot's `wlan0` joins,
-then within minutes to hours disconnects and cannot even scan
-(`GET /wifi/list` → `[]`) until the next hard reboot (2026-08-30,
-2026-09-04). HTE is on the lab switch by wire. Complexation has no lab
+**both** robots, wedges on its own (Broadcom `brcmfmac` firmware fault:
+`wlan0` may still read "connected" while nothing passes, or drop and stop
+scanning; HTE 2026-09-06, Complexation 2026-08-30 and 2026-09-04). A
+driver reload over the wired/USB path recovers it without a reboot — see
+`OT2_TAILSCALE.md` *Traps*. This is why neither gateway may depend on a
+robot's Wi-Fi. HTE is on the lab switch by wire. Complexation has no lab
 Ethernet; its `eth0` (`169.254.40.81`) is the USB-B cable into the UPLC PC
 (`sdl2-pc-06-uplc`, tailnet `100.64.254.19`), where a `netsh` portproxy
 listens on `31951` and forwards to it. The bridge is the standing path since
@@ -58,6 +60,12 @@ tailscale address exists when it starts, so after a UPLC PC reboot run
 `Restart-Service iphlpsvc` there and confirm
 `curl -H 'Opentrons-Version: *' http://100.64.254.19:31951/health` answers.
 Repoint a gateway with `tools/ot2-set-robot-url.ps1` (elevated, RDP).
+HTE's wired address is a Buildroot `ifupdown` static config in
+`/etc/network/interfaces` (not a NetworkManager profile). It must **not**
+carry a `gateway` line: the lab switch is on-link only, and the bogus
+`192.168.254.230` gateway it shipped with black-holed the robot's internet
+(NTP, Tailscale) from 2026-08-14 until removed 2026-09-06 — see
+`OT2_TAILSCALE.md` *Traps*.
 **Open:** replace the bridge with a direct wired link — a USB-to-Ethernet
 adapter in a robot USB-A port, patched to the lab switch like HTE — then
 repoint the gateway at the lab address and retire the bridge (tracked in
@@ -303,6 +311,7 @@ accuracy not (harness caveat in §5).
 
 ## See also
 
+- `OT2_TAILSCALE.md` — Tailscale on the robots' Buildroot system: layout, upgrade, network traps.
 - `README.md` → *Running multiple OT-2 gateways* — the per-instance env table.
 - `deploy/ot2_complexation.env.example` — env template to copy per instance.
 - `ac-organic-lab` `docs/DEVICE_PC_SETUP.md` — the host-level uv + NSSM recipe.

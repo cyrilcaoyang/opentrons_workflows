@@ -63,7 +63,8 @@ lab-skills / dashboard / agents          this repo                        robot
   **frames** this panel rather than reimplementing it, so it is the operator
   surface for both robots.
 - **`docs/`** — start at `docs/DEVICE_BRINGUP.md` to bring a robot up,
-  `docs/DECK_STATE.md` for the normalized deck model.
+  `docs/DECK_STATE.md` for the normalized deck model, `docs/OT2_TAILSCALE.md`
+  for Tailscale/SSH on the robots themselves.
 
 ## 3. Working conventions
 
